@@ -196,7 +196,7 @@ def test_empty_text_is_never_a_success(empty):
 
 def test_the_pr_comment_is_headed_names_the_thread_and_pings_nobody():
     body = core.pr_comment_body(thread_id="abc", questions="1. Did @juniper agree? `@octocat\n2. Fixes #12, closes #3456")
-    assert body.startswith("### Orion's questions on this spec (hourly round-up)")
+    assert body.startswith("### Orion's review questions (session-thread round-up)")
     # No live @mention (an unclosed backtick does not protect one) and no live #issue reference.
     import re
     assert not re.search(r"@[A-Za-z0-9]", body) and not re.search(r"#\d", body)
@@ -236,7 +236,7 @@ def test_only_the_bodys_own_refusals_are_not_strikes(reason, body):
 
 def test_the_unparsed_and_body_refusal_lines_say_what_happened():
     again = core.unparsed_text(failures=1, next_at=core.next_roundup_at(NOW, 3600))
-    assert "does not use this thread's one round of questions" in again and "Failure 1 of 3" in again
+    assert "does not use one of this thread's rounds of questions" in again and "Failure 1 of 3" in again
     assert "not sent to the session and not posted" in again and "11:00 UTC" in again
     stop = core.unparsed_text(failures=3, next_at=None)
     assert "Hub stopped trying" in stop and "Send a new message" in stop
@@ -366,14 +366,52 @@ def test_the_fence_carries_a_nonce_and_session_text_cannot_write_a_heading_line(
     assert "<<<END_SESSION_DATA:abc123>>>" in core.roundup_prompt([("t1", section)], nonce="abc123").split("Answer format")[0]
 
 
-# --- one round of questions per thread -----------------------------------------------------------
+# --- rounds of questions per thread ---------------------------------------------------------
 
 
 def _orion(body="1. Why?", roundup_id="r1", **meta):
     return {"speaker": "orion", "body": body, "roundup_id": roundup_id, "meta": meta}
 
 
-def test_a_thread_is_in_its_answer_phase_after_one_orion_turn_with_questions():
+@pytest.fixture
+def one_round(monkeypatch):
+    """The answer-phase mechanics, in a world of one question round (the count is tested on its own)."""
+    monkeypatch.setattr(core, "MAX_QUESTION_ROUNDS_PER_THREAD", 1)
+
+
+def test_orion_gets_three_rounds_of_questions_per_thread():
+    assert core.MAX_QUESTION_ROUNDS_PER_THREAD == 3
+    assert not core.in_answer_phase([_turn(), _orion(roundup_id="r1")])
+    assert not core.in_answer_phase([_turn(), _orion(roundup_id="r1"), _orion(roundup_id="r2")])
+    assert core.in_answer_phase([_turn(), _orion(roundup_id="r1"), _orion(roundup_id="r2"), _orion(roundup_id="r3")])
+    assert core.question_rounds_used([_turn(), _orion(roundup_id="r1"), _orion("NO QUESTIONS", no_questions=True)]) == 1
+
+
+def test_a_thread_with_rounds_left_says_how_many_and_shows_the_spec():
+    section = core.thread_section(_thread(question_rounds_used=1), [_turn("my answers")],
+                                  [_turn(spec_text="# the spec"), _orion("1. Why?")], nonce="n1")
+    assert "you have 2 round(s) of questions left" in section and "# the spec" in section
+    assert section.index("you have 2 round(s)") < section.index("<<<SESSION_DATA")
+    fresh = core.thread_section(_thread(), [_turn("first")], nonce="n1")
+    assert "round(s) of questions left" not in fresh
+
+
+def test_a_diff_attachment_is_shown_as_the_pull_requests_code_diff():
+    turn = _turn("PR opened")
+    turn["meta"]["spec"] = [{"path": "2 file(s)", "text": "diff --git a/x.py b/x.py\n+x = 1", "kind": "diff"},
+                            {"path": "docs/superpowers/specs/s.md", "text": "# spec"}]
+    section = core.thread_section(_thread(), [turn], nonce="n1")
+    assert "--- pull request code diff (2 file(s)) ---" in section and "+x = 1" in section
+    assert "--- spec file: docs/superpowers/specs/s.md ---" in section
+
+
+def test_the_prompt_carries_the_code_review_template_and_the_round_count():
+    prompt = core.roundup_prompt([("t1", "x")], nonce="n1")
+    assert core.CODE_REVIEW_TEMPLATE in prompt and "UNVERIFIED" in prompt
+    assert "at most 3 rounds of questions per thread" in prompt and "hourly" not in prompt.lower()
+
+
+def test_a_thread_is_in_its_answer_phase_after_one_orion_turn_with_questions(one_round):
     assert core.MAX_QUESTION_ROUNDS_PER_THREAD == 1
     assert not core.in_answer_phase([_turn()])
     assert not core.in_answer_phase([_turn(), _orion("NO QUESTIONS", no_questions=True)])
@@ -389,7 +427,7 @@ def test_a_thread_is_in_its_answer_phase_after_one_orion_turn_with_questions():
     assert core.question_rounds_used([_orion(roundup_id=f"r{i}") for i in range(4)]) == 4
 
 
-def test_an_answer_phase_section_says_so_outside_the_fence_and_drops_the_spec():
+def test_an_answer_phase_section_says_so_outside_the_fence_and_drops_the_spec(one_round):
     spec = "# the spec body"
     first = core.thread_section(_thread(), [_turn(spec_text=spec)])
     assert core.ANSWER_PHASE_NOTE not in first and spec in first
@@ -399,7 +437,7 @@ def test_an_answer_phase_section_says_so_outside_the_fence_and_drops_the_spec():
     assert later.index(core.ANSWER_PHASE_NOTE) < later.index(core.fence_lines("n1")[0])   # Hub's words, not data
     assert "after your question round: usually its answers" in later
     prompt = core.roundup_prompt([("t1", later)])
-    assert "ONE round of questions per thread" in prompt and core.NO_QUESTIONS in core.ANSWER_PHASE_NOTE
+    assert "rounds of questions per thread" in prompt and core.NO_QUESTIONS in core.ANSWER_PHASE_NOTE
 
 
 def test_whatever_orion_writes_on_an_answer_phase_thread_is_a_closing_note():
@@ -418,8 +456,8 @@ def test_whatever_orion_writes_on_an_answer_phase_thread_is_a_closing_note():
 def test_the_receipt_on_an_answer_phase_thread_says_the_round_is_used():
     first = core.receipt_text(thread_id="t1", next_at=NOW, roundup_enabled=True)
     later = core.receipt_text(thread_id="t1", next_at=NOW, roundup_enabled=True, answer_phase=True)
-    assert "Orion's questions will appear" in first and "one round of questions" not in first
-    assert "one round of questions on this thread" in later and "Orion's questions will appear" not in later
+    assert "Orion's questions will appear" in first and "rounds of questions" not in first
+    assert "all 3 rounds of questions on this thread" in later and "Orion's questions will appear" not in later
     assert "Orion has NOT read it yet" in later
     reading = core.receipt_text(thread_id="t1", next_at=NOW, roundup_enabled=True, reading_now=True)
     assert "reading this thread's earlier message now" in reading and "Orion's questions will appear" not in reading

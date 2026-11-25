@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""PostToolUse hook (Bash): when a session opens a pull request that carries a design spec, send
-the spec to Orion through Hub and tell the session Hub's receipt.
+"""PostToolUse hook (Bash): when a session opens a pull request, send it to Orion through Hub and tell
+the session Hub's receipt. Every pull request is sent (Juniper 2026-11-25: "all submitted prs get
+orion's review").
 
 Fires only for `gh pr create` whose output holds the pull request's URL (so `--help`, a dry run or a
-failed create send nothing). When the PR's files include docs/superpowers/specs/*.md, POSTs the
-spec text to Hub (ORION_HUB_URL, default http://localhost:8080). Hub holds the message and answers
-with a receipt; Orion reads it at the next hourly round-up.
+failed create send nothing). POSTs the PR's design spec files (docs/superpowers/specs/*.md) and its
+code diff (every other file, `gh pr diff`) to Hub (ORION_HUB_URL, default http://localhost:8080). Hub
+holds the message and answers with a receipt; Orion reads it at the next round-up (every 15 min).
 
 Never fails or blocks the tool call: every error is one log line (~/.orion/session_threads_hooks.log)
 and exit 0. Kill switch: ORION_SESSION_THREADS_HOOKS=0. The same code runs by hand:
@@ -57,9 +58,10 @@ def main() -> None:
         if pr is None:
             lib.log(f"pr_spec_hook pr_not_found ref={ref} session={session_id}")
             return
-        message = lib.build_pr_message(pr, session_id=session_id, worktree=ident["worktree"])
+        message = lib.build_pr_message(pr, session_id=session_id, worktree=ident["worktree"], diff_timeout=8.0)
         if message is None:
-            return   # a PR without a design spec: nothing for Orion
+            lib.log(f"pr_spec_hook nothing_to_send pr={pr['number']} session={session_id}")
+            return   # no spec, and gh gave no diff: nothing for Orion
         resp = lib.send(message, timeout=5.0)
         lib.log(f"pr_spec_hook sent pr={pr['number']} thread={(resp.get('thread') or {}).get('thread_id')}")
         sys.stdout.write(json.dumps({"hookSpecificOutput": {

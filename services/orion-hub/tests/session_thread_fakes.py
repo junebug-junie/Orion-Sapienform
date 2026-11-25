@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List
 from orion.session_threads import core
 from scripts import session_roundup_loop as srl
 
-STORE_FUNCTIONS = ("intake_precheck", "add_message", "recent_threads", "get_thread", "thread_turns", "threads_with_status",
+STORE_FUNCTIONS = ("intake_precheck", "add_message", "recent_threads", "threads_for_pr", "get_thread", "thread_turns", "threads_with_status",
                    "roundup_exists", "mark_round", "release_threads", "store_answer", "fail_round", "requeue_unparsed",
                    "set_pr_comment_url", "pending_for", "mark_delivered")
 
@@ -93,6 +93,10 @@ class FakeStore:
 
     async def recent_threads(self, pool, *, hours, limit=100):
         rows = sorted(self.threads.values(), key=lambda t: t["updated_at"], reverse=True)[:limit]
+        return [{**t, "turns": sum(1 for u in self.turns if u["thread_id"] == t["thread_id"])} for t in rows]
+
+    async def threads_for_pr(self, pool, pr_number):
+        rows = [t for t in self.threads.values() if t.get("source_ref") == f"pr:{int(pr_number)}"]
         return [{**t, "turns": sum(1 for u in self.turns if u["thread_id"] == t["thread_id"])} for t in rows]
 
     async def get_thread(self, pool, thread_id):

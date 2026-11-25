@@ -143,6 +143,37 @@ Rules that carry weight:
 - Intake has no login (Hub is host-local). It is bounded: 50 waiting threads, 20 unread messages a
   thread, the same message stored once.
 
+## Change 2026-11-25: Orion reviews every PR
+
+Juniper: "all submitted prs get orion's review. orion can still only write up to 3 times per PR.
+orion now checks every 15 minutes from 1 hour where it was. claude pushes prs in draft form, and moves
+it out of draft form after they respond to Orion's first review. this is mandatory."
+
+- **Every PR is sent.** The `gh pr create` hook and `send --pr N` attach the spec files (as before) and
+  the PR's code diff: `gh pr diff N` without spec files (attached whole) and without generated, lock or
+  binary files (named, not shown). It travels as an attachment with `kind: "diff"` in the same `spec`
+  list; Hub cuts it at 40,000 characters (`core.DIFF_MAX_CHARS`) and the cut line names `gh pr diff N`.
+  The prompt shows it as `--- pull request code diff (...) ---`.
+- **Code review template.** `core.CODE_REVIEW_TEMPLATE`, in every round-up prompt: eight questions from
+  CLAUDE.md 0A (what it changes for Orion, live evidence or UNVERIFIED, metric gate, integration seam,
+  empty shells, tests passing for the wrong reason, contracts and config, what to check live). Not a bug
+  hunt: the code review skill already runs on every PR. Same answer format, so the parser is unchanged.
+- **3 rounds of questions per thread** (`MAX_QUESTION_ROUNDS_PER_THREAD = 3`, was 1 since 2026-11-17).
+  One thread per PR, so Orion writes on a PR at most 3 times. Rounds 2 and 3 get a `[Hub]` line saying
+  how many rounds are left (`core.rounds_left_note`, from `question_rounds_used` set by the loop); the
+  spec and diff are still shown. The 4th Orion turn is the answer phase, as before.
+- **Every 15 minutes**: `HUB_SESSION_ROUNDUP_INTERVAL_SEC=900`. Buckets and round ids already work for
+  any interval. One round runs at a time, so a slow round delays the next one; it never overlaps it.
+- **Draft gate** (`scripts/hooks/pr_draft_gate.py`, Claude Code PreToolUse on Bash). `gh pr create`
+  without `--draft` is refused. `gh pr ready` is refused until the PR's thread
+  (`GET /api/session-threads?pr=N`, new) shows a session turn after Orion's first question turn, or
+  Orion's first answer was `NO QUESTIONS`, or the thread is `failed`, or it is older than
+  `ORION_PR_READY_WAIT_H` (24 h) with no Orion answer. Unanswered questions are never excused by the
+  wait. Hub down: refused. Override per command: `ORION_ALLOW_PR_READY=1`. Kill switch:
+  `ORION_PR_DRAFT_GATE=0`. A hook bug never blocks (exit 0, logged).
+- Not covered: a PR opened outside Claude Code (Cursor, a human's terminal) gets no diff sent and no
+  gate. `send --pr N` covers the first by hand.
+
 ## Files likely to touch
 
 - `orion/session_threads/core.py` (pure rules), `orion/schemas/session_roundup_run.py`,

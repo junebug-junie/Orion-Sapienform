@@ -103,6 +103,12 @@ async def state(w, tid):
     return thread, turns
 
 
+def one_round(monkeypatch):
+    """Answer-phase mechanics tests run in a world of one question round: the phase rules are the same at
+    any count, and the 3-round count has its own lifecycle test (Juniper 2026-11-25: up to 3 per PR)."""
+    monkeypatch.setattr(core, "MAX_QUESTION_ROUNDS_PER_THREAD", 1)
+
+
 def answer(*pairs):
     return "\n\n".join(f"### thread:{tid}\n{text}" for tid, text in pairs)
 
@@ -169,6 +175,7 @@ def test_the_receipt_says_so_when_the_roundup_is_off_and_nothing_is_submitted(mo
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_lifecycle_message_roundup_questions_reply_second_roundup(mode, monkeypatch):
+    one_round(monkeypatch)
     async def scenario(w):
         tid = (await send_pr(w))["thread"]["thread_id"]
         frames(w)
@@ -198,7 +205,7 @@ def test_lifecycle_message_roundup_questions_reply_second_roundup(mode, monkeypa
         assert orion["body"] == "1. Why hourly?\n2. Who pays for the turn?" and orion["roundup_id"] == rid1
         assert orion["pr_comment_url"] == "https://github.com/o/r/pull/3456#issuecomment-1"
         [(pr, comment)] = w.commenter.posts
-        assert pr == 3456 and comment.startswith("### Orion's questions on this spec (hourly round-up)") and "1. Why hourly?" in comment
+        assert pr == 3456 and comment.startswith("### Orion's review questions (session-thread round-up)") and "1. Why hourly?" in comment
         [frame] = frames(w)
         assert (frame["speaker"], frame["status"], frame["text"]) == ("orion", "asked", orion["body"])
         assert (await w.loop.tick())["skipped"] == "nothing_held" and len(w.durable.submits) == 1
@@ -214,7 +221,7 @@ def test_lifecycle_message_roundup_questions_reply_second_roundup(mode, monkeypa
         # the thread's one round of questions, so Hub's receipt says the reply is read as answers.
         got = await w.loop.intake(session_id="sess-A", title="reply", body="Hourly is Juniper's rule.", thread_id=tid)
         assert got["thread"]["status"] == "held" and got["thread"]["title"] == "feat: thing 3456"
-        assert got["answer_phase"] is True and "one round of questions on this thread" in got["receipt"]["body"]
+        assert got["answer_phase"] is True and "all 1 rounds of questions on this thread" in got["receipt"]["body"]
         assert (await w.loop.tick())["skipped"] in ("nothing_due", "roundup_already_ran_this_hour")
         assert len(w.durable.submits) == 1
 
@@ -426,6 +433,7 @@ def test_durable_runs_down_waits_and_a_refused_run_counts_as_a_failure(mode, mon
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_an_unparseable_reply_is_kept_sent_nowhere_and_read_again_without_using_the_round(mode, monkeypatch):
+    one_round(monkeypatch)
     # Session thread b3053f6df376 (Orion, 2026-11-18): a parse accident is not Orion's silence. The reply
     # is posted nowhere, handed to no session, and the threads are read again next hour as a FIRST
     # question round. It is a failure toward the cap: 3 in a row end the thread. Thread 455a41af5b44 Q4:
@@ -447,7 +455,7 @@ def test_an_unparseable_reply_is_kept_sent_nowhere_and_read_again_without_using_
             assert not [t for t in turns if t["speaker"] == "orion"] and whole not in str(turns)
             assert turns[-1]["speaker"] == "hub" and turns[-1]["meta"]["reply_unparsed"] is True
             assert turns[-1]["meta"]["reply_not_stored"] is True
-            assert "does not use this thread's one round of questions" in turns[-1]["body"]
+            assert "does not use one of this thread's rounds of questions" in turns[-1]["body"]
             assert "did not store it on this thread" in turns[-1]["body"] and tick_id in turns[-1]["body"]
             assert "Failure 1 of 3" in turns[-1]["body"]
             assert turns[0]["roundup_id"] is None            # the message is unread again
@@ -581,6 +589,7 @@ def test_pr_comments_can_be_switched_off_and_a_failed_comment_keeps_the_turn(mod
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_a_message_that_arrives_while_orion_is_reading_waits_for_the_next_round(mode, monkeypatch):
+    one_round(monkeypatch)
     async def scenario(w):
         tid = (await send_pr(w))["thread"]["thread_id"]
         w.clock.to_next_hour()
@@ -611,10 +620,11 @@ def test_a_message_that_arrives_while_orion_is_reading_waits_for_the_next_round(
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_threads_that_do_not_fit_stay_held_oldest_first(mode, monkeypatch, caplog):
+    one_round(monkeypatch)
     async def scenario(w):
         ids = []
         for i in range(3):
-            ids.append((await send_pr(w, pr=30 + i, branch=f"feat/{i}", spec="s" * 3000))["thread"]["thread_id"])
+            ids.append((await send_pr(w, pr=30 + i, branch=f"feat/{i}", spec="s" * 2400))["thread"]["thread_id"])
             w.clock.advance(seconds=1)
         w.clock.to_next_hour()
         w.durable.replies = [answer((ids[0], "1. q0?"), (ids[1], "1. q1?")), answer((ids[2], "1. q2?"))]
@@ -903,15 +913,70 @@ def test_the_commenter_checks_the_pull_request_before_it_posts_and_never_raises(
                      ("GET", "/repos/o/r/pulls/6", "Bearer tok"), ("GET", "/repos/o/r/pulls/5", "Bearer tok")]
 
 
-# --- one round of questions per thread ---------------------------------------------------------
+# --- rounds of questions per thread ---------------------------------------------------------
 
 
-def test_one_question_round_per_thread_is_a_fixed_constant():
-    assert core.MAX_QUESTION_ROUNDS_PER_THREAD == 1
+def test_three_question_rounds_per_thread_is_a_fixed_constant():
+    assert core.MAX_QUESTION_ROUNDS_PER_THREAD == 3
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_orion_writes_on_a_pull_request_at_most_three_times(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        for k in (1, 2, 3):
+            w.clock.to_next_hour()
+            w.durable.replies = [answer((tid, f"1. Question of round {k}?"))]
+            tick = await w.loop.tick()
+            assert tick["asked"] == 1 and tick["pr_comments"] == 1, k
+            prompt = w.durable.submits[-1]["prompt"]
+            if k == 1:
+                assert "round(s) of questions left" not in prompt and SPEC.strip() in prompt
+            else:
+                # Rounds 2 and 3: Hub says how many are left, and the spec is still shown.
+                assert f"you have {3 - (k - 1)} round(s) of questions left" in prompt and SPEC.strip() in prompt
+                assert core.ANSWER_PHASE_NOTE not in prompt
+            got = await w.loop.intake(session_id="sess-A", title="reply", body=f"Answers to round {k}.", thread_id=tid)
+            assert got["answer_phase"] is (k == 3)
+        # The fourth round is the answer phase: a closing note, never a fourth PR comment.
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. One more?"))]
+        tick = await w.loop.tick()
+        assert tick["closed"] == 1 and tick["pr_comments"] == 0 and core.ANSWER_PHASE_NOTE in w.durable.submits[-1]["prompt"]
+        assert len(w.commenter.posts) == 3
+        # The draft gate finds the thread by its pull request (real SQL in the pg lane).
+        [found] = await srl.threads_for_pr(w.pool, 3456)
+        assert found["thread_id"] == tid and found["turns"] >= 8
+        assert await srl.threads_for_pr(w.pool, 4242) == []
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_code_diff_is_kept_cut_with_the_gh_command_and_shown_as_a_diff(mode, monkeypatch):
+    async def scenario(w):
+        diff = "diff --git a/x.py b/x.py\n" + "+x = 1\n" * 10000
+        got = await w.loop.intake(session_id="s", title="feat: code", body="PR opened", pr_number=77,
+                                  pr_url="https://github.com/o/r/pull/77", branch="feat/c",
+                                  spec=[{"path": "1 file(s)", "text": diff, "kind": "diff"}])
+        tid = got["thread"]["thread_id"]
+        _, turns = await state(w, tid)
+        [att] = turns[0]["meta"]["spec"]
+        assert att["kind"] == "diff" and att["cut"] and att["text"].endswith("Full diff: `gh pr diff 77`.]")
+        assert len(att["text"]) < core.DIFF_MAX_CHARS + 200
+        assert "Hub cut the pull request diff" in got["receipt"]["body"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "NO QUESTIONS"))]
+        await w.loop.tick()
+        prompt = w.durable.submits[-1]["prompt"]
+        assert "--- pull request code diff (1 file(s)) ---" in prompt and core.CODE_REVIEW_TEMPLATE in prompt
+
+    run(mode, monkeypatch, scenario)
 
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_a_new_thread_still_gets_its_round_beside_an_answer_phase_thread(mode, monkeypatch, caplog):
+    one_round(monkeypatch)
     async def scenario(w):
         old = (await send_pr(w, pr=1))["thread"]["thread_id"]
         w.clock.to_next_hour()
@@ -942,6 +1007,7 @@ def test_a_new_thread_still_gets_its_round_beside_an_answer_phase_thread(mode, m
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_neither_no_questions_nor_an_unparsed_reply_uses_the_round(mode, monkeypatch):
+    one_round(monkeypatch)
     async def scenario(w):
         tid = (await send_pr(w))["thread"]["thread_id"]
         w.clock.to_next_hour()
@@ -977,6 +1043,7 @@ def test_neither_no_questions_nor_an_unparsed_reply_uses_the_round(mode, monkeyp
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_a_failed_round_does_not_use_the_threads_one_question_round(mode, monkeypatch):
+    one_round(monkeypatch)
     # Orion's round-up times out (and then comes back empty): no Orion turn is stored, so the next
     # good round is still the thread's FIRST question round, not an answer phase.
     async def scenario(w):
@@ -1005,6 +1072,7 @@ def test_a_failed_round_does_not_use_the_threads_one_question_round(mode, monkey
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_orions_questions_reach_the_session_after_a_later_push_amends_the_thread(mode, monkeypatch):
+    one_round(monkeypatch)
     # Delivery is keyed to the thread (its sender sessions and its branch), not to the `gh pr create`
     # event: a second push for the same PR, even from another session, still gets the open questions.
     async def scenario(w):
@@ -1163,6 +1231,7 @@ def test_a_mixed_parse_stores_no_other_threads_text_on_the_unparsed_thread(mode,
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_an_unparsed_answer_phase_thread_in_a_shared_round_is_requeued_not_closed(mode, monkeypatch):
+    one_round(monkeypatch)
     # Q4: before, an answer-phase thread with no section stored the WHOLE reply as its closing note, and
     # a later round showed that note (other threads' text) to Orion as this thread's history.
     async def scenario(w):
@@ -1271,6 +1340,7 @@ def test_the_prompt_never_exceeds_the_budget_however_many_threads_wait():
 
 @pytest.mark.parametrize("mode", BOTH)
 def test_questions_stop_going_to_new_sessions_once_orion_closed_the_thread(mode, monkeypatch):
+    one_round(monkeypatch)
     # Review finding: a reply that arrives WHILE Orion reads sits before the question turn. The next round
     # reads it as answers and writes a closing note: the questions must not go out again after that.
     async def scenario(w):

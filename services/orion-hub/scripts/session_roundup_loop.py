@@ -1,13 +1,14 @@
-"""Session threads: coding sessions write to Orion; Orion asks questions once an hour.
+"""Session threads: coding sessions write to Orion; Orion asks questions at each round-up (15 min).
 
 Design: docs/superpowers/specs/2026-11-15-session-threads-design.md.
 Pure rules (caps, the hour bucket, receipt, prompt, parser, PR comment text): ``orion/session_threads/core.py``.
 
 1. **Intake** (``SessionRoundupLoop.intake``, called by ``POST /api/session-threads/message``): a
-   coding session sends a message, usually a pull request's design spec. Hub stores it as a
+   coding session sends a message, usually a pull request's design spec and/or code diff (an
+   attachment with ``kind: "diff"``). Hub stores it as a
    ``session`` turn, stores its own receipt as a ``hub`` turn, and shows both in Hub chat. The receipt
    is Hub's, never Orion's, and says Orion has NOT read the message. No GPU.
-2. **The hourly round-up** (``tick``): every bucket (an hour by default) Hub takes every held thread
+2. **The round-up** (``tick``): every bucket (``HUB_SESSION_ROUNDUP_INTERVAL_SEC``, 15 min by default) Hub takes every held thread
    whose message arrived before the bucket started and submits ONE durable run
    (``session_roundup.orion_turn``, run id ``session-roundup-<utc hour>``) whose prompt holds them
    all. No held thread: nothing is submitted. The threads are marked ``reading`` BEFORE the submit,
@@ -31,8 +32,8 @@ Pure rules (caps, the hour bucket, receipt, prompt, parser, PR comment text): ``
    prompt tells Orion when a thread's PR is closed or merged.
 6. **Delivery**: Orion's questions are shown once to each session that asks for them (sender or
    branch), and stay pending for new sessions until a session replies on the thread.
-5. **One round of questions per thread** (``core.MAX_QUESTION_ROUNDS_PER_THREAD``): once Orion has asked
-   on a thread, a session reply is still read at the next round-up, but the prompt marks the thread
+5. **At most 3 rounds of questions per thread** (``core.MAX_QUESTION_ROUNDS_PER_THREAD``): once Orion has
+   used them on a thread, a session reply is still read at the next round-up, but the prompt marks the thread
    ANSWER PHASE and what Orion writes for it is stored as a closing note (status ``closed``): never a
    PR comment, never handed to a session as questions. Question-like lines in it are counted in the log.
 
@@ -200,6 +201,14 @@ async def recent_threads(pool, *, hours: float, limit: int = 100) -> List[Dict[s
         f"SELECT {_THREAD_COLUMNS}, (SELECT count(*) FROM orion_session_turn t WHERE t.thread_id = h.thread_id) AS turns "
         "FROM orion_session_thread h WHERE updated_at >= $1 ORDER BY updated_at DESC LIMIT $2",
         _now() - timedelta(hours=float(hours)), limit)
+    return [_thread(r) for r in rows]
+
+
+async def threads_for_pr(pool, pr_number: int) -> List[Dict[str, Any]]:
+    """The thread of one pull request (``source_ref`` ``pr:<n>`` is unique, so at most one)."""
+    rows = await pool.fetch(
+        f"SELECT {_THREAD_COLUMNS}, (SELECT count(*) FROM orion_session_turn t WHERE t.thread_id = h.thread_id) AS turns "
+        "FROM orion_session_thread h WHERE source_ref = $1", f"pr:{int(pr_number)}")
     return [_thread(r) for r in rows]
 
 
@@ -635,6 +644,15 @@ class SessionRoundupLoop:
             path = core.one_line((item or {}).get("path"), 500)
             if not text:
                 continue
+            if (item or {}).get("kind") == core.ATTACHMENT_DIFF:
+                # A PR's code diff: cut like a message, and say how to get the whole diff.
+                text, cut = core.cap_text(text, core.DIFF_MAX_CHARS, what="diff")
+                if cut:
+                    if pr_number:
+                        text = text[:-1] + f" Full diff: `gh pr diff {int(pr_number)}`.]"
+                    notes.append(f"Hub cut the pull request diff to {core.DIFF_MAX_CHARS} characters.")
+                specs.append({"path": path, "text": text, "cut": cut, "kind": core.ATTACHMENT_DIFF})
+                continue
             text, cut = core.cap_spec(text, core.SPEC_MAX_CHARS, path=path, branch=core.one_line(branch, 300))
             if cut:
                 notes.append(f"Hub cut the spec {path} to at most {core.SPEC_MAX_CHARS} characters "
@@ -753,7 +771,8 @@ class SessionRoundupLoop:
         (``roundup_id`` given) the turns of that round. Hub's own lines are never shown to Orion.
 
         The thread comes back as a copy with ``answer_phase`` set (``core.in_answer_phase`` over ALL its
-        Orion turns except this round's own): the prompt and the parser both read that one flag."""
+        Orion turns except this round's own): the prompt and the parser both read that one flag. It also
+        carries ``question_rounds_used`` (same turns), so the prompt can say how many rounds are left."""
         out = []
         for thread in threads:
             # A re-queued uncut reply is never shown again: it holds other threads' sections.
@@ -771,7 +790,8 @@ class SessionRoundupLoop:
                                     and roundup_id is not None)]
             else:
                 earlier = [t for t in mine if first is not None and t["seq"] < first]
-            out.append(({**thread, "answer_phase": phase}, new, earlier))
+            used = core.question_rounds_used(mine, exclude_roundup=roundup_id)
+            out.append(({**thread, "answer_phase": phase, "question_rounds_used": used}, new, earlier))
         return out
 
     async def _with_pr_states(self, cands):

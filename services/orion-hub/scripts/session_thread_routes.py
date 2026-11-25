@@ -2,8 +2,9 @@
 
 ``POST /api/session-threads/message``     a session's message (a PR's spec, a note, or a reply on a
                                           thread). Stores it, stores Hub's receipt, returns the receipt.
-                                          No model runs: Orion reads it at the next hourly round-up.
+                                          No model runs: Orion reads it at the next round-up (every 15 min).
 ``GET  /api/session-threads?hours=48``    threads touched in the window (Hub chat's page-load view)
+``GET  /api/session-threads?pr=N``       one pull request's thread, however old (the draft gate hook)
 ``GET  /api/session-threads/pending``     ``?session_id=&branch=``: Orion's turns not yet handed back to
                                           that session OR that branch
 ``POST /api/session-threads/delivered``   {"turn_ids": [...], "session_id": "..."}: those turns were handed
@@ -36,6 +37,8 @@ class SpecFile(BaseModel):
 
     path: str = Field(default="", max_length=1000)
     text: str = Field(default="", max_length=_WIRE_TEXT_MAX)
+    # "diff": the pull request's code diff (core.ATTACHMENT_DIFF). Empty: a design spec file.
+    kind: str = Field(default="", max_length=20)
 
 
 class MessageBody(BaseModel):
@@ -82,7 +85,8 @@ def _public(row: dict, *, with_spec_text: bool = False) -> dict:
     if isinstance(meta, dict) and "spec" in meta and not with_spec_text:
         # The list view and the session hooks need the paths, not 40,000 characters a file.
         out["meta"] = {**meta, "spec": [{"path": s.get("path"), "chars": len(str(s.get("text") or "")),
-                                         "cut": bool(s.get("cut"))} for s in meta["spec"] or []]}
+                                         "cut": bool(s.get("cut")), **({"kind": s["kind"]} if s.get("kind") else {})}
+                                        for s in meta["spec"] or []]}
     if isinstance(out.get("meta"), dict) and "delivered_to" in out["meta"]:
         # Which sessions claimed a turn is Hub's bookkeeping, not another session's business.
         out["meta"] = {k: v for k, v in out["meta"].items() if k != "delivered_to"}
@@ -114,7 +118,7 @@ async def post_message(request: Request, body: MessageBody) -> dict:
         "receipt": {"speaker": "hub", "text": result["receipt"]["body"], "turn_id": result["receipt"]["turn_id"]},
         "next_roundup_at": result["next_roundup_at"].isoformat(),
         "roundup_enabled": result["roundup_enabled"],
-        # True: Orion already asked its one round of questions on this thread; this message is read as
+        # True: Orion already used every round of questions on this thread; this message is read as
         # answers and Orion writes only a closing note (orion/session_threads/core.py, one-round rule).
         "answer_phase": bool(result.get("answer_phase")),
         "orion_has_read": False,
@@ -122,7 +126,10 @@ async def post_message(request: Request, body: MessageBody) -> dict:
 
 
 @router.get("/api/session-threads")
-async def list_threads(request: Request, hours: float = 48.0, limit: int = 100) -> dict:
+async def list_threads(request: Request, hours: float = 48.0, limit: int = 100, pr: int = 0) -> dict:
+    if pr > 0:
+        # One pull request's thread, however old (scripts/hooks/pr_draft_gate.py reads it).
+        return {"threads": [_public(r) for r in await store.threads_for_pr(_pool(request), pr)]}
     rows = await store.recent_threads(_pool(request), hours=max(0.1, min(hours, 24 * 30)),
                                       limit=max(1, min(limit, 200)))
     return {"threads": [_public(r) for r in rows]}

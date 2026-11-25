@@ -1,5 +1,5 @@
 name: session-threads-tests
-# Session threads: coding sessions write to Orion; Orion asks questions once an hour.
+# Session threads: coding sessions send Orion every PR; Orion asks questions every 15 minutes.
 # Design: docs/superpowers/specs/2026-11-15-session-threads-design.md.
 #
 # Runs what no other workflow runs: the store's REAL SQL against Postgres (the Hub
@@ -23,6 +23,7 @@ on:
       - "scripts/hooks/post_tool_pr_spec_to_orion.py"
       - "scripts/hooks/session_pending_orion_questions.py"
       - "scripts/hooks/wait_for_orion_answer.py"
+      - "scripts/hooks/pr_draft_gate.py"
       - "scripts/agent_board_lib.py"
       - ".claude/settings.json"
       - "tests/scripts/test_orion_session_thread_hooks.py"
@@ -44,6 +45,7 @@ on:
       - "scripts/hooks/post_tool_pr_spec_to_orion.py"
       - "scripts/hooks/session_pending_orion_questions.py"
       - "scripts/hooks/wait_for_orion_answer.py"
+      - "scripts/hooks/pr_draft_gate.py"
       - "scripts/agent_board_lib.py"
       - ".claude/settings.json"
       - "tests/scripts/test_orion_session_thread_hooks.py"

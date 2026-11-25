@@ -295,6 +295,10 @@ def test_a_game_with_no_floor_looks_on_the_timer_while_buttons_are_pressed():
         # the screen never changed: the model wrote the same words each time, and each is stored (a true look)
         assert [row[7] for row in rig.db.looks] == ["stored"] * 4 and c["notes_stored"] == 4
         assert rig.db.looks[-1][15] == 1.0         # similar_to_previous says it is the same note
+        # each repeat is stored (fresh note) but its act closes 0: it said nothing new (Orion's review of #3995)
+        closes = [a for a in rig.acts if a[0] == "closed"]
+        assert [a[3] for a in closes] == [True, False, False, False]
+        assert all(a[4].startswith("look repeat: ") for a in closes[1:])
         # no floor counter moved, and the page names the timer, never no_floor
         assert c["checks_over_floor"] == 0 and c["static_skips"] == 0 and c["input_stale_skips"] == 0
         assert rig.watch.status()["status"]["code"] == "timer"
@@ -315,6 +319,9 @@ def test_a_game_with_no_floor_and_no_button_press_gets_no_timer_look():
         assert len(rig.bids) == c["timer_looks"] == 1            # the one at 62 s, while the press was fresh
         assert rig.bids[0][0].opened_at.timestamp() - 1_000_000.0 == 62
         assert rig.watch.status()["status"]["code"] == "timer_input_stale"
+        # the looks the timer missed are visible: a check where the look was due but no button changed in 60 s
+        # (122 s .. 300 s, every 2 s), never a check that was only waiting for the interval
+        assert c["input_stale_skips"] == 90 and c["static_skips"] == 0 and c["checks_over_floor"] == 0
         rig2 = Rig(calibration=W.Calibration(None, "one_sided", 900, 3, 1806.0))
         rig2.press()
         rig2.t += 61                                # the press is already stale when the watch starts

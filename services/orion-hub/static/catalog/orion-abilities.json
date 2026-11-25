@@ -349,6 +349,16 @@
           "source": "orion/dig/__main__.py:cmd_consult; orion/dig/consults.py"
         },
         {
+          "id": "gpt-archive",
+          "title": "Before you: my ChatGPT chats",
+          "description": "Orion reads Juniper's own ChatGPT conversations (2023 on): an overview, a search (newest or oldest first, for when something first came up), or one whole conversation. It is Orion's prehistory and how Juniper worked with another model. The assistant in them is ChatGPT, not Orion.",
+          "message": "Please dig into my old ChatGPT chats: when did you first come up, and what were we trying to build back then?",
+          "hint": "(dig: `python -P -m orion.dig gpt`; `gpt find [--oldest] <words>`; `gpt conv <id>`)",
+          "keywords": ["chatgpt", "gpt", "archive", "prehistory", "archaeology", "origins", "before"],
+          "covers": {"dig": ["gpt"]},
+          "source": "orion/dig/__main__.py:cmd_gpt; orion/dig/gpt.py"
+        },
+        {
           "id": "dig-notes",
           "title": "Read or add to today's dig notes",
           "description": "Each dig has shared notes, so separate turns can pick up where an earlier one left off. Orion can read them or add a line.",

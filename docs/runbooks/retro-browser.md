@@ -732,6 +732,14 @@ thumbs and replies to lines count toward how much the line family is worth.
   open, the watch is not off, and a look note was stored in the last 3 minutes. Check it:
   `docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select generated_at, c->>'eligible', c->>'reason', c->>'value' from substrate_attention_broadcast_log, jsonb_array_elements((projection_json->'frame'->'debug'->'world_first'->'candidates')::jsonb) c where c->>'source_id' = 'world:play' order by generated_at desc limit 10"`.
   Off: `ATTENTION_WORLD_PLAY_ENABLED=false` in orion-substrate-runtime and orion-attention-runtime.
+  **Hunger (2026-11-25).** While Orion watches, play does not need to be busy for its own week. Its pull grows with
+  the time since attention last went to play in this sitting, `1 - exp(-t / 90 s)`: 0.67 after 100 s, 0.91 after
+  one broadcast tick (about 218 s), 0.99 after 7 minutes. A win resets it to 0. So a short sitting gets a turn, and a
+  long one shares attention instead of holding it. Juniper's chat still wins. A watched tick reads
+  `watching; hunger 0.91 (220s without attention this sitting)`; the candidate's `hunger` and `hunger_unfed_sec`
+  are in the same trace. The pull's clock is kept in memory by each contest, so after a restart it counts from
+  the sitting's first input. Off (back to the top-tenth rule): `ATTENTION_WORLD_PLAY_HUNGER_ENABLED=false` in both
+  services.
 - **Line pairing.** A line said while `world:play` holds the workspace carries that loop
   (`grammar_acts.workspace_ref`) and writes a non-final `acted` verdict on it.
 - **Prime's wakes.** Thought acts whose close note names `retro_sitting:<id>`: at most 2 per sitting.

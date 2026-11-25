@@ -8,17 +8,17 @@ Arms only on proof that Hub stored a message, and learns which thread it went to
 - `orion_session_thread.py send|reply` whose output holds Hub's receipt naming the thread, or
 - `gh pr create` whose output holds the PR's URL, when Hub shows a thread for that PR updated in the
   last minute (post_tool_pr_spec_to_orion.py sends the spec; it runs beside this hook, so this hook
-  looks for up to ARM_LOOKUP_S). A PR without a spec, or Hub down, never arms.
+  looks for up to ARM_LOOKUP_S). A PR Hub got nothing for, or Hub down, never arms.
 Any other Bash call exits at once. One waiter per thread (a lock file); a second one exits.
 
-Armed, it reads the thread every POLL seconds for at most WAIT seconds (Orion reads at an hourly
+Armed, it reads the thread every POLL seconds for at most WAIT seconds (Orion reads at a
 round-up; a round may run 3 h before Hub fails it). It waits for an Orion turn newer than the
 thread's newest turn at arming time, so an older answer never wakes or ends it. That turn:
 - has questions: the hook claims it (marks it delivered; Hub marks a turn once, so the prompt hook
   never shows it too), writes it with the circle-back steps to stderr and exits 2. Claude Code then
   wakes the session with that text. Already claimed by the prompt hook: exit 0.
 - says "no questions", or is a closing note: exit 0, left for the prompt hook to show.
-A thread whose one round of questions is already used (Orion asked on it before; the arming message is
+A thread whose rounds of questions are all used (Orion asked on it before; the arming message is
 answers) is not waited on: Orion writes only a closing note there, never questions. Exit 0 at once.
 Hub down: keeps trying. Never exits 2 for an error.
 
@@ -123,7 +123,7 @@ def main() -> int:
         if since_seq is None:
             if lib.answer_phase(turns):
                 lib.log(f"answer_wait answer_phase thread={thread_id}")
-                return 0   # the one round of questions is used: nothing will come back to answer
+                return 0   # every round of questions is used: nothing will come back to answer
             since_seq = max((int(t.get("seq") or 0) for t in turns), default=0)
         # A re-queued uncut reply is not an answer: Hub reads the thread again next hour, so keep waiting.
         answers = [t for t in turns if t.get("speaker") == "orion" and int(t.get("seq") or 0) > since_seq
@@ -142,7 +142,7 @@ def main() -> int:
                 lib.log(f"answer_wait already_shown thread={thread_id}")
                 return 0
             lib.log(f"answer_wait woke thread={thread_id}")
-            sys.stderr.write("Orion answered (hourly round-up). " + lib.pending_text(claimed, woke=True))
+            sys.stderr.write("Orion answered (session-thread round-up). " + lib.pending_text(claimed, woke=True))
             sys.stderr.flush()
             return 2
         time.sleep(poll)

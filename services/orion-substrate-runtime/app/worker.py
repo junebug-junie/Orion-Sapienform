@@ -3829,6 +3829,15 @@ class BiometricsSubstrateWorker:
                 sustain=bool(getattr(s, "attention_sustained_body_enabled", True)),
             )
             projection = broadcast_projection_from_frame(frame)
+            if world_first:
+                # Hunger resets only when attention actually went to play: the SELECTED loop carries
+                # world:play (the ranking's top can still lose to a goal loop, a terminal verdict or "none").
+                attended_refs = list(getattr(projection, "attended_node_ids", None) or [])
+                self._note_world_play_winner(
+                    "world:play" if "world:play" in attended_refs else None, tick_now,
+                    sitting_id=next((r.removeprefix("retro_sitting:") for r in attended_refs
+                                     if str(r).startswith("retro_sitting:")), None),
+                )
             try:
                 from orion.substrate.street_attention import STREET_NODE_ID
 
@@ -3932,9 +3941,10 @@ class BiometricsSubstrateWorker:
     # world:play (game company patch 4): the sitting table, the open sitting's watch and newest note, read
     # at most every 30 s (the field of play moves on minutes; a note goes stale after 180 s).
     _WORLD_PLAY_CACHE_SEC = 30.0
+    _WORLD_PLAY_LOG_TAG = "substrate"
 
     def _world_play_candidate(self, now: datetime) -> Any:
-        from orion.attention.world_first import play_candidate
+        from orion.attention.world_first import open_play_sitting, play_candidate
 
         cache_at = getattr(self, "_world_play_cache_at", None)
         cached = getattr(self, "_world_play_cache", None)
@@ -3947,7 +3957,37 @@ class BiometricsSubstrateWorker:
                 logger.warning("substrate_world_first_play_read_failed err=%s", type(exc).__name__)
                 sittings, watch, absent = None, None, f"retro_sitting unreadable ({type(exc).__name__})"
             self._world_play_cache, self._world_play_cache_at = (sittings, watch, absent), now
-        return play_candidate(sittings, now=now, watch=watch, absent_reason=absent)
+        # Hunger (2026-11-25): this contest's own clock of when attention last went to play, per sitting.
+        hunger = bool(getattr(self._settings, "attention_world_play_hunger_enabled", True))
+        clock = self._world_play_hunger_clock()
+        sitting = open_play_sitting(sittings, now=now) if sittings else None
+        cand = play_candidate(
+            sittings, now=now, watch=watch, absent_reason=absent, hunger=hunger,
+            last_won_at=clock.last_won_at(sitting.sitting_id if sitting is not None else None),
+        )
+        self._world_play_last_candidate = cand
+        return cand
+
+    def _world_play_hunger_clock(self):
+        from orion.attention.world_first import PlayHungerClock
+
+        clock = getattr(self, "_world_play_clock", None)
+        if clock is None:
+            clock = self._world_play_clock = PlayHungerClock()
+        return clock
+
+    def _note_world_play_winner(
+        self, winner_source_id: str | None, now: datetime, *, sitting_id: str | None = None
+    ) -> None:
+        """A play win resets that sitting's hunger in this contest. Never raises."""
+        try:
+            from orion.attention.world_first import play_sitting_id
+
+            sid = sitting_id or play_sitting_id(getattr(self, "_world_play_last_candidate", None))
+            if self._world_play_hunger_clock().note_winner(winner_source_id, sid, now=now):
+                logger.debug("%s_world_play_won sitting=%s", self._WORLD_PLAY_LOG_TAG, sid)
+        except Exception:  # noqa: BLE001 -- a hunger record must not cost the tick
+            logger.debug("world_play_winner_note_failed", exc_info=True)
 
     # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
     # per-node window seeded once from Postgres, so the 7-day percentiles do

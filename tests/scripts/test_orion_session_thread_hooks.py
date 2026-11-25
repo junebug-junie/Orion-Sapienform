@@ -1,8 +1,10 @@
 """Session threads, the coding-session side: the two Claude Code hooks and the CLI, run as real
 subprocesses against a local stand-in for Hub and a stand-in `gh`.
 
-- post_tool_pr_spec_to_orion.py: fires only on `gh pr create`, sends the PR's spec text, prints Hub's
-  receipt; a PR without a spec is ignored; Hub down is silent and exit 0.
+- post_tool_pr_spec_to_orion.py: fires only on `gh pr create`, sends the PR's spec text and code diff,
+  prints Hub's receipt; a PR with nothing readable is ignored; Hub down is silent and exit 0.
+- pr_draft_gate.py: `gh pr create` without --draft is refused; `gh pr ready` waits for Orion's first
+  review to be answered.
 - session_pending_orion_questions.py: prints Orion's undelivered questions with how to answer, marks
   them delivered; silent when nothing is pending or Hub is down.
 """
@@ -24,6 +26,7 @@ SEND_HOOK = ROOT / "scripts" / "hooks" / "post_tool_pr_spec_to_orion.py"
 PENDING_HOOK = ROOT / "scripts" / "hooks" / "session_pending_orion_questions.py"
 CLI = ROOT / "scripts" / "orion_session_thread.py"
 WAIT_HOOK = ROOT / "scripts" / "hooks" / "wait_for_orion_answer.py"
+GATE_HOOK = ROOT / "scripts" / "hooks" / "pr_draft_gate.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import orion_session_thread_lib as lib  # noqa: E402
@@ -59,7 +62,10 @@ class Hub:
             def do_GET(self):
                 hub.calls.append(("GET", self.path, None))
                 if self.path.startswith("/api/session-threads?"):
-                    self._send({"threads": [t["thread"] for t in hub.threads.values()]})
+                    from urllib.parse import parse_qs, urlparse
+                    pr = parse_qs(urlparse(self.path).query).get("pr")
+                    self._send({"threads": [t["thread"] for t in hub.threads.values()
+                                            if not pr or str(t["thread"].get("pr_number")) == pr[0]]})
                 elif self.path.startswith("/api/session-threads/") and not self.path.startswith("/api/session-threads/pending"):
                     t = hub.threads[self.path.rsplit("/", 1)[1]]
                     hub.views += 1
@@ -109,9 +115,12 @@ def world(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     gh = bindir / "gh"
-    gh.write_text("#!/bin/sh\necho \"$@\" >> \"$GH_LOG\"\n[ -f \"$GH_PR_JSON\" ] || exit 1\ncat \"$GH_PR_JSON\"\n")
+    gh.write_text("#!/bin/sh\necho \"$@\" >> \"$GH_LOG\"\n"
+                  "if [ \"$1 $2\" = \"pr diff\" ]; then [ -f \"$GH_DIFF\" ] || exit 1; cat \"$GH_DIFF\"; exit 0; fi\n"
+                  "[ -f \"$GH_PR_JSON\" ] || exit 1\ncat \"$GH_PR_JSON\"\n")
     gh.chmod(0o755)
     return {"repo": repo, "bindir": bindir, "pr_json": tmp_path / "pr.json", "gh_log": tmp_path / "gh.log",
+            "diff": tmp_path / "pr.diff",
             "board": tmp_path / "board.jsonl", "log": tmp_path / "hooks.log"}
 
 
@@ -124,7 +133,7 @@ def _pr(world, files=(SPEC_PATH, "services/orion-hub/scripts/x.py")):
 def _run(script, world, hub_url, payload=None, args=(), extra_env=None):
     env = {**os.environ, "ORION_HUB_URL": hub_url, "ORION_AGENT_BOARD_PATH": str(world["board"]),
            "ORION_SESSION_THREADS_LOG": str(world["log"]), "GH_PR_JSON": str(world["pr_json"]),
-           "GH_LOG": str(world["gh_log"]), "PATH": f"{world['bindir']}:{os.environ['PATH']}"}
+           "GH_LOG": str(world["gh_log"]), "GH_DIFF": str(world["diff"]), "PATH": f"{world['bindir']}:{os.environ['PATH']}"}
     env.pop("CLAUDE_CODE_SESSION_ID", None)
     env.pop("ORION_SESSION_THREADS_HOOKS", None)
     env.update(extra_env or {})
@@ -167,15 +176,27 @@ def test_other_commands_do_not_match(command):
 # --- the sender hook ------------------------------------------------------------------------------
 
 
-def test_pr_create_with_a_spec_sends_the_spec_text_and_prints_hubs_receipt(world, hub):
+DIFF = ("diff --git a/docs/superpowers/specs/2026-11-15-thing-design.md b/docs/superpowers/specs/2026-11-15-thing-design.md\n"
+        "+# Thing design\n"
+        "diff --git a/services/orion-hub/scripts/x.py b/services/orion-hub/scripts/x.py\n+x = 1\n"
+        "diff --git a/services/orion-hub/package-lock.json b/services/orion-hub/package-lock.json\n+{}\n")
+
+
+def test_pr_create_with_a_spec_sends_the_spec_text_and_the_code_diff_and_prints_hubs_receipt(world, hub):
     _pr(world)
-    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("git push && gh pr create --fill"))
+    world["diff"].write_text(DIFF)
+    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("git push && gh pr create --fill --draft"))
     assert proc.returncode == 0, proc.stderr
     [msg] = hub.posts()
     assert msg["session_id"] == "sess-A" and msg["pr_number"] == 3456 and msg["branch"] == "feat/thing"
     assert msg["pr_url"] == "https://github.com/o/r/pull/3456" and msg["title"] == "feat: thing"
     assert msg["worktree"] == str(world["repo"]) and msg["session_name"] == "wt"
-    assert msg["spec"] == [{"path": SPEC_PATH, "text": SPEC_TEXT}]   # the text itself, not a path Orion cannot read
+    diff, spec = msg["spec"]   # the diff first: Hub's spec-file cap can never drop it
+    assert spec == {"path": SPEC_PATH, "text": SPEC_TEXT}   # the text itself, not a path Orion cannot read
+    # The diff: the code file only. The spec is attached whole above; the lock file is named, not shown.
+    assert diff["kind"] == "diff" and diff["path"] == "1 file(s)" and "+x = 1" in diff["text"]
+    assert "Thing design" not in diff["text"] and "+{}" not in diff["text"] and "package-lock.json" in diff["text"]
+    assert "1 design spec file(s) and a code diff of 1 file(s)" in msg["body"]
     out = json.loads(proc.stdout)["hookSpecificOutput"]
     assert out["hookEventName"] == "PostToolUse"
     assert out["additionalContext"].startswith("Hub receipt:") and "session thread abc123" in out["additionalContext"]
@@ -183,9 +204,40 @@ def test_pr_create_with_a_spec_sends_the_spec_text_and_prints_hubs_receipt(world
     assert "pr view 3456" in world["gh_log"].read_text()   # the PR number came from the tool's own output
 
 
-def test_a_pr_without_a_spec_and_a_command_that_is_not_pr_create_send_nothing(world, hub):
+def test_a_code_only_pr_sends_its_diff(world, hub):
+    _pr(world, files=("services/orion-hub/scripts/x.py",))
+    world["diff"].write_text(DIFF)
+    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("gh pr create --fill --draft"))
+    assert proc.returncode == 0, proc.stderr
+    [msg] = hub.posts()
+    [diff] = msg["spec"]
+    assert diff["kind"] == "diff" and "+x = 1" in diff["text"] and "a code diff of 1 file(s)" in msg["body"]
+    assert "Hub receipt:" in json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_pr_whose_diff_gh_cannot_give_still_gets_a_thread_naming_its_files(world, hub):
+    # Without a thread the draft gate could never let the PR leave draft (review finding 4).
     _pr(world, files=("services/orion-hub/scripts/x.py", "docs/other/notes.md"))
-    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("gh pr create --fill"))
+    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("gh pr create --fill --draft"))   # gh pr diff fails
+    assert proc.returncode == 0, proc.stderr
+    [msg] = hub.posts()
+    assert msg["spec"] == [] and "diff could not be attached" in msg["body"]
+    assert "services/orion-hub/scripts/x.py" in msg["body"] and "gh pr diff 3456" in msg["body"]
+
+
+def test_a_pr_create_on_a_branch_that_already_has_a_pr_sends_nothing(world, hub):
+    _pr(world)
+    world["diff"].write_text(DIFF)
+    payload = _bash("gh pr create --fill --draft",
+                    response="a pull request for branch \"feat/thing\" into branch \"main\" already exists:\n"
+                             "https://github.com/o/r/pull/3456\n")
+    proc, _ = _run(SEND_HOOK, world, hub.url, payload)
+    assert proc.returncode == 0 and proc.stdout == "" and hub.posts() == []
+
+
+def test_a_pr_with_nothing_to_send_and_a_command_that_is_not_pr_create_send_nothing(world, hub):
+    _pr(world, files=())
+    proc, _ = _run(SEND_HOOK, world, hub.url, _bash("gh pr create --fill --draft"))
     assert proc.returncode == 0 and proc.stdout == "" and hub.calls == []
     _pr(world)
     world["gh_log"].unlink()
@@ -264,16 +316,17 @@ def test_cli_send_reply_and_pending_use_the_same_calls(world, hub):
     proc, _ = _run(CLI, world, hub.url, args=["send", "--note", "A note with no PR."])
     assert proc.returncode == 0, proc.stderr
     sent, reply, note = hub.posts()
-    assert sent["session_id"] == "sess-CLI" and sent["body"] == "Please look at section 3." and sent["spec"][0]["text"] == SPEC_TEXT
+    assert sent["session_id"] == "sess-CLI" and sent["body"].startswith("Please look at section 3.") and sent["spec"][0]["text"] == SPEC_TEXT
+    assert "diff could not be attached" in sent["body"]   # the stand-in gh gives no diff here
     assert reply["thread_id"] == "abc123" and reply["body"] == "Hourly is Juniper's rule." and reply["session_id"] == "manual"
     assert "pr_number" not in note and note["title"] == "A note with no PR."
     hub.pending = [{"turn_id": "u1", "thread_id": "abc123", "title": "feat: thing", "body": "1. Why?", "meta": {}}]
     proc, _ = _run(CLI, world, hub.url, args=["pending"])
     assert "1. Why?" in proc.stdout and hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["u1"]}]
-    # No spec and no note: nothing is sent, and it says why. Hub down: one plain line, exit 1.
-    _pr(world, files=("x.py",))
+    # A PR with no files at all: nothing is sent, and it says why. Hub down: one plain line, exit 1.
+    _pr(world, files=())
     proc, _ = _run(CLI, world, hub.url, args=["send", "--pr", "3456"])
-    assert proc.returncode == 2 and "no spec file" in proc.stderr and len(hub.posts()) == 3
+    assert proc.returncode == 2 and "no spec file and no code diff" in proc.stderr and len(hub.posts()) == 3
     proc, _ = _run(CLI, world, "http://127.0.0.1:9", args=["send", "--note", "x"])
     assert proc.returncode == 1 and "Could not reach Hub" in proc.stderr
 
@@ -303,6 +356,7 @@ def test_claude_settings_wire_both_hooks():
             if "wait_for_orion_answer.py" in h["command"]]
     # Background, wakes the session on exit 2, and outlives its own wait window.
     assert len(wait) == 1 and wait[0]["asyncRewake"] is True and wait[0]["timeout"] > 14400
+    assert any("pr_draft_gate.py" in c for c in commands("PreToolUse", "Bash")) and GATE_HOOK.is_file()
 
 
 # --- the circle-back waiter -----------------------------------------------------------------------
@@ -455,7 +509,7 @@ def test_cli_reply_from_a_file_also_posts_on_the_pr(world, hub, tmp_path):
     assert "Retry only the comment: gh pr comment 3456" in proc.stderr
 
 
-# --- one round of questions per thread ------------------------------------------------------------
+# --- rounds of questions per thread ---------------------------------------------------------
 
 
 def test_a_closing_note_is_shown_without_reply_steps(world, hub):
@@ -478,8 +532,9 @@ def test_a_closing_note_is_shown_without_reply_steps(world, hub):
 
 
 def test_the_waiter_does_not_wait_on_a_thread_whose_round_is_used(world, hub):
-    # Orion asked on this thread already (seq 2): the reply is answers, nothing will come back to answer.
-    _thread(hub, turns=[{**_answer("o2", 2), "roundup_id": "r1"}])
+    # Orion used all 3 rounds on this thread already: the reply is answers, nothing will come back to answer.
+    _thread(hub, turns=[{**_answer("o2", 2), "roundup_id": "r1"}, {**_answer("o3", 3), "roundup_id": "r2"},
+                        {**_answer("o4", 4), "roundup_id": "r3"}])
     hub.on_view = _answer_later({**_answer("o9", 9, body="NO QUESTIONS"), "meta": {"closing_note": True}})
     payload = _bash("python3 scripts/orion_session_thread.py reply --thread abc123def --body x",
                     response="Hub receipt: your message to Orion is held as session thread abc123def. ...")
@@ -489,8 +544,18 @@ def test_the_waiter_does_not_wait_on_a_thread_whose_round_is_used(world, hub):
     assert "answer_wait answer_phase thread=abc123def" in world["log"].read_text()
 
 
+def test_the_waiter_still_waits_while_orion_has_rounds_left(world, hub):
+    # Orion asked once (round 1 of 3): the reply may get a second round of questions.
+    _thread(hub, turns=[{**_answer("o2", 2), "roundup_id": "r1"}])
+    hub.on_view = _answer_later(_answer(body="1. Still unclear: who pays?"))
+    payload = _bash("python3 scripts/orion_session_thread.py reply --thread abc123def --body x",
+                    response="Hub receipt: your message to Orion is held as session thread abc123def. ...")
+    proc, _ = _wait(world, hub, payload)
+    assert proc.returncode == 2 and "1. Still unclear: who pays?" in proc.stderr
+
+
 def test_the_waiter_still_waits_after_a_no_questions_turn(world, hub):
-    # NO QUESTIONS used no round: a new message may still get Orion's one round of questions.
+    # NO QUESTIONS used no round: a new message may still get Orion's questions.
     _thread(hub, turns=[{**_answer("o2", 2, no_questions=True), "roundup_id": "r1"}])
     hub.on_view = _answer_later(_answer())
     payload = _bash("python3 scripts/orion_session_thread.py reply --thread abc123def --body x",
@@ -503,7 +568,7 @@ def test_the_receipt_line_says_when_the_round_is_used():
     base = {"thread": {"thread_id": "abc"}, "next_roundup_at": "2026-11-15T11:00:00+00:00", "roundup_enabled": True}
     assert "Orion's questions will come back" in lib.receipt_line(base)
     used = lib.receipt_line({**base, "answer_phase": True})
-    assert "one round of questions" in used and "Nothing will come back for you to answer" in used
+    assert "every round of questions" in used and "Nothing will come back for you to answer" in used
     assert "Orion's questions will come back" not in used
     reading = lib.receipt_line({**base, "thread": {"thread_id": "abc", "status": "reading"}})
     assert "reading this thread's earlier message now" in reading and "Orion's questions will come back" not in reading
@@ -517,3 +582,147 @@ def test_a_question_handed_to_an_earlier_session_says_so_and_still_asks_for_a_re
     assert "An earlier session was shown these questions and no session has replied yet." in text
     assert "reply --thread abc123 --pr 7" in text and lib.has_questions(row)
     assert "earlier session" not in lib.pending_text([{**row, "delivered_at": None}])
+
+
+# --- the draft gate -------------------------------------------------------------------------------
+
+sys.path.insert(0, str(ROOT / "scripts" / "hooks"))
+import pr_draft_gate as gate  # noqa: E402
+
+
+def _pre(command):
+    return {"session_id": "sess-A", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": command}}
+
+
+def _denied(proc):
+    out = json.loads(proc.stdout)["hookSpecificOutput"] if proc.stdout else {}
+    return out.get("permissionDecision") == "deny", out.get("permissionDecisionReason", "")
+
+
+@pytest.mark.parametrize("command,refused", [
+    ("gh pr create --title x --body y", True),
+    ("git push -u origin feat/x && gh pr create --fill", True),
+    ("rtk gh pr create --fill", True),
+    ("gh pr create --draft=false --fill", True),
+    ("gh pr create --fill --draft", False),
+    ("gh pr create -d --fill", False),
+    ("gh pr create --title x --body \"$(cat <<'EOF'\n## Summary\n\nwords\nEOF\n)\" --draft", False),
+    ("gh pr create --help", False),
+    ("echo 'gh pr create'", False),
+    ("gh pr view 12", False),
+    # Text in a body, a title or a heredoc is never a flag (review finding 2).
+    ("gh pr create --title x --body \"use --help to see\"", True),
+    ("gh pr create --title \"fix -d flag\" --body y", True),
+    ("gh pr create --title x --body \"$(cat <<'EOF'\nfoo -d bar --draft\nEOF\n)\"", True),
+    ("gh pr create -t x -b y && git log -d", True),
+    ("gh pr create -t x -b y; echo --draft", True),
+    ("gh -R o/r pr create --fill", True),
+    ("/usr/bin/gh pr create --fill", True),
+    ("(gh pr create --fill)", True),
+    ("git push &&\ngh pr create --fill", True),
+])
+def test_pull_requests_open_as_drafts(command, refused):
+    assert gate.undrafted_create(command) is refused
+
+
+@pytest.mark.parametrize("command,ready", [
+    # A heredoc or a quoted message that mentions gh pr ready is text, not a command (review finding 1).
+    ("gh pr create --draft --title x --body \"$(cat <<'EOF'\nThen run:\ngh pr ready <n>\nEOF\n)\"", []),
+    ("git commit -m \"$(cat <<'EOF'\ngh pr ready is gated\nEOF\n)\"", []),
+    ("git commit -m 'gh pr ready 12 later'", []),
+    ("gh pr ready 12", ["12"]),
+    ("gh -R o/r pr ready 12", ["12"]),
+    ("(gh pr ready 12)", ["12"]),
+    ("cd /wt && rtk gh pr ready", [""]),
+])
+def test_only_real_gh_pr_ready_commands_are_gated(command, ready):
+    assert [gate.ready_target(c["args"]) for c in gate.gh_pr_commands(command) if c["verb"] == "ready"] == ready
+
+
+def test_the_override_is_a_leading_env_assignment_only_and_cd_and_repo_are_read():
+    [c] = gate.gh_pr_commands("ORION_ALLOW_PR_READY=1 gh pr ready 12")
+    assert c["env"] == {"ORION_ALLOW_PR_READY": "1"}
+    [c] = gate.gh_pr_commands("gh pr ready 12 # ORION_ALLOW_PR_READY=1")
+    assert c["env"] == {}
+    [c] = gate.gh_pr_commands("cd /wt/a && gh -R o/r pr ready 12")
+    assert c["cd"] == "/wt/a" and c["repo"] == "o/r"
+
+
+def test_the_diff_keeps_files_whose_path_it_cannot_read_and_follows_renames():
+    diff = ("diff --git a/uv.lock b/uv.lock\n--- a/uv.lock\n+++ b/uv.lock\n+lock\n"
+            "diff --git a/my notes.py b/my notes.py\n--- a/my notes.py\n+++ b/my notes.py\n+spaced = 1\n"
+            "diff --git \"a/caf\\303\\251.py\" \"b/caf\\303\\251.py\"\n+quoted = 1\n"
+            "diff --git a/old.py b/new.py\nrename from old.py\nrename to new.py\n"
+            "diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n-x\n")
+    kept, skipped = lib.filter_diff(diff)
+    assert skipped == ["uv.lock"] and "+spaced = 1" in kept and "+quoted = 1" in kept
+    assert "rename to new.py" in kept and "-x" in kept and "+lock" not in kept
+    assert lib.diff_path("diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n") == "gone.py"
+
+
+def _orion_turn(seq, *, no_questions=False, closing=False, requeued=False):
+    meta = {k: True for k, on in (("no_questions", no_questions), ("closing_note", closing), ("requeued", requeued)) if on}
+    return {"speaker": "orion", "seq": seq, "meta": meta}
+
+
+def _session_turn(seq):
+    return {"speaker": "session", "seq": seq, "meta": {}}
+
+
+def test_ready_waits_for_the_answer_to_orions_first_review():
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 11, 25, 12, tzinfo=timezone.utc)
+    fresh = {"thread_id": "t1", "status": "held", "created_at": (now - timedelta(hours=1)).isoformat()}
+    assert gate.ready_verdict(None, [], now=now)[0] is False
+    # Not reviewed yet, fresh: refused. After the wait, or when Hub gave up: allowed.
+    assert gate.ready_verdict(fresh, [_session_turn(1)], now=now)[0] is False
+    old = {**fresh, "created_at": (now - timedelta(hours=25)).isoformat()}
+    assert gate.ready_verdict(old, [_session_turn(1)], now=now)[0] is True
+    assert gate.ready_verdict({**fresh, "status": "failed"}, [_session_turn(1)], now=now)[0] is True
+    # A requeued uncut reply is not a review.
+    assert gate.ready_verdict(fresh, [_session_turn(1), _orion_turn(3, requeued=True)], now=now)[0] is False
+    # Orion asked: refused until a session wrote after Orion's FIRST question turn.
+    asked = [_session_turn(1), _orion_turn(3)]
+    assert gate.ready_verdict(fresh, asked, now=now)[0] is False
+    assert gate.ready_verdict(old, asked, now=now)[0] is False   # the wait never excuses unanswered questions
+    assert gate.ready_verdict(fresh, [*asked, _session_turn(5)], now=now)[0] is True
+    # A re-send of the PR (spec/diff attached again) is not an answer (review finding 7).
+    resend = {"speaker": "session", "seq": 5, "meta": {"spec": [{"path": "1 file(s)", "kind": "diff"}]}}
+    assert gate.ready_verdict(fresh, [*asked, resend], now=now)[0] is False
+    # NO QUESTIONS first: nothing to answer.
+    assert gate.ready_verdict(fresh, [_session_turn(1), _orion_turn(3, no_questions=True)], now=now)[0] is True
+
+
+def test_the_gate_hook_refuses_ready_until_orion_was_answered_and_takes_the_override(world, hub):
+    _pr(world)
+    gate_env = {"ORION_PR_READY_WAIT_H": "24"}
+    # An undrafted create is refused.
+    proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr create --fill"), extra_env=gate_env)
+    denied, why = _denied(proc)
+    assert proc.returncode == 0 and denied and "--draft" in why
+    # No thread for the PR: refused, with the send command.
+    proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr ready 3456"), extra_env=gate_env)
+    denied, why = _denied(proc)
+    assert denied and "orion_session_thread.py send --pr 3456" in why
+    # Orion asked, nobody answered: refused. Answered: allowed (no output).
+    thread = _thread(hub, turns=[{**_answer("o2", 2), "roundup_id": "r1"}])
+    thread["thread"]["created_at"] = _now_iso()
+    proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr ready 3456"), extra_env=gate_env)
+    denied, why = _denied(proc)
+    assert denied and "no session has answered" in why and "ORION_ALLOW_PR_READY=1" in why
+    proc, _ = _run(GATE_HOOK, world, hub.url, _pre("ORION_ALLOW_PR_READY=1 gh pr ready 3456"), extra_env=gate_env)
+    assert proc.returncode == 0 and proc.stdout == ""
+    thread["turns"].append({"turn_id": "s3", "seq": 3, "speaker": "session", "meta": {}})
+    proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr ready"), extra_env=gate_env)   # current branch's PR
+    assert proc.returncode == 0 and proc.stdout == ""
+    # --undo (back to draft) and other commands pass untouched; Hub down refuses ready.
+    for command in ("gh pr ready 3456 --undo", "git status", "gh pr view 3456"):
+        proc, _ = _run(GATE_HOOK, world, hub.url, _pre(command), extra_env=gate_env)
+        assert proc.stdout == "", command
+    proc, _ = _run(GATE_HOOK, world, "http://127.0.0.1:9", _pre("gh pr ready 3456"), extra_env=gate_env)
+    denied, why = _denied(proc)
+    assert denied and "Hub did not answer" in why
+    # The kill switch.
+    proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr create --fill"), extra_env={"ORION_PR_DRAFT_GATE": "0"})
+    assert proc.stdout == ""

@@ -217,3 +217,54 @@ def test_the_play_flag_ships_on(monkeypatch) -> None:
     settings_mod._settings = None
     assert settings_mod.get_settings().attention_world_play_enabled is True
     settings_mod._settings = None
+
+
+def test_a_broadcast_play_win_resets_its_hunger_for_the_next_tick(monkeypatch) -> None:
+    """Hunger (2026-11-25): the broadcast records its own play win, so the next tick's pull starts from 0."""
+    w = _worker(monkeypatch, world_first=True, play=True)
+    w._store.fetch_chat_turn_times.return_value = []
+    w._store.fetch_accepted_reading_link_events.return_value = []
+    w._store.fetch_play_inputs.side_effect = lambda now: _play_inputs(now)
+    proj = _tick(w)
+    assert proj.attended_node_ids[:2] == ["world:play", "retro_sitting:S1"]
+    won_at = w._world_play_hunger_clock().last_won_at("S1")
+    assert won_at is not None
+    [play] = [c for c in w._world_first_external_candidates(won_at) if c.source_id == "world:play"]
+    assert play.hunger == 0.0 and play.hunger_unfed_sec == 0.0
+
+
+def test_the_play_hunger_flag_ships_on_and_off_restores_the_band_rule(monkeypatch) -> None:
+    monkeypatch.delenv("ATTENTION_WORLD_PLAY_HUNGER_ENABLED", raising=False)
+    w = _worker(monkeypatch, world_first=True, play=True)
+    assert w._settings.attention_world_play_hunger_enabled is True
+    monkeypatch.setenv("ATTENTION_WORLD_PLAY_HUNGER_ENABLED", "false")
+    w = _worker(monkeypatch, world_first=True, play=True)
+    assert w._settings.attention_world_play_hunger_enabled is False
+    w._store.fetch_chat_turn_times.return_value = []
+    w._store.fetch_accepted_reading_link_events.return_value = []
+    w._store.fetch_play_inputs.side_effect = lambda now: _play_inputs(now)
+    [play] = [c for c in w._world_first_external_candidates(datetime.now(timezone.utc)) if c.source_id == "world:play"]
+    assert play.hunger is None
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+
+
+def test_play_hunger_does_not_reset_when_the_selected_loop_is_not_play(monkeypatch) -> None:
+    """The ranking's top can still lose the broadcast's selection (a goal loop, a terminal verdict, "none"):
+    hunger resets only on what attention actually selected (``attended_node_ids``)."""
+    import orion.substrate.attention_broadcast as ab
+
+    real = ab.broadcast_projection_from_frame
+
+    def not_play(frame):
+        proj = real(frame)
+        return proj.model_copy(update={"attended_node_ids": ["node:concept.hot"]})
+
+    monkeypatch.setattr(ab, "broadcast_projection_from_frame", not_play)
+    w = _worker(monkeypatch, world_first=True, play=True)
+    w._store.fetch_chat_turn_times.return_value = []
+    w._store.fetch_accepted_reading_link_events.return_value = []
+    w._store.fetch_play_inputs.side_effect = lambda now: _play_inputs(now)
+    _tick(w)
+    assert w._world_play_hunger_clock().last_won_at("S1") is None

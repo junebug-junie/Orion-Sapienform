@@ -58,3 +58,12 @@ def test_every_schema_field_lands_on_a_column() -> None:
 def test_the_table_has_bounded_retention_by_default() -> None:
     assert "gpu_pool_events" in dict(GRAMMAR_RETENTION_TABLES)
     assert retention_days_for(Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[]))["gpu_pool_events"] == 30
+
+
+def test_retention_column_is_indexed_in_model_and_migration() -> None:
+    """#3763: retention filters on created_at; with only generated_at indexes it seq-scanned the
+    whole table every 60 s. The model (fresh DBs) and the migration (live DB) both carry it."""
+    indexed = {tuple(c.name for c in ix.columns) for ix in GpuPoolEventSQL.__table__.indexes}
+    assert ("created_at",) in indexed
+    sql = (REPO_ROOT / "services/orion-sql-db/manual_migration_gpu_pool_events_created_at_index.sql").read_text()
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gpu_pool_events_created ON gpu_pool_events (created_at)" in sql

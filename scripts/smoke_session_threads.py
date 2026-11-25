@@ -6,7 +6,7 @@
 
 Posts one small note thread, reads it back, and checks Hub's receipt: stored as speaker `hub`, says
 Orion has NOT read it, the thread is `held`, and no Orion turn exists yet. It writes ONE real note
-thread ("smoke test, no questions needed"), which Orion reads at the next hourly round-up; that
+thread ("smoke test, no questions needed"), which Orion reads at the next round-up (every 15 min); that
 round-up is the second half of the proof (rerun with --check THREAD_ID an hour later).
 
 The one-round rule (Orion asks questions on a thread once), live:

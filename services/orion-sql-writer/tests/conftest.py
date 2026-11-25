@@ -137,6 +137,9 @@ _DB_DEPENDENT_MODULES = {
     # 2026-11-24 (game company patch 4, a line's engagement grade): 10 ERRORS (KeyError on the URI) with no database
     # (every test errors on the fixture, measured in CI run 45357035850); runs in sql-writer-integration.
     "test_retro_line_engagement_integration",
+    # 2026-11-25 (act consequence bets Patch 1a, output_used): 11 ERRORS (KeyError on the URI) with no database,
+    # measured in CI run 45674711408; runs in sql-writer-integration.
+    "test_output_used_acts_integration",
 }
 
 _TESTS_DIR = Path(__file__).resolve().parent

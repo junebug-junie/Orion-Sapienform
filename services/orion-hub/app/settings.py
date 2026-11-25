@@ -277,8 +277,8 @@ class Settings(BaseSettings):
     # (HUB_CURIOSITY_INVESTIGATION_ENABLED + HUB_CURIOSITY_KICKOFF_VIA_CORTEX), like consults.
     # Design: docs/superpowers/specs/2026-11-15-session-threads-design.md.
     HUB_SESSION_ROUNDUP_ENABLED: bool = Field(default=True)
-    # One round-up per bucket of this many seconds (3600: on the hour, UTC).
-    HUB_SESSION_ROUNDUP_INTERVAL_SEC: float = Field(default=3600.0)
+    # One round-up per bucket of this many seconds (900: every 15 minutes, aligned to UTC).
+    HUB_SESSION_ROUNDUP_INTERVAL_SEC: float = Field(default=900.0)
     HUB_SESSION_ROUNDUP_TICK_SEC: float = Field(default=120.0)
     # Orion's round-up turn budget per attempt (s). durable-runs retries a failed attempt.
     HUB_SESSION_ROUNDUP_ORION_TIMEOUT_SEC: float = Field(default=1800.0)

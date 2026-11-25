@@ -28,6 +28,9 @@ COPY config/vision_topology.yaml /app/config/vision_topology.yaml
 COPY config/person_model/ /app/config/person_model/
 # Act energy cost (orion/grammar/act_energy_fill.py): card -> host/nvidia-smi index, and the heat fit.
 COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
+# orion/grammar/output_used.py matches an act to its own organ's experiences through the organ registry
+# (orion/integration/organs.py resolves it as /app/config/integration/organs.yaml).
+COPY config/integration/organs.yaml /app/config/integration/organs.yaml
 COPY config/physiology/heat_sensitivity.yaml /app/config/physiology/heat_sensitivity.yaml
 # Pinned per-host rest watts (orion/physiology/rest_body.py): act energy + hourly attribution.
 COPY config/physiology/rest_body.yaml /app/config/physiology/rest_body.yaml

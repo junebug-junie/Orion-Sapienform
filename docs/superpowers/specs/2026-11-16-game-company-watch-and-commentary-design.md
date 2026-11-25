@@ -376,6 +376,7 @@ The play becomes the third world candidate, `world:play`, beside `world:chat` an
 - **Eligible only while Orion is watching.** A candidate with no look behind it would win attention with nothing in it. When no stored note is under 3 minutes old, `world:play` is not eligible, and the reason says "not watching". When Orion has declined a sitting, Orion's attention stays where it was.
 - **Always present, never flickering.** Orion asked what protects the world zone from a candidate that comes and goes with each sitting. This one does not come and go. Between sittings it stays in the set and reads zero, which is its rest state, as `world:chat` does when Juniper is silent. It is absent only when its table cannot be read. It also needs its entry on the list of real measurements (`MEASUREMENT_VALUE_KINDS`, `world_first.py:179`, kind `count`), or the ranking treats it as no measurement at all.
 - **Yields to Juniper.** When `world:chat` is eligible, `world:play` yields, by the rule reading already follows (`world_first.py:594`).
+- **Hunger, not busyness (2026-11-25).** While Orion watches, play ranks by the time since attention last went to it in this sitting, not by the top tenth of its own week (a short sitting could never reach that). See "Patch 4 follow-up: hunger" at the end.
 - **Absent is not calm.** When the sitting table cannot be read, the candidate is absent with a reason. It never reads as "nobody plays".
 - **Attention and action meet.** One new pairing in `ACT_ANSWERS_WORKSPACE_REFS` (`orion/grammar/act_ledger.py:93`): a line answers `world:play`. When the play holds attention and Orion speaks, the act is stamped with that loop, and Orion writes an `acted` verdict on it. `acted` is not a final verdict. Speaking never retires the loop.
 
@@ -975,3 +976,109 @@ Choices made while building patch 4, each with its reason:
 
 - **A guest's thumb never replaces Juniper's** on the same line (`THUMB_SQL`): her thumb is her engagement grade, and the newest-thumb-wins rule of patch 3 would let a guest change it.
 - **The sitting's salience counts only sittings long enough to post a want** (2 minutes or more) in its 30-day baseline. A row is written at every sitting's open, so the table also holds the short ones.
+
+## Patch 4 follow-up: hunger (2026-11-25)
+
+**What changed, in plain words.** While Orion watches a sitting, play no longer has to be busier than its own week
+to win attention. It is eligible whenever Orion is watching (a sitting is open, the watch is not off, a look note is
+under 3 minutes old). Its pull grows with the time since attention last went to play in this sitting, and a win
+resets it. So a short sitting still gets a turn, and a long sitting shares attention instead of holding it.
+Juniper's chat still wins over play, exactly as before. Off: `ATTENTION_WORLD_PLAY_HUNGER_ENABLED=false` in
+orion-substrate-runtime and orion-attention-runtime (back to the top-tenth rule).
+
+**Why (verified live 2026-11-25).** Juniper played two SimEarth sittings of about 6 minutes
+(`8e19d15984d54a1e838bce4ca7222d3a`, `9e28a41e98ae4923a028076f0131394b`). Orion looked and spoke 2 lines, but play
+never won. Its watched ticks read `world usual for itself: not busy` at 9 play minutes against a week that holds
+30s; one tick yielded to chat. Since `world:play` went live (2026-11-24 09:57Z) it was eligible on 0 of 437
+broadcast ticks. A short sitting can never reach the top tenth of a week full of long sittings.
+
+**The rule** (`orion/attention/world_first.py`): `pull = 1 - exp(-t / 90 s)`, the appetite drive
+(`orion.physiology.appetite.intensity`, reused, not copied), t = seconds since this contest last gave play the win
+in this sitting, or since the sitting's first input. `judge_candidate` makes a candidate carrying `hunger` eligible
+and ranks it by the pull, on the same 0..1 scale the other sources rank on (their percentile of their own week):
+the appetite organ already compares hunger with an event's percentile this way (`want_intensity = max(hunger,
+salience)`). Each contest keeps its own clock (`PlayHungerClock`, in memory): the broadcast ticks about every
+218 s, the field contest about every 2 s. After a restart a sitting's pull counts from its first input, which costs
+at most one early win. The minutes count stays the candidate's reading (value, percentile, band are traced); it
+no longer decides. Two optional in-process fields carry it: `AttentionCandidateV1.hunger` and `hunger_unfed_sec`.
+
+**Replay** (`scripts/analysis/replay_world_play.py --rules note --taus 30,60,90,120,180,300,600 --field-frames ...`):
+2,767 broadcast ticks 2026-11-18 17:57Z .. 2026-11-25 17:53Z, 89 sittings (46 backfilled), 149 stored look notes,
+226 ticks with an open sitting. Tonight's two short sittings are in it. "Before" is the rule in force (the note
+rule, replayed over the whole week; live since its deploy it won 0). "No play" is the stored winner.
+
+| Rule | Play won | Reading lost | Curiosity seeds lost | Reading share in sittings (no play / after) | Curiosity-seed share in sittings (no play / after) | Short sittings won at least once (of 5 watched) | Wins per watched sitting, short / medium |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| before: top tenth + note | 19 | 0 | 5 | 4.4% / 4.4% | 27.9% / 25.7% | 2 | 0.4 / 3.4 |
+| hunger tau 30 s | 32 | 0 | 8 | 4.4% / 4.4% | 27.9% / 24.3% | 4 | 1.2 / 5.2 |
+| hunger tau 60 s | 32 | 0 | 8 | 4.4% / 4.4% | 27.9% / 24.3% | 4 | 1.2 / 5.2 |
+| **hunger tau 90 s (chosen)** | **30** | **0** | **6** | **4.4% / 4.4%** | **27.9% / 25.2%** | **4** | **1.2 / 4.8** |
+| hunger tau 120 s | 28 | 0 | 4 | 4.4% / 4.4% | 27.9% / 26.1% | 3 | 1.0 / 4.6 |
+| hunger tau 180 s | 26 | 0 | 2 | 4.4% / 4.4% | 27.9% / 27.0% | 3 | 1.0 / 4.2 |
+| hunger tau 600 s | 24 | 0 | 0 | 4.4% / 4.4% | 27.9% / 27.9% | 3 | 1.0 / 3.8 |
+
+- Short = under 15 minutes, medium = 15 minutes to 2 hours. No sitting of 2 hours or more falls in the 7 days the
+  broadcast log keeps, so the long column has no data. 16 short and 18 medium sittings had an open tick; 5 of each
+  were watched on at least one tick.
+- Every hunger win that displaced something took it from a no-winner tick (24 of them) or a body/camera node; none
+  from reading. All 18 chat ticks during watched sittings yielded, under every tau.
+- Tonight: under tau 90 s, sitting `8e19` wins its 06:49:25Z tick (t = 366 s, pull 0.983, against
+  `node:prediction.body_joint` at 0.970). Sitting `9e28` had one watched tick (07:01Z) and chat was eligible, so it
+  yields under every rule. That is the rule Juniper asked to keep.
+- **Field contest** (approximate, `--field-frames`: the frames table keeps 3 days and stores each target's strict
+  percentile, not its ranking key, so rivals are slightly understated). 5,164 watched frames; 1,794 yield to chat.
+  At tau 90 s play wins 2,445 (47%): 2,440 of them were no-winner frames, 5 took a curiosity-seeding winner (930 such
+  frames, 0.5%), 0 took reading. Tau barely moves this (2,441..2,448): in the field contest the pull mostly fills
+  silence.
+- **A consequence, stated plainly (review 2026-11-25).** Play is eligible whenever Orion watches, even at a pull
+  near 0. In the field contest (2 s ticks) a quiet watched frame is now won by play at a salience of about 0.02
+  (`1 - exp(-2 / 90)`, its own previous win reset it), with `suggested_observation_mode` "ignore", where it used to
+  be a no-winner frame (`world_first_no_winner`). The frame is not empty: it carries the sitting and its fresh look
+  note. Nothing downstream counts a field winner as an event: goal provenance follows native prediction-error node
+  targets only, and the self-model reads `dominant_targets` for display (and for a confidence fallback only when
+  the broadcast lane is stale). The same reset means that when a rival appears mid-sitting, play needs about 3.5
+  to 4.5 minutes to pass it in the field contest. Juniper chose "eligible whenever Orion is watching"; a minimum
+  pull (e.g. only beat silence when hungrier than the "high" band) is the lever if this reads wrong.
+- **Not a big share.** Reading loses nothing. Curiosity loses 6 of the week's broadcast seeds, one more than the rule
+  it replaces, out of 63 seeding ticks during sittings (27.9% -> 25.2% of those ticks) and about 900 seeding ticks
+  in the week (0.7%). The brief's stop condition does not trigger.
+
+**Why tau 90 s.** (1) It is the largest round tau that lets tonight's 6-minute sitting win: its second tick comes
+366 s in against a 0.970 rival, which needs tau below about 104 s. (2) 30 s and 60 s cost 2 more curiosity seeds and
+win no more short sittings. (3) It reads plainly at the broadcast's own rhythm: one median tick gap (218 s) without
+attention gives a pull of 0.91, level with a source at the top tenth of its week (the old bar); two gaps give 0.99.
+So after a win, play waits about one tick against a busy rival and wins back on the next.
+
+**Metric quality gate record: play's pull** (the changed value).
+
+1. **Provenance.** `pull = orion.physiology.appetite.intensity(t, 90)` in `orion/attention/world_first.py`
+   `play_hunger`. t = `now - max(retro_sitting.started_at, last win)`. `started_at` is the sitting's first mask
+   change, written by Hub's Retro gateway (`services/orion-hub/scripts/retro_sitting.py` `UPSERT_SQL`). The last
+   win is `PlayHungerClock.note_winner`, fed by what each contest actually selected: the broadcast reads the
+   selected loop's refs (`projection.attended_node_ids` holds `world:play` and its `retro_sitting:<id>`) in
+   `BiometricsSubstrateWorker._attention_broadcast_tick`, not the ranking's top, which can still lose to a goal
+   loop, a terminal verdict or "none"; the field contest reads `frame.dominant_targets[0]` in
+   `AttentionRuntimeWorker._tick` (ranking order, nothing reorders it).
+2. **Independence.** The pull is a function of the contest's own past decisions and the sitting's start, not of a
+   sensor. It shares `retro_sitting` with the minutes count, but the count no longer ranks (traced only). It shares
+   nothing with `world:chat` (Juniper's turns), `world:reading` (accepted links) or any body node. The one loop is
+   deliberate negative feedback: winning resets the pull, so it cannot run away.
+3. **Theory anchor.** Inhibition of return (Posner and Cohen, 1984; Klein, 2000): a location just attended is
+   suppressed for a while, then interest returns, which keeps attention moving across sources. The growth shape is
+   the drive the appetite organ already uses (body economy design, "Organ 3: Appetite": `1 - exp(-t / tau)`, the act
+   is the discharge and resets it).
+4. **Live data.** Pull at the 53 watched broadcast ticks of the replay: minimum 0.086, median 0.933, 15 at 0.99 or
+   above (each of those is a tick where chat held attention, so play yielded and its pull kept growing; correct).
+   Its rest point is a true 0 at a win, checked by the reset tests and by the replay's per-sitting counts (a medium
+   sitting wins 4.8 times, not every tick). It is not degenerate: it moves from 0 to near 1 and back with each win.
+   It cannot decay to a fake 0: it is recomputed from timestamps every tick, nothing multiplies it down.
+5. **Existing mechanism.** Reused `orion.physiology.appetite.intensity`. Searched the field contest, the broadcast,
+   the want ledger (`orion/physiology/appetite.py`, `choice.py`, `attention_pacing.py`), Prime's needs
+   (`orion/prime/hunger.py`: damped content needs for Prime's wake, not a ranking key) and the coalition path's
+   `habituation` (`orion/substrate/attention/salience.py`: repeat suppression for the pre-world-first loop score).
+   None keeps "time since a source last won" for a world-first candidate.
+6. **Reversibility.** Cheap. One flag per contest restores the band rule exactly; two optional in-process fields;
+   the clock is in memory; no table, no migration, no stored default.
+
+**Not done here.** Other world sources are unchanged: chat, reading and every node still rank on their own week.
+The field contest replay is approximate (see above).

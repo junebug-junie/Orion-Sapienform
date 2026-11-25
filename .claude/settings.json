@@ -104,6 +104,11 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/bare_graphify_update_guard.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/pr_draft_gate.py\"",
+            "timeout": 25
           }
         ]
       },

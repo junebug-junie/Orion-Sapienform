@@ -46,7 +46,7 @@ def pg():
         # Only the columns the rollup reads; the real tables are wider.
         conn.execute(text("CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, verb varchar, "
                           "object_ref text, test_before text, correlation_id varchar, opened_at timestamptz, "
-                          "closed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now())"))
+                          "closed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), signal_id varchar)"))
         conn.execute(text("CREATE TABLE reverie_visual_chain (chain_id text PRIMARY KEY, created_at timestamptz, "
                           "chain_json jsonb)"))
         conn.execute(text("CREATE TABLE chat_history_log (id varchar PRIMARY KEY, created_at timestamp)"))
@@ -67,10 +67,11 @@ def _exec(engine, sql, **kw):
         conn.execute(text(sql), kw)
 
 
-def act(engine, act_id, actor, *, opened, closed=None, object_ref=None, test_before=None, corr=None, verb="make"):
+def act(engine, act_id, actor, *, opened, closed=None, object_ref=None, test_before=None, corr=None, verb="make",
+        signal_id="artifact_produced"):
     _exec(engine, "INSERT INTO grammar_acts (act_id, actor, verb, object_ref, test_before, correlation_id, "
-                  "opened_at, closed_at) VALUES (:a, :ac, :v, :o, :t, :c, :op, :cl)",
-          a=act_id, ac=actor, v=verb, o=object_ref, t=test_before, c=corr, op=opened, cl=closed)
+                  "opened_at, closed_at, signal_id) VALUES (:a, :ac, :v, :o, :t, :c, :op, :cl, :s)",
+          a=act_id, ac=actor, v=verb, o=object_ref, t=test_before, c=corr, op=opened, cl=closed, s=signal_id)
 
 
 def arc(engine, arc_id, refs):
@@ -232,3 +233,18 @@ def test_close_before_open_painting_two_outputs_and_chain_time_guard(pg) -> None
     assert (r["two"].used, r["two"].evidence_ref, r["two"].link_path) == (True, "reverie_visual_chain:z", "painting")
     assert (r["old"].link_status, r["old"].used) == ("no_output", False)
     assert (r["pre"].link_status, r["pre"].used) == ("linked", False)
+
+
+def test_output_used_act_window_starts_at_open_not_at_its_graded_close(pg) -> None:
+    # An output_used act closes when its use is graded, up to a day after the open. Its use window must
+    # start at the open, the same window the act's grade reads (orion/grammar/output_used.py).
+    from app.act_downstream_use import USE_WINDOW_HOURS, run_one_rollup
+
+    opened = NOW - timedelta(hours=30)
+    act(pg, "ou", "hub.chat_reply", opened=opened, closed=opened + timedelta(hours=24), corr="t2", verb="say",
+        signal_id="output_used")
+    act(pg, "ap", "hub.chat_reply", opened=opened, closed=opened + timedelta(hours=24), corr="t3", verb="say")
+    run_one_rollup(pg)
+    got = rows(pg)
+    assert got["ou"].window_end == opened + timedelta(hours=USE_WINDOW_HOURS)
+    assert got["ap"].window_end == opened + timedelta(hours=24 + USE_WINDOW_HOURS)

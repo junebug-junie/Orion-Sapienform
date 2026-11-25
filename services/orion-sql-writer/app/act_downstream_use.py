@@ -102,8 +102,13 @@ WITH acts AS (
   -- last :recompute_hours of acts. An empty table backfills every act.
   SELECT a.act_id, a.actor, a.verb, a.object_ref, a.test_before, a.correlation_id,
          COALESCE(a.opened_at, a.created_at) AS started_at,
-         COALESCE(a.closed_at, a.opened_at, a.created_at) AS output_at,
-         COALESCE(a.closed_at, a.opened_at, a.created_at) + make_interval(hours => :use_window_hours) AS window_end
+         -- An output_used act closes when its use is graded (up to its horizon), not when its output exists:
+         -- its output dates from the open, so the use window matches the grade's (orion/grammar/output_used.py).
+         CASE WHEN a.signal_id = 'output_used' THEN COALESCE(a.opened_at, a.created_at)
+              ELSE COALESCE(a.closed_at, a.opened_at, a.created_at) END AS output_at,
+         CASE WHEN a.signal_id = 'output_used' THEN COALESCE(a.opened_at, a.created_at)
+              ELSE COALESCE(a.closed_at, a.opened_at, a.created_at) END
+           + make_interval(hours => :use_window_hours) AS window_end
   FROM grammar_acts a
   LEFT JOIN act_downstream_use x ON x.act_id = a.act_id
   WHERE x.act_id IS NULL OR NOT x.window_closed

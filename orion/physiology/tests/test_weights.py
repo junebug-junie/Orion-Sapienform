@@ -83,3 +83,18 @@ def test_rest_state_evidence_ages_out_and_the_weight_relaxes_to_prior():
     first, last = series[min(series)], series[NOW.date()]
     assert first["unused"].weight < 1.0
     assert last["unused"].weight == pytest.approx(1.0) and last["unused"].basis == "prior"
+
+
+def test_output_used_acts_are_not_reliability_evidence():
+    # Their hits close by the resolver (never source (d)) and their misses by expiry: counting them here
+    # would see only misses. Downstream use already reaches the weights as source (a).
+    from orion.physiology.weights import reliability_grades
+    acts = [ActRecord(act_id=f"p{i}", family="thought.painting", opened_at=NOW - timedelta(days=3),
+                      closed_at=NOW - timedelta(days=2), outcome_value=0.0, outcome_source=src,
+                      signal_id="output_used", outcome_note="unused: x")
+            for i, src in enumerate(("expired", "producer", "resolver"))]
+    assert reliability_grades("thought.painting", acts, since=NOW - timedelta(days=30), until=NOW) == []
+    made = ActRecord(act_id="m", family="thought.painting", opened_at=NOW - timedelta(days=3),
+                     closed_at=NOW - timedelta(days=2), outcome_value=0.0, outcome_source="expired",
+                     signal_id="artifact_produced", outcome_note="no producer close")
+    assert len(reliability_grades("thought.painting", [made], since=NOW - timedelta(days=30), until=NOW)) == 1

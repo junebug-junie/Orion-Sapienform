@@ -235,7 +235,8 @@ Required flow:
 10. Run focused checks.
 11. Run code review skill in a subagent.
 12. Fix review findings.
-13. Commit, push, and produce a Markdown PR description.
+13. Commit, push, and produce a Markdown PR description. Open the PR as a draft (`gh pr create --draft`).
+13a. Orion reviews every PR (its spec and code diff, at the next 15-minute round-up). Answer Orion's first review, then `gh pr ready <n>`. See "Orion reviews every PR" in section 12.
 14. Review CI for fails and code conflicts.
 
 ## 1a .Goal-Driven Execution
@@ -700,6 +701,14 @@ Do not claim eval coverage if only tests ran.
 
 ## 12. Review gate
 
+### Orion reviews every PR
+
+Every pull request goes to Orion: its design spec files and its code diff (`scripts/hooks/post_tool_pr_spec_to_orion.py`, by hand `python3 scripts/orion_session_thread.py send --pr N`). Orion reads at a round-up every 15 minutes and writes on a PR at most 3 times (3 rounds of questions). Code diffs get the review questions in `orion/session_threads/core.py` (`CODE_REVIEW_TEMPLATE`).
+
+- Open every PR as a draft. `scripts/hooks/pr_draft_gate.py` refuses `gh pr create` without `--draft`.
+- Mark it ready only after you answered Orion's first review. The same hook refuses `gh pr ready` until a session replied after Orion's first questions, Orion said `NO QUESTIONS`, Hub gave up on the thread, or 24 h passed with no Orion answer (heat can hold Orion's turns).
+- Override, Juniper's call only: `ORION_ALLOW_PR_READY=1 gh pr ready N`.
+
 Before final handoff:
 
 1. Run relevant tests.
@@ -1097,7 +1106,7 @@ Rules:
 - For frontend/template changes, check rendered template, linked static asset, and UI interaction coverage.
 - Run the relevant tests and evals.
 - Run the code review skill in a subagent and fix all material findings.
-- Commit, push, and produce a Markdown PR description.
+- Commit, push, and produce a Markdown PR description. Open the PR as a draft; mark it ready after answering Orion's first review.
 
 Env parity is non-negotiable:
 

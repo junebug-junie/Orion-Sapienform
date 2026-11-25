@@ -6,13 +6,22 @@ Design: `docs/superpowers/specs/2026-11-24-orion-safe-autonomy-in-place-design.m
 ## What it does
 
 - **Passes looking:** every `GET`/`HEAD` (`docker ps`, `logs`, `inspect`, `stats`, `info`, `events`).
-- **Passes exec** (`docker exec`), unless the target container leads back to the host: it runs
-  privileged; uses host PID, network, IPC or user namespaces; adds capabilities (`cap_add`); maps
-  devices; mounts a runtime socket (`docker.sock`, `containerd.sock`, any `*.sock` under `/run` or
-  `/var/run`; matched by source and destination); or bind-mounts `/`, `/run`, `/var/run`,
-  `/var/lib/docker`, or anything under `/proc`, `/sys`, `/dev`, `/etc`, `/root`. The door
-  inspects the target live on every exec, so no list to keep. An exec that asks for
-  `"Privileged": true` is refused too.
+  Copying files out (`docker cp` from a container, `docker export`) reads through binds, so it is
+  checked like an exec. `docker save` (`/images/get`) is refused.
+- **Passes exec** (`docker exec`), unless the target container leads back to the host:
+  - privileged; host PID, network, IPC, user, UTS or cgroup namespace; or a `container:<x>`
+    namespace where x leads back to the host;
+  - added capabilities, devices, device cgroup rules, or an `unconfined` security option;
+  - a runtime socket (`docker.sock`, `containerd.sock`, any `*.sock` under `/run` or `/var/run`),
+    or any other bind under `/run`/`/var/run` except `/run/orion-audio` and `/run/orion-sensors`;
+  - a bind of `/`, or of anything under `/proc`, `/sys`, `/dev`, `/etc`, `/root`, or Docker's data
+    root (read from the daemon; `/mnt/docker` here) other than named volumes;
+  - a **writable** bind under `/mnt/scripts`, `/home`, `/usr`, `/var`, `/opt`, `/boot`, `/srv`,
+    `/lib*`, `/bin`, `/sbin` or the record folder (code the host runs, or the record itself);
+  - a local volume made with `o=bind` counts as a bind of its `device`.
+
+  The door inspects the target live on every exec, so there is no list to keep. An exec that asks
+  for `privileged` (any letter case, as Docker reads it) is refused too.
 - **Refuses changing containers:** every other `POST`/`PUT`/`DELETE` (run, create, start, stop,
   restart, rm, build, pull, compose up, prune, ...) and every attach. The CLI prints
   "Orion's Docker door: changing containers is off".

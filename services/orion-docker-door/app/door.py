@@ -43,14 +43,24 @@ HEAD_TIMEOUT_SEC = 10.0
 BODY_TIMEOUT_SEC = 30.0
 DAEMON_TIMEOUT_SEC = 10.0
 ALLOWED_VERSIONS = frozenset({"HTTP/1.0", "HTTP/1.1"})
-# Exact sources that are the host itself (named volumes live under /var/lib/docker/volumes/...,
-# so /var/lib/docker matches exactly, not as a prefix).
-HOST_ROOT_SOURCES = frozenset({"/", "/run", "/var/run", "/var/lib/docker"})
+# Exact sources that are the host itself. Docker's own data root (DockerRootDir, read from the
+# daemon) is handled separately: everything under it except named volumes' data.
+HOST_ROOT_SOURCES = frozenset({"/", "/run", "/var/run"})
 # Any bind of these, or of anything under them, reaches the host.
 HOST_PATH_PREFIXES = ("/proc", "/sys", "/dev", "/etc", "/root")
+# A writable bind under these lets an exec plant code or state the host runs or trusts (the
+# primary checkout's orion/ package is imported by host scripts after every git pull).
+HOST_WRITE_PREFIXES = ("/mnt/scripts", "/home", "/usr", "/boot", "/opt", "/var", "/lib", "/lib64",
+                       "/bin", "/sbin", "/srv", "/mnt/storage-warm/orion-record")
+# Plain data folders under /run that organs share read-only; any other bind under /run or
+# /var/run may be a socket by another name (D-Bus, containerd's folder) and is refused.
+RUN_ALLOWED = ("/run/orion-audio", "/run/orion-sensors")
+DEFAULT_DOCKER_ROOT = "/var/lib/docker"
+NAMESPACE_KEYS = ("NetworkMode", "PidMode", "IpcMode")
 RUNTIME_SOCKET_NAMES = frozenset({"docker.sock", "containerd.sock"})
 REFUSE_CHANGE = "Orion's Docker door: changing containers is off (Juniper, 2026-11-24)."
 REFUSE_HOST = "Orion's Docker door: exec into a container that leads back to the host is off."
+REFUSE_COPY = "Orion's Docker door: copying files out of a container that leads back to the host is off."
 REFUSE_CALLER = "Orion's Docker door: this caller is not allowed."
 REFUSE_RECORD = "Orion's Docker door: could not write the record, so nothing passes."
 
@@ -62,6 +72,9 @@ _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _VERSION_PREFIX = re.compile(r"^/v\d+(?:\.\d+)*(/.*)$")
 _EXEC_CREATE = re.compile(r"^/containers/([^/]+)/exec$")
 _EXEC_RUN = re.compile(r"^/exec/([^/]+)/(start|resize)$")
+# Reads a container's files, which includes its binds: host files. Checked like an exec.
+_COPY_OUT = re.compile(r"^/containers/([^/]+)/(archive|export)$")
+_IMAGE_SAVE = re.compile(r"^/images/(?:[^/]+/)*get$")
 
 
 class BadRequest(ValueError):
@@ -92,8 +105,8 @@ def normalize_path(target: str) -> str:
 class Route:
     """What a request asks for, before any container lookup."""
 
-    kind: str  # "look" | "exec_create" | "exec_run" | "change"
-    ref: str = ""  # container ref (exec_create) or exec id (exec_run)
+    kind: str  # "look" | "copy_out" | "exec_create" | "exec_run" | "change"
+    ref: str = ""  # container ref (copy_out, exec_create) or exec id (exec_run)
     action: str = ""  # exec_run only: "start" | "resize"
 
 
@@ -101,6 +114,11 @@ def classify(method: str, path: str) -> Route:
     if "attach" in path.split("/"):  # attach (incl. GET .../attach/ws) writes to a main process
         return Route("change")
     if method in ("GET", "HEAD"):
+        m = _COPY_OUT.match(path)
+        if m:
+            return Route("copy_out", m.group(1))
+        if _IMAGE_SAVE.match(path):  # docker save: whole image filesystems
+            return Route("change")
         return Route("look")
     if method == "POST":
         m = _EXEC_CREATE.match(path)
@@ -119,28 +137,53 @@ def _runtime_socket(path: str) -> bool:
     return name.endswith(".sock") and any(path.startswith(p + "/") for p in ("/run", "/var/run"))
 
 
-def host_reach(inspect: dict[str, Any]) -> Optional[str]:
-    """Why this container leads back to the host, or None. Input: GET /containers/{id}/json."""
+def _under(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(prefix.rstrip("/") + "/")
+
+
+def host_reach(inspect: dict[str, Any], docker_root: str = DEFAULT_DOCKER_ROOT) -> Optional[str]:
+    """Why this container leads back to the host, or None. Input: GET /containers/{id}/json.
+
+    ``container:<x>`` namespace modes are checked by ``Door.target_reach`` (it inspects x).
+    """
     host = inspect.get("HostConfig") or {}
     if host.get("Privileged"):
         return "privileged"
     for key, label in (("PidMode", "pid_host"), ("NetworkMode", "network_host"),
-                       ("IpcMode", "ipc_host"), ("UsernsMode", "userns_host")):
+                       ("IpcMode", "ipc_host"), ("UsernsMode", "userns_host"),
+                       ("UTSMode", "uts_host"), ("CgroupnsMode", "cgroupns_host")):
         if str(host.get(key) or "") == "host":
             return label
     if host.get("CapAdd"):
         return "cap_add:" + ",".join(str(c) for c in host["CapAdd"])
     if host.get("Devices"):
         return "devices"
+    if host.get("DeviceCgroupRules"):
+        return "device_cgroup_rules"
+    for opt in host.get("SecurityOpt") or []:
+        if "unconfined" in str(opt):
+            return f"security_opt:{opt}"
+    root = posixpath.normpath(docker_root or DEFAULT_DOCKER_ROOT)
     for mount in inspect.get("Mounts") or []:
         src = posixpath.normpath(str(mount["Source"])) if mount.get("Source") else ""
         dst = posixpath.normpath(str(mount.get("Destination") or "/"))
+        if dst.rsplit("/", 1)[-1] in RUNTIME_SOCKET_NAMES:
+            return f"socket:{src or dst}"
+        if not src:
+            continue
         if src in HOST_ROOT_SOURCES:
             return f"mount:{src}"
-        if src and any(src == p or src.startswith(p + "/") for p in HOST_PATH_PREFIXES):
+        if any(_under(src, p) for p in HOST_PATH_PREFIXES):
             return f"mount:{src}"
-        if (src and _runtime_socket(src)) or dst.rsplit("/", 1)[-1] in RUNTIME_SOCKET_NAMES:
-            return f"socket:{src or dst}"
+        if _under(src, root) and not _under(src, root + "/volumes"):
+            return f"docker_root:{src}"
+        if _runtime_socket(src):
+            return f"socket:{src}"
+        if any(_under(src, p) for p in ("/run", "/var/run")) and not any(_under(src, p) for p in RUN_ALLOWED):
+            return f"run:{src}"
+        if (mount.get("RW") and not _under(src, root + "/volumes")
+                and any(_under(src, p) for p in HOST_WRITE_PREFIXES)):
+            return f"writable:{src}"
     return None
 
 
@@ -264,9 +307,23 @@ async def docker_get_json(socket_path: str, path: str, timeout: float = 5.0) -> 
 
 
 def _exec_spec(body: bytes) -> Optional[dict[str, Any]]:
+    """The exec body with keys lower-cased, as Go's JSON decoder matches them.
+
+    Go matches field names without case and the last match wins, so ``"privileged": true`` is
+    privileged to Docker. Two keys that differ only in case are refused as unreadable.
+    """
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in items:
+            low = key.lower()
+            if low in out:
+                raise ValueError(f"duplicate key {key!r}")
+            out[low] = value
+        return out
+
     try:
-        spec = json.loads(body)
-    except ValueError:
+        spec = json.loads(body, object_pairs_hook=pairs)
+    except (ValueError, RecursionError):
         return None
     return spec if isinstance(spec, dict) else None
 
@@ -276,7 +333,7 @@ def _streams_stdin(route: Route, body: bytes) -> bool:
     if route.kind != "exec_run" or route.action != "start":
         return False
     spec = _exec_spec(body) if body else {}
-    return not (spec or {}).get("Detach")
+    return not (spec or {}).get("detach")
 
 
 @dataclass
@@ -289,6 +346,7 @@ class Door:
     get_json: Callable[[str, str], Awaitable[Optional[dict[str, Any]]]] = docker_get_json
     head_timeout: float = HEAD_TIMEOUT_SEC
     body_timeout: float = BODY_TIMEOUT_SEC
+    _docker_root: Optional[str] = None
 
     async def caller_allowed(self, ip: str) -> bool:
         if not self.allowed_callers:
@@ -305,25 +363,65 @@ class Door:
             self._caller_ips, self._caller_ips_at = ips, time.monotonic()
         return ip in self._caller_ips
 
-    async def target_reach(self, container_ref: str) -> tuple[str, Optional[str]]:
+    async def docker_root(self) -> Optional[str]:
+        """The daemon's DockerRootDir (here /mnt/docker, not /var/lib/docker), read once."""
+        if self._docker_root is None:
+            info = await self.get_json(self.socket_path, "/info")
+            root = str((info or {}).get("DockerRootDir") or "")
+            if not root:
+                return None
+            self._docker_root = root
+        return self._docker_root
+
+    async def target_reach(self, container_ref: str, depth: int = 3) -> tuple[str, Optional[str]]:
         """(container name, reason it leads to the host or None). Unknown container -> refuse."""
         if not _REF.match(container_ref):
             return container_ref, "bad_ref"
         data = await self.get_json(self.socket_path, f"/containers/{quote(container_ref)}/json")
         if data is None:
             return container_ref, "inspect_failed"
-        return str(data.get("Name") or container_ref).lstrip("/"), host_reach(data)
+        name = str(data.get("Name") or container_ref).lstrip("/")
+        root = await self.docker_root()
+        if root is None:
+            return name, "info_failed"
+        mounts = []
+        for mount in data.get("Mounts") or []:
+            # A local volume made with o=bind,device=<host path> is a bind by another name.
+            if mount.get("Type") == "volume" and mount.get("Name"):
+                vol = await self.get_json(self.socket_path, f"/volumes/{quote(str(mount['Name']))}")
+                if vol is None:
+                    return name, "volume_inspect_failed"
+                opts = vol.get("Options") or {}
+                if "bind" in str(opts.get("o") or "").split(",") and opts.get("device"):
+                    mount = {**mount, "Source": str(opts["device"])}
+            mounts.append(mount)
+        why = host_reach({**data, "Mounts": mounts}, root)
+        if why is not None:
+            return name, why
+        host = data.get("HostConfig") or {}
+        for key in NAMESPACE_KEYS:
+            mode = str(host.get(key) or "")
+            if mode.startswith("container:"):
+                if depth <= 0:
+                    return name, f"shares_{key}:too_deep"
+                _other, other_why = await self.target_reach(mode.split(":", 1)[1], depth - 1)
+                if other_why is not None:
+                    return name, f"shares_{key}:{other_why}"
+        return name, None
 
     async def decide(self, route: Route, body: bytes, has_length: bool) -> tuple[bool, str, dict[str, Any]]:
         """(allow, reason, extra record fields)."""
         if route.kind == "look":
             return True, "look", {}
+        if route.kind == "copy_out":
+            name, why = await self.target_reach(route.ref)
+            return (why is None), (why or "copy_out"), {"container": name}
         if route.kind == "exec_create":
             spec = _exec_spec(body) if has_length else None
             if spec is None:
                 return False, "exec_body_unreadable", {}
-            extra: dict[str, Any] = {"exec_cmd": spec.get("Cmd"), "exec_user": spec.get("User") or ""}
-            if spec.get("Privileged"):
+            extra: dict[str, Any] = {"exec_cmd": spec.get("cmd"), "exec_user": spec.get("user") or ""}
+            if spec.get("privileged"):
                 return False, "exec_privileged", extra
             name, why = await self.target_reach(route.ref)
             extra["container"] = name
@@ -343,9 +441,9 @@ class Door:
             return (why is None), (why or "exec"), {"container": name}
         return False, "change", {}
 
-    def _write_record(self, entry: dict[str, Any]) -> bool:
+    async def _write_record(self, entry: dict[str, Any]) -> bool:
         try:
-            self.record.write(entry)
+            await asyncio.to_thread(self.record.write, entry)  # fsync stays off the event loop
             return True
         except (OSError, ValueError, TypeError) as exc:
             logger.error("DOCKER_DOOR record_write_failed error=%r entry=%r", exc, entry)
@@ -358,7 +456,7 @@ class Door:
 
     async def _refuse(self, client_w: asyncio.StreamWriter, entry: dict[str, Any], message: str,
                       status: str = "403 Forbidden") -> None:
-        self._write_record({**entry, "decision": "refuse"})
+        await self._write_record({**entry, "decision": "refuse"})
         await self._send(client_w, refusal(message, status))
 
     async def handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
@@ -411,14 +509,15 @@ class Door:
         entry.update(extra)
         entry["reason"] = reason
         if not allow:
-            message = REFUSE_HOST if route.kind in ("exec_create", "exec_run") else REFUSE_CHANGE
+            message = {"copy_out": REFUSE_COPY, "exec_create": REFUSE_HOST, "exec_run": REFUSE_HOST}.get(
+                route.kind, REFUSE_CHANGE)
             if reason.startswith("daemon_error") or reason.endswith(("_failed", "_unreadable")) or reason == "bad_ref":
                 message = f"Orion's Docker door: could not check the target ({reason})."
             elif reason == "exec_privileged":
                 message = "Orion's Docker door: a privileged exec is off."
             await self._refuse(client_w, entry, message)
             return
-        if not self._write_record({**entry, "decision": "allow"}):
+        if not await self._write_record({**entry, "decision": "allow"}):
             await self._send(client_w, refusal(REFUSE_RECORD, "503 Service Unavailable"))
             return
         try:
@@ -432,16 +531,29 @@ class Door:
         up_w.write(rebuild_head(req) + body)
         await up_w.drain()
         down = asyncio.ensure_future(_pipe(up_r, client_w))
-        if not _streams_stdin(route, body):
-            await down
-            return
-        up = asyncio.ensure_future(_pipe(client_r, up_w))
+        if _streams_stdin(route, body):
+            # The exec's output ending ends the session, even if stdin stays open.
+            side = asyncio.ensure_future(_pipe(client_r, up_w))
+            waits = {down}
+        else:
+            # Nothing more goes upstream; watch for the client leaving, as dockerd itself does,
+            # so an abandoned `logs -f` or `events` does not hold the daemon connection open.
+            side = asyncio.ensure_future(_drain_until_eof(client_r))
+            waits = {down, side}
         try:
-            await down  # the exec's output ending ends the session, even if stdin stays open
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            up.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await up
+            for task in (down, side):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+
+async def _drain_until_eof(src: asyncio.StreamReader) -> None:
+    """Read and drop whatever the client still sends; return when it closes."""
+    with contextlib.suppress(ConnectionError, OSError):
+        while await src.read(65536):
+            pass
 
 
 async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:

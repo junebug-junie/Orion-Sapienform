@@ -106,9 +106,24 @@ def test_classify_names_the_exec_action() -> None:
     ({"Mounts": [{"Source": "/etc", "Destination": "/hostetc"}]}, "mount:/etc"),
     ({"Mounts": [{"Source": "/root/.ssh/key", "Destination": "/k"}]}, "mount:/root/.ssh/key"),
     ({"Mounts": [{"Source": "/var/../proc", "Destination": "/p"}]}, "mount:/proc"),
+    # Second review, 2026-11-25.
+    ({"HostConfig": {"UTSMode": "host"}}, "uts_host"),
+    ({"HostConfig": {"CgroupnsMode": "host"}}, "cgroupns_host"),
+    ({"HostConfig": {"SecurityOpt": ["systempaths=unconfined"]}}, "security_opt:systempaths=unconfined"),
+    ({"HostConfig": {"SecurityOpt": ["seccomp=unconfined"]}}, "security_opt:seccomp=unconfined"),
+    ({"HostConfig": {"DeviceCgroupRules": ["b *:* rwm"]}}, "device_cgroup_rules"),
+    ({"Mounts": [{"Source": "/mnt/docker", "Destination": "/hostfs/docker", "RW": False}]}, "docker_root:/mnt/docker"),
+    ({"Mounts": [{"Source": "/mnt/docker/containers", "Destination": "/c"}]}, "docker_root:/mnt/docker/containers"),
+    ({"Mounts": [{"Source": "/run/dbus/system_bus_socket", "Destination": "/d"}]}, "run:/run/dbus/system_bus_socket"),
+    ({"Mounts": [{"Source": "/run/containerd", "Destination": "/c"}]}, "run:/run/containerd"),
+    ({"Mounts": [{"Source": "/mnt/scripts/Orion-Sapienform/orion", "Destination": "/app/orion", "RW": True}]},
+     "writable:/mnt/scripts/Orion-Sapienform/orion"),
+    ({"Mounts": [{"Source": "/home/athena/.fcc", "Destination": "/f", "RW": True}]}, "writable:/home/athena/.fcc"),
+    ({"Mounts": [{"Source": "/mnt/storage-warm/orion-record", "Destination": "/r", "RW": True}]},
+     "writable:/mnt/storage-warm/orion-record"),
 ])
 def test_host_reach_refuses(inspect: dict, reason: str) -> None:
-    assert host_reach(inspect) == reason
+    assert host_reach(inspect, "/mnt/docker") == reason
 
 
 @pytest.mark.parametrize("inspect", [
@@ -119,9 +134,29 @@ def test_host_reach_refuses(inspect: dict, reason: str) -> None:
     # A plain folder under /run (audio, sensors) is not a socket.
     {"Mounts": [{"Source": "/run/orion-audio", "Destination": "/run/orion-audio"}]},
     {"Mounts": [{"Type": "tmpfs", "Destination": "/tmp"}]},
+    {"Mounts": [{"Type": "volume", "Source": "/mnt/docker/volumes/pg/_data", "Destination": "/d", "RW": True}]},
+    # Read-only code and writable data folders stay ordinary.
+    {"Mounts": [{"Source": "/mnt/scripts/Orion-Sapienform", "Destination": "/app", "RW": False}]},
+    {"Mounts": [{"Source": "/mnt/postgres/postgres_data", "Destination": "/var/lib/postgresql/data", "RW": True}]},
+    {"Mounts": [{"Source": "/mnt/storage-lukewarm/orion", "Destination": "/data", "RW": True}]},
+    {"HostConfig": {"SecurityOpt": ["no-new-privileges:true", "label=disable"]}},
+    {"HostConfig": {"NetworkMode": "container:abc"}},  # checked by target_reach, not here
 ])
 def test_host_reach_passes_ordinary_organs(inspect: dict) -> None:
-    assert host_reach(inspect) is None
+    assert host_reach(inspect, "/mnt/docker") is None
+
+
+def test_default_docker_root_keeps_named_volumes_ordinary() -> None:
+    vol = {"Mounts": [{"Type": "volume", "Source": "/var/lib/docker/volumes/x/_data", "Destination": "/d", "RW": True}]}
+    assert host_reach(vol) is None
+    assert host_reach({"Mounts": [{"Source": "/var/lib/docker", "Destination": "/d"}]}) == "docker_root:/var/lib/docker"
+
+
+def test_exec_spec_reads_keys_like_go() -> None:
+    from app.door import _exec_spec
+    assert _exec_spec(b'{"Cmd":["sh"],"privileged":true}')["privileged"] is True
+    assert _exec_spec(b'{"Privileged":false,"privileged":true}') is None  # case-only duplicates
+    assert _exec_spec(b"[" * 100000 + b"]" * 100000) is None  # RecursionError, not a crash
 
 
 def test_rebuild_head_always_closes_and_keeps_upgrade() -> None:
@@ -181,7 +216,22 @@ INSPECT = {
     "orion-athena-hub": {"Name": "/orion-athena-hub", "HostConfig": {},
                          "Mounts": [{"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}]},
     "orion-athena-biometrics": {"Name": "/orion-athena-biometrics", "HostConfig": {"Privileged": True}, "Mounts": []},
+    "orion-athena-power-guard": {"Name": "/orion-athena-power-guard", "HostConfig": {},
+                                 "Mounts": [{"Source": "/root/.ssh/powerguard_shutdown",
+                                             "Destination": "/etc/powerguard/ssh_key", "RW": False}]},
+    "rides-hub-net": {"Name": "/rides-hub-net", "HostConfig": {"NetworkMode": "container:orion-athena-hub-net"},
+                      "Mounts": []},
+    "orion-athena-hub-net": {"Name": "/orion-athena-hub-net", "HostConfig": {"NetworkMode": "host"}, "Mounts": []},
+    "rides-thought-net": {"Name": "/rides-thought-net", "HostConfig": {"NetworkMode": "container:orion-athena-thought"},
+                          "Mounts": []},
+    "etc-volume": {"Name": "/etc-volume", "HostConfig": {},
+                   "Mounts": [{"Type": "volume", "Name": "etcvol", "Source": "/mnt/docker/volumes/etcvol/_data",
+                               "Destination": "/v", "RW": True}]},
+    "data-volume": {"Name": "/data-volume", "HostConfig": {},
+                    "Mounts": [{"Type": "volume", "Name": "datavol", "Source": "/mnt/docker/volumes/datavol/_data",
+                                "Destination": "/v", "RW": True}]},
 }
+VOLUMES = {"etcvol": {"Options": {"type": "none", "o": "bind", "device": "/etc"}}, "datavol": {"Options": None}}
 KILL = b"POST /containers/orion-athena-thought/kill HTTP/1.1\r\nHost: d\r\nContent-Length: 0\r\n\r\n"
 
 
@@ -244,6 +294,10 @@ class FakeDaemon:
 
 
 async def fake_get_json(_sock: str, path: str):
+    if path == "/info":
+        return {"DockerRootDir": "/mnt/docker"}
+    if path.startswith("/volumes/"):
+        return VOLUMES.get(path.split("/")[2])
     if path.startswith("/containers/"):
         return INSPECT.get(path.split("/")[2])
     if path.startswith("/exec/"):
@@ -348,7 +402,7 @@ def test_second_request_on_same_connection_is_not_forwarded(tmp_path: Path) -> N
 ])
 def test_upgrade_or_body_cannot_carry_a_second_request(tmp_path: Path, first: bytes) -> None:
     async def script(port, fake, _door, _sock):
-        return await call(port, first + KILL, eof=True), fake
+        return await call(port, first + KILL), fake
     out, fake = run_door(tmp_path, script)
     assert out.startswith(b"HTTP/1.1 200")
     assert len(fake.seen) == 1 and fake.seen[0][1]["connection"] == "close"
@@ -417,6 +471,12 @@ def test_exec_into_organ_passes_and_logs_command(tmp_path: Path) -> None:
     (exec_create("orion-athena-hub", b"{}"), b"403", "socket:/var/run/docker.sock"),
     (exec_create("orion-athena-biometrics", b"{}"), b"403", "privileged"),
     (exec_create("no-such-container", b"{}"), b"403", "inspect_failed"),
+    # Second review: Go reads "privileged" without case.
+    (exec_create("orion-athena-thought", b'{"Cmd":["sh"],"privileged":true}'), b"403", "exec_privileged"),
+    (exec_create("orion-athena-thought", b'{"Privileged":false,"privileged":true}'), b"403", "exec_body_unreadable"),
+    (exec_create("orion-athena-thought", b"[" * 5000 + b"]" * 5000), b"403", "exec_body_unreadable"),
+    (exec_create("rides-hub-net", b"{}"), b"403", "shares_NetworkMode:network_host"),
+    (exec_create("etc-volume", b"{}"), b"403", "mount:/etc"),
 ])
 def test_exec_create_refusals(tmp_path: Path, raw: bytes, status: bytes, reason: str) -> None:
     async def script(port, fake, _door, _sock):
@@ -424,6 +484,84 @@ def test_exec_create_refusals(tmp_path: Path, raw: bytes, status: bytes, reason:
     out, fake = run_door(tmp_path, script)
     assert out.startswith(b"HTTP/1.1 " + status) and fake.seen == []
     assert records(tmp_path)[0]["reason"] == reason
+
+
+def test_exec_into_ordinary_namespace_and_volume_passes(tmp_path: Path) -> None:
+    async def script(port, fake, _door, _sock):
+        a = await call(port, exec_create("rides-thought-net", b"{}"))
+        b = await call(port, exec_create("data-volume", b"{}"))
+        return a, b, fake
+    a, b, fake = run_door(tmp_path, script)
+    assert a.startswith(b"HTTP/1.1 200") and b.startswith(b"HTTP/1.1 200") and len(fake.seen) == 2
+
+
+@pytest.mark.parametrize("raw,status,reason", [
+    # Second review finding 1: archive/export read through binds (here the host's SSH key).
+    (b"GET /v1.52/containers/orion-athena-power-guard/archive?path=/etc/powerguard/ssh_key HTTP/1.1\r\nHost: d\r\n\r\n",
+     b"403", "mount:/root/.ssh/powerguard_shutdown"),
+    (b"HEAD /containers/orion-athena-power-guard/archive?path=/ HTTP/1.1\r\nHost: d\r\n\r\n",
+     b"403", "mount:/root/.ssh/powerguard_shutdown"),
+    (b"GET /containers/orion-athena-hub/export HTTP/1.1\r\nHost: d\r\n\r\n", b"403", "socket:/var/run/docker.sock"),
+    (b"GET /images/get?names=x HTTP/1.1\r\nHost: d\r\n\r\n", b"403", "change"),
+    (b"GET /images/orion-hub/get HTTP/1.1\r\nHost: d\r\n\r\n", b"403", "change"),
+])
+def test_copy_out_of_host_reaching_container_is_refused(tmp_path: Path, raw: bytes, status: bytes, reason: str) -> None:
+    async def script(port, fake, _door, _sock):
+        return await call(port, raw), fake
+    out, fake = run_door(tmp_path, script)
+    assert out.startswith(b"HTTP/1.1 " + status) and fake.seen == []
+    assert records(tmp_path)[0]["reason"] == reason
+    if raw.startswith(b"GET /v1.52/containers/orion-athena-power-guard"):
+        assert b"copying files out" in out
+
+
+def test_copy_out_of_ordinary_organ_passes(tmp_path: Path) -> None:
+    async def script(port, fake, _door, _sock):
+        return await call(port, b"GET /containers/orion-athena-thought/archive?path=/app HTTP/1.1\r\nHost: d\r\n\r\n"), fake
+    out, fake = run_door(tmp_path, script)
+    assert out.startswith(b"HTTP/1.1 200") and len(fake.seen) == 1
+    assert records(tmp_path)[0]["reason"] == "copy_out"
+
+
+def test_missing_docker_root_refuses_exec(tmp_path: Path) -> None:
+    async def no_info(sock: str, path: str):
+        return None if path == "/info" else await fake_get_json(sock, path)
+
+    async def script(port, fake, door, _sock):
+        door.get_json = no_info
+        return await call(port, exec_create("orion-athena-thought", b"{}")), fake
+    out, fake = run_door(tmp_path, script)
+    assert out.startswith(b"HTTP/1.1 403") and fake.seen == []
+    assert records(tmp_path)[0]["reason"] == "info_failed"
+
+
+def test_abandoned_long_poll_releases_the_daemon(tmp_path: Path) -> None:
+    # Second review finding 4: a client that leaves a quiet `logs -f` frees the daemon side.
+    async def script(port, _fake, door, _sock):
+        hung_up = asyncio.Event()
+
+        async def quiet_daemon(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+            await r.readuntil(b"\r\n\r\n")  # take the request, never answer
+            await r.read()  # returns only when the door closes its side
+            hung_up.set()
+            w.close()
+
+        quiet = await asyncio.start_unix_server(quiet_daemon, str(tmp_path / "quiet.sock"))
+        door.socket_path = str(tmp_path / "quiet.sock")
+        r, w = await asyncio.open_connection("127.0.0.1", port)
+        w.write(b"GET /containers/orion-athena-thought/logs?follow=1 HTTP/1.1\r\nHost: d\r\n\r\n")
+        await w.drain()
+        await asyncio.sleep(0.2)
+        assert not hung_up.is_set()  # still streaming while the client is there
+        w.close()
+        try:
+            await asyncio.wait_for(hung_up.wait(), 2)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            quiet.close()
+    assert run_door(tmp_path, script) is True
 
 
 def test_exec_start_checks_the_exec_target(tmp_path: Path) -> None:

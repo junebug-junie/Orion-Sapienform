@@ -17,9 +17,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import socket
+import time
 from datetime import datetime, timezone
-from typing import Callable, Mapping, Optional
+from typing import Awaitable, Callable, Mapping, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger("orion.harness.docker_door_canary")
@@ -27,9 +27,11 @@ logger = logging.getLogger("orion.harness.docker_door_canary")
 WINDOWS_ENV = "ORION_DOCKER_DOOR_CANARY_WINDOWS"
 URL_ENV = "ORION_DOCKER_DOOR_URL"
 DEFAULT_URL = "tcp://orion-athena-docker-door:2375"
-# The probe runs in a thread; this caps how long a turn waits on it (DNS is not under the
-# socket timeout), so a broken door can never stall a turn or keep a warm slot busy.
+# A turn waits at most this long on the door check, so a broken door never stalls a turn or
+# keeps a warm slot busy. The answer is kept for PROBE_TTL_SEC, so a window of busy turns costs
+# one check per half minute, not one per turn.
 PROBE_WAIT_SEC = 2.0
+PROBE_TTL_SEC = 30.0
 
 Window = tuple[datetime, datetime]
 
@@ -61,25 +63,45 @@ def in_window(now: datetime, windows: list[Window]) -> bool:
     return any(start <= now < end for start, end in windows)
 
 
-def door_answers(url: str, timeout: float = 0.5) -> bool:
+async def door_answers(url: str, timeout: float = PROBE_WAIT_SEC) -> bool:
+    """True when the door answers ``GET /_ping`` with 200, which also proves it reaches the daemon.
+
+    Native asyncio: no thread is left behind when the check times out.
+    """
     parsed = urlparse(url)
     if parsed.scheme != "tcp" or not parsed.hostname:
         return False
+
+    async def ping() -> bool:
+        reader, writer = await asyncio.open_connection(parsed.hostname, parsed.port or 2375)
+        try:
+            writer.write(b"GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n")
+            await writer.drain()
+            status = await reader.readline()
+        finally:
+            writer.close()
+        return status.split(b" ")[1:2] == [b"200"]
+
     try:
-        with socket.create_connection((parsed.hostname, parsed.port or 2375), timeout=timeout):
-            return True
-    except OSError:
+        return await asyncio.wait_for(ping(), timeout)
+    except (OSError, asyncio.TimeoutError, ValueError):
         return False
 
 
-def door_docker_host(
-    *,
-    environ: Mapping[str, str] = os.environ,
-    now: Optional[datetime] = None,
-    answers: Optional[Callable[[str], bool]] = None,
-    correlation_id: str = "",
-) -> Optional[str]:
-    """The door URL when this turn should use the door, else None (keep the socket)."""
+_probe_cache: dict[str, tuple[float, bool]] = {}
+
+
+async def _cached_door_answers(url: str) -> bool:
+    hit = _probe_cache.get(url)
+    if hit is not None and time.monotonic() - hit[0] < PROBE_TTL_SEC:
+        return hit[1]
+    ok = await door_answers(url)
+    _probe_cache[url] = (time.monotonic(), ok)
+    return ok
+
+
+def window_door_url(environ: Mapping[str, str] = os.environ, now: Optional[datetime] = None) -> Optional[str]:
+    """The door URL when ``now`` is inside a canary window, else None. Never touches the network."""
     raw = str(environ.get(WINDOWS_ENV) or "").strip()
     if not raw:
         return None
@@ -90,31 +112,30 @@ def door_docker_host(
         return None
     if not in_window(now or datetime.now(timezone.utc), windows):
         return None
-    url = str(environ.get(URL_ENV) or DEFAULT_URL).strip()
-    if not (answers or door_answers)(url):
+    return str(environ.get(URL_ENV) or DEFAULT_URL).strip()
+
+
+async def door_docker_host(
+    *,
+    environ: Mapping[str, str] = os.environ,
+    now: Optional[datetime] = None,
+    answers: Optional[Callable[[str], Awaitable[bool]]] = None,
+    correlation_id: str = "",
+) -> Optional[str]:
+    """The door URL when this turn should use the door, else None (keep the socket)."""
+    url = window_door_url(environ, now)
+    if url is None:
+        return None
+    if not await (answers or _cached_door_answers)(url):
         logger.warning("DOCKER_DOOR_CANARY corr=%s door=unreachable url=%s (socket kept)", correlation_id, url)
         return None
     logger.info("DOCKER_DOOR_CANARY corr=%s door=on url=%s", correlation_id, url)
     return url
 
 
-def turn_docker_host(environ: Mapping[str, str] = os.environ, **kwargs) -> str:
+async def turn_docker_host(environ: Mapping[str, str] = os.environ, **kwargs) -> str:
     """Value for a warm slot's per-turn env file: the door, or the container's own DOCKER_HOST.
 
     An empty value makes the docker CLI use its default socket, the same as unset.
     """
-    return door_docker_host(environ=environ, **kwargs) or str(environ.get("DOCKER_HOST") or "")
-
-
-async def door_docker_host_async(**kwargs) -> Optional[str]:
-    """``door_docker_host`` off the event loop: the probe is a blocking connect."""
-    try:
-        return await asyncio.wait_for(asyncio.to_thread(door_docker_host, **kwargs), PROBE_WAIT_SEC)
-    except asyncio.TimeoutError:
-        logger.warning("DOCKER_DOOR_CANARY corr=%s door=probe_timeout (socket kept)", kwargs.get("correlation_id", ""))
-        return None
-
-
-async def turn_docker_host_async(environ: Mapping[str, str] = os.environ, **kwargs) -> str:
-    """``turn_docker_host`` off the event loop."""
-    return await door_docker_host_async(environ=environ, **kwargs) or str(environ.get("DOCKER_HOST") or "")
+    return await door_docker_host(environ=environ, **kwargs) or str(environ.get("DOCKER_HOST") or "")

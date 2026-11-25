@@ -42,6 +42,7 @@ from app.models import (
     CausalGeometrySnapshotSQL,
     BusTrafficRollupSQL,
     HeartbeatSeatRollupSQL,
+    FieldGoalProvenanceLogSQL,
     ChatHistoryLogSQL,
     AitownChatHistoryLogSQL,
     ChatGptLogSQL,
@@ -197,6 +198,7 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
 from orion.schemas.bus_traffic import BusTrafficRollupV1
 from orion.schemas.heartbeat_seat_rollup import HeartbeatSeatRollupV1
+from orion.schemas.field_goal import FieldGoalProvenanceV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.thought import ThoughtEventV1
@@ -302,6 +304,7 @@ INSERT_ONLY_MODELS = {
     CausalGeometrySnapshotSQL,
     BusTrafficRollupSQL,
     HeartbeatSeatRollupSQL,
+    FieldGoalProvenanceLogSQL,
     EquilibriumServiceTransitionSQL,
     VisionUnresolvedSQL,
 }
@@ -548,6 +551,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "BusTrafficRollupSQL": (BusTrafficRollupSQL, BusTrafficRollupV1),
     "HeartbeatSeatRollupSQL": (HeartbeatSeatRollupSQL, HeartbeatSeatRollupV1),
+    "FieldGoalProvenanceLogSQL": (FieldGoalProvenanceLogSQL, FieldGoalProvenanceV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
     # schema_cls=None: harness-governor already validated each of the four
@@ -1644,6 +1648,20 @@ def _ensure_chat_history_from_message(
         own_sess.close()
 
 
+def _normalize_field_goal_provenance_payload(write_data: dict) -> dict:
+    """Add ``payload_json`` for FieldGoalProvenanceLogSQL (#3924).
+
+    ``payload_json`` holds only the schema's own fields, so envelope extras
+    (``envelope_id``) land in their column and never in the stored payload.
+    It is the schema's own JSON form (same bytes the producer published, e.g.
+    ``ts`` as ``...Z``); ``_write`` already validated these fields.
+    """
+    out = dict(write_data)
+    own = {k: write_data[k] for k in FieldGoalProvenanceV1.model_fields if k in write_data}
+    out["payload_json"] = FieldGoalProvenanceV1.model_validate(own).model_dump(mode="json")
+    return out
+
+
 def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     """Map ``home.cooling.sample.v1`` onto HomeCoolingSampleSQL columns.
 
@@ -1833,6 +1851,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             write_data = _normalize_office_env_sample_payload(write_data)
         if sql_model_cls is ClosetEnvSampleSQL:
             write_data = _normalize_closet_env_sample_payload(write_data)
+        if sql_model_cls is FieldGoalProvenanceLogSQL:
+            write_data = _normalize_field_goal_provenance_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)
@@ -3191,6 +3211,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
             elif sql_model is CockpitTurnSightingSQL:
                 write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
+            elif sql_model is FieldGoalProvenanceLogSQL:
+                # Only envelope_id from the envelope: the generic extras carry the ENVELOPE
+                # correlation_id (a fresh uuid4 per publish in attention-runtime), which would
+                # overwrite the goal's own correlation_id (#3924).
+                goal_extras = {"envelope_id": str(env.id)} if getattr(env, "id", None) else {}
+                write_ok = await _write(sql_model, schema_model, data_to_process, goal_extras, kind=env.kind)
             elif sql_model is LlmCallUsageSQL:
                 # extra_fields={}: the generic extras carry the ENVELOPE correlation_id, which is a
                 # fresh uuid4 whenever the producer had none (or a non-UUID turn id). Merging it

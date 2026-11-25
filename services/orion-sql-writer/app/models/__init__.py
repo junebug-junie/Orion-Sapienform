@@ -34,6 +34,7 @@ from .biometrics_induction import BiometricsInductionSQL
 from .causal_geometry_snapshot import CausalGeometrySnapshotSQL
 from .bus_traffic_rollup import BusTrafficRollupSQL
 from .heartbeat_seat_rollup import HeartbeatSeatRollupSQL
+from .field_goal_provenance_log import FieldGoalProvenanceLogSQL
 from .spark_introspection_log import SparkIntrospectionLogSQL
 from .spark_telemetry import SparkTelemetrySQL
 from .notify_models import (
@@ -156,6 +157,7 @@ __all__ = [
     "CausalGeometrySnapshotSQL",
     "BusTrafficRollupSQL",
     "HeartbeatSeatRollupSQL",
+    "FieldGoalProvenanceLogSQL",
     "SparkIntrospectionLogSQL",
     "SparkTelemetrySQL",
     "BusFallbackLog",

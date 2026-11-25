@@ -109,6 +109,12 @@ A code review ran in a subagent and returned 12 findings. All 12 are fixed.
 - Finding 12: stale "hour" wording.
   - Fix: updated in the schema and loop docstrings.
 
+Orion's first review (thread ba37694599a2, 8 questions) was answered on the PR (comment 7174397855). Fixed in 56897088d:
+- When a PR has no thread, the gate sends the PR to Orion itself, so the review and the 24 h clock start then.
+- An override is posted on the thread, so Orion can count waived reviews.
+- Docs: the bucket wording, and the 24 h clock runs from the thread's creation.
+- Ticketed: #4008 (round-up act outcome should be "session used the questions").
+
 Known and accepted: `gh api ... draft=false` and the GraphQL ready mutation bypass the gate. A session that does that is deliberately going around the gate.
 
 ## Restart required
@@ -123,7 +129,7 @@ The hooks take effect for new Claude Code sessions in the primary checkout once 
 
 - Severity: low. Concern: about 1,500 more characters in every round-up prompt (the template). Mitigation: the budget is 100,000 characters.
 - Severity: medium. Concern: about 5-6x more threads per day on Orion's agent lane. Mitigation: one round at a time, background priority, and heat refusals are not strikes.
-- Issues opened: #3999 (verify-live: first live code-only review and the draft gate). Closed: none.
+- Issues opened: #3999 (verify-live: first live code-only review and the draft gate), #4008 (round-up act outcome). Closed: none.
 - Severity: low. Concern: PRs opened outside Claude Code get no diff and no gate. Mitigation: `send --pr N` by hand.
 
 ## PR link

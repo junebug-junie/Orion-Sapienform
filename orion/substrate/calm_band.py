@@ -23,7 +23,8 @@ The rules (``ATTENTION_BAND_RULE_BY_NODE_ID``):
 - ``chat_bets`` (``node:prediction.chat_turn``, prediction_turn_surprise.py): each turn is the sum of
   two yes/no bets at calibrated q's, so z takes a few values per turn. The tail is the exact calm
   tail averaged over the live mix of q's (``data/chat_turn_calibrated_q_2026-11-24.json``, 71 turns),
-  for one-turn and two-turn windows, the larger of the two (the #3826 bar used the one-turn case).
+  for windows of one, two and three adjacent turns and the normal limit, the largest (the #3826 bar
+  used the one-turn case).
 - ``cantelli``: any standardized calm variable (mean 0, variance 1) has P(z >= k) <= 1 / (1 + k^2).
   Distribution-free, so it fits a new calibrated-excess node before its own tail is derived (e.g.
   ``node:prediction.street_rhythm``). Conservative: under it a value reaches "high" only at z >= 3.
@@ -35,7 +36,9 @@ The rules (``ATTENTION_BAND_RULE_BY_NODE_ID``):
 
 The window size n is not stored with the value, so for ``gamma`` / ``floored`` the tail is the
 largest over n = 1 .. ``MAX_WINDOW_OUTCOMES`` and the normal limit: "a calm window of any size reads
-at least this high no more often than this". That never overstates how unusual a reading is.
+at least this high no more often than this". That never overstates how unusual a reading is. The
+cost: the gamma and chat rules top out below 0.99 (z is clipped at 3 before a 1 % calm tail), so
+those nodes read "high" at most, never "unusual". Intended, not a bug.
 
 Rollback: delete a node's entry (it returns to the empirical rule and its 200-reading floor).
 """
@@ -85,6 +88,9 @@ ATTENTION_BAND_RULE_BY_NODE_ID: dict[str, str] = {
 CHAT_TURN_Q_MIX_PATH = Path(__file__).resolve().parent / "data" / "chat_turn_calibrated_q_2026-11-24.json"
 
 _EPS = 1e-12
+# Stored values are rounded to 6 decimals (z to ~1.5e-6), so an atom of the calm law (a one-outcome
+# floored window, a chat bet outcome) is matched within this tolerance, never by exact float equality.
+_ATOM_TOL = 1e-5
 _WARNED: set[str] = set()
 
 
@@ -142,10 +148,12 @@ def floored_sum_tail(n: int, s: float, p_floor: float = P_FLOOR) -> float:
     return max(0.0, min(1.0, total))
 
 
-def standardized_floored_tail(n: int, z: float, p_floor: float = P_FLOOR) -> float:
-    """Room / body: P((S - (1 - P) n) / sqrt(n var) >= z)."""
+def standardized_floored_tail(n: int, z: float, p_floor: float = P_FLOOR, *, strict: bool = False) -> float:
+    """Room / body: P((S - (1 - P) n) / sqrt(n var) >= z) (``strict``: > z). The sum has atoms where
+    every outcome is capped (z = 2.45 for n = 1, below the clip), matched within ``_ATOM_TOL``."""
     sd = math.sqrt(n * calm_excess_variance(p_floor))
-    return floored_sum_tail(n, (1.0 - p_floor) * n + z * sd, p_floor)
+    zz = z + _ATOM_TOL if strict else z - _ATOM_TOL
+    return floored_sum_tail(n, (1.0 - p_floor) * n + zz * sd, p_floor)
 
 
 def normal_tail(z: float) -> float:
@@ -197,7 +205,11 @@ def _chat_mixes() -> tuple[tuple[tuple[float, float], ...], ...]:
     of the live mix weighted equally."""
     turns = chat_turn_q_mix()
     out = []
-    for windows in ([list(t) for t in turns], [list(a) + list(b) for a, b in zip(turns, turns[1:])]):
+    for windows in (
+        [list(t) for t in turns],
+        [list(a) + list(b) for a, b in zip(turns, turns[1:])],
+        [list(a) + list(b) + list(c) for a, b, c in zip(turns, turns[1:], turns[2:])],
+    ):
         if not windows:
             continue
         w = 1.0 / len(windows)
@@ -207,7 +219,7 @@ def _chat_mixes() -> tuple[tuple[tuple[float, float], ...], ...]:
 
 
 def _mix_tail(atoms: Sequence[tuple[float, float]], z: float, strict: bool) -> float:
-    cut = z + _EPS if strict else z - _EPS
+    cut = z + _ATOM_TOL if strict else z - _ATOM_TOL
     return sum(p for zz, p in atoms if zz > cut)
 
 
@@ -216,7 +228,7 @@ def z_tail(rule: str, z: float, *, strict: bool = False) -> float:
     if rule == RULE_GAMMA:
         tails = [standardized_gamma_tail(n, z) for n in range(1, MAX_WINDOW_OUTCOMES + 1)]
     elif rule == RULE_FLOORED:
-        tails = [standardized_floored_tail(n, z) for n in range(1, MAX_WINDOW_OUTCOMES + 1)]
+        tails = [standardized_floored_tail(n, z, strict=strict) for n in range(1, MAX_WINDOW_OUTCOMES + 1)]
     elif rule == RULE_CHAT_BETS:
         try:
             mixes = _chat_mixes()
@@ -225,12 +237,13 @@ def z_tail(rule: str, z: float, *, strict: bool = False) -> float:
             # distribution-free bound (conservative: the node reads "high" only at z >= 3).
             _warn_once("chat_turn_q_mix_unreadable", exc)
             return z_tail(RULE_CANTELLI, z, strict=strict)
-        return max((_mix_tail(m, z, strict) for m in mixes), default=1.0)
+        # Windows of 1-3 turns and the many-turn normal limit (a 30-min window can hold several turns).
+        return max(max((_mix_tail(m, z, strict) for m in mixes), default=0.0), normal_tail(z))
     elif rule == RULE_CANTELLI:
         return 1.0 if z <= 0.0 else 1.0 / (1.0 + z * z)
     else:
         raise ValueError(f"no calm theory for rule {rule!r}")
-    # Continuous in z (an atom only where every outcome is capped): >= and > agree.
+    # Gamma is continuous in z; the floored atoms are handled by ``strict`` above.
     return max(max(tails), normal_tail(z))
 
 

@@ -148,3 +148,27 @@ def test_self_reading_line_names_its_calm_basis() -> None:
 
     assert "of calm, well-predicted stretches" in line(CHAT)
     assert "of my last 7 days" in line(DENSE_EMPIRICAL)
+
+
+def test_truth_eval_rederives_a_calm_line() -> None:
+    """services/orion-thought/evals/self_readings_truth.py checks the calm wording against the math."""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "services" / "orion-thought" / "evals"))
+    spec = importlib.util.spec_from_file_location("_truth", root / "services/orion-thought/evals/self_readings_truth.py")
+    truth = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(truth)
+
+    ts = NOW - timedelta(seconds=30)
+    rows = [(CHAT, ts, 1.0)]
+    pct = cb.calm_percentiles(CHAT, 1.0)[0]
+    p100 = int(pct * 100)
+    score = int(min(10, max(0, (pct * 10.0 + 0.5) // 1)))
+    ref = f"[pe:prediction.chat_turn@{ts.strftime('%Y-%m-%dT%H:%M:%SZ')}]"
+    good = f"- chat turn: {score}/10 for me (now 1.00; higher than {p100}% of calm, well-predicted stretches) {ref}"
+    assert truth.check_block(good, rows, NOW) == []
+    wrong_basis = good.replace("of calm, well-predicted stretches", "of my last 7 days")
+    assert truth.check_block(wrong_basis, rows, NOW)

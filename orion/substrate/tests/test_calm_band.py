@@ -142,3 +142,41 @@ def test_unreadable_chat_mix_falls_back_to_cantelli(monkeypatch, tmp_path) -> No
     finally:
         cb._chat_mixes.cache_clear()
         cb.chat_turn_q_mix.cache_clear()
+
+
+@pytest.mark.parametrize("delta", [0.0, 1e-7, -1e-7])
+def test_floored_one_outcome_atom_is_kept(delta) -> None:
+    """A one-outcome window at the p floor stores exactly (ln 20 - 0.95) / sd / 3 (calm prob 5 %).
+    Stored values carry 6 decimals, so the atom must be matched within a tolerance."""
+    v = (math.log(20.0) - 0.95) / math.sqrt(cb.calm_excess_variance()) / 3.0
+    for x in (v + delta, round(v, 6)):
+        strict, mid = cb.calm_percentiles(cb.ROOM_NODE_ID, x)
+        assert strict == pytest.approx(0.95, abs=1e-4)
+        assert mid == pytest.approx(0.966, abs=1e-3)
+
+
+def test_p_floor_matches_orion_prediction() -> None:
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[3] / "services" / "orion-prediction" / "app" / "surprise.py"
+    tree = ast.parse(src.read_text())
+    vals = [n.value.value for n in tree.body if isinstance(n, ast.Assign)
+            and any(getattr(t, "id", None) == "P_FLOOR" for t in n.targets)]
+    assert vals == [cb.P_FLOOR]
+
+
+def test_bet_atoms_match_brute_force() -> None:
+    """Independent enumeration (turn_surprise.py math) against bet_window_tail."""
+    import itertools
+
+    qs = [0.12, 0.83, 0.05]
+    lgs = [math.log(q / (1 - q)) for q in qs]
+    sd = math.sqrt(sum(q * (1 - q) * lg * lg for q, lg in zip(qs, lgs)))
+    for zcut in (0.5, 1.5, 2.4, 3.5):
+        want = 0.0
+        for ys in itertools.product((0, 1), repeat=len(qs)):
+            p = math.prod(q if y else 1 - q for q, y in zip(qs, ys))
+            e = sum(-(y - q) * lg for q, y, lg in zip(qs, ys, lgs))
+            want += p if e / sd >= zcut - 1e-12 else 0.0
+        assert cb.bet_window_tail(qs, zcut) == pytest.approx(want)

@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # orion-substrate-runtime already solved the per-organ ingestion problem the
     # 2026-05-01 heartbeat charter stalled on). No new channel is registered;
     # this is a second, additive consumer of a channel that already exists.
+    # (The seat rollup below publishes on its own channel,
+    # orion:heartbeat:seat:rollup.)
     channel_grammar_event: str = Field("orion:grammar:event", alias="CHANNEL_GRAMMAR_EVENT")
 
     # H1 (boundary/bulk entanglement) is computed periodically, not on every
@@ -110,5 +112,18 @@ class Settings(BaseSettings):
     # (#3838).
     verdict_atoms_enabled: bool = Field(True, alias="HEARTBEAT_VERDICT_ATOMS_ENABLED")
     verdict_summary_interval_sec: float = Field(3600.0, gt=0, alias="HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC")
+
+    # --- Five-minute seat rollup (issue #3886, app/seat_rollup.py) ---
+    # One HeartbeatSeatRollupV1 per seat per closed 5-minute bucket on
+    # orion:heartbeat:seat:rollup; orion-sql-writer stores it in
+    # heartbeat_seat_rollup_5m. Durable seat history for the field-demon replay
+    # (scripts/demon_network_replay.py): grammar_events keeps only ~3 days.
+    seat_rollup_enabled: bool = Field(True, alias="HEARTBEAT_SEAT_ROLLUP_ENABLED")
+    # A silence on orion:grammar:event longer than this marks the buckets it
+    # spans partial (read as missing). Bus atoms arrive every ~11 s.
+    seat_rollup_silence_gap_sec: float = Field(60.0, gt=0, alias="HEARTBEAT_SEAT_ROLLUP_SILENCE_GAP_SEC")
+    # A bucket is published this long after it ends, so an atom stamped just
+    # before the boundary still lands in its own bucket.
+    seat_rollup_flush_grace_sec: float = Field(30.0, ge=0, alias="HEARTBEAT_SEAT_ROLLUP_FLUSH_GRACE_SEC")
 
 settings = Settings()

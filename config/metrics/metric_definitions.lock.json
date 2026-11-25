@@ -1,14 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 745,
+  "metric_count": 746,
   "_last_change": {
-    "change_count": 4,
-    "high_severity_count": 2,
+    "change_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.perception.prediction_error",
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.prediction_error",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.perception.scene_change",
-      "medium added metric://field_channel/orion-substrate-runtime/node:substrate.perception_walkway.scene_change"
+      "medium added metric://bus_channel/orion-heartbeat/orion:heartbeat:seat:rollup"
     ]
   },
   "definitions": {
@@ -2052,6 +2049,17 @@
       "declared_consumers": [
         "*",
         "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-heartbeat/orion:heartbeat:seat:rollup": {
+      "schema_id": "HeartbeatSeatRollupV1",
+      "all_producers": [
+        "orion-heartbeat"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

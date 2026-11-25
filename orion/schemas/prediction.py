@@ -190,6 +190,49 @@ class PredictionJointSurpriseV1(BaseModel):
     top_shares: dict[str, float] = Field(default_factory=dict, max_length=8)
 
 
+# --- Street rhythm surprise (walkway rhythm forecast; services/orion-prediction/app/street_rhythm.py) ----
+
+PREDICTION_STREET_RHYTHM_SURPRISE_CHANNEL = "orion:prediction:street_rhythm_surprise"
+PREDICTION_STREET_RHYTHM_SURPRISE_KIND = "prediction.street_rhythm_surprise.v1"
+
+
+class PredictionStreetRhythmSurpriseV1(BaseModel):
+    """How surprised the walkway rhythm forecast was by one closed expectation: who did or didn't appear.
+
+    The sql-writer rhythm learner stated, before the window opened, probability ``stated_p`` that a known
+    subject (``individual:<id>`` or ``label:<label>``) appears on the walkway in [window_start, window_end],
+    and scored it after: ``happened`` = met. ``p`` = stated_p clamped to [0.02, 0.98] (no recalibration,
+    design rev 4). ``surprisal`` = -ln p(outcome); ``calm_surprisal`` = the binary entropy of p (its mean when
+    p is right); ``excess`` = surprisal - calm_surprisal (mean 0 under calibration); ``calm_var`` = its
+    variance under calibration. ``key_age_days``: days from the individual's first sighting to the window
+    (None for a label subject).
+
+    Published by orion-prediction once per scored outcome (unscorable windows and individuals unseen for 7+
+    days are refused, never published), only while ``scored_at`` is <= 30 min old. substrate-runtime folds it
+    into ``node:prediction.street_rhythm`` (a WORLD node, shadow until its 7-day calm check passes).
+    Kill switch ``PREDICTION_STREET_RHYTHM_EVENTS_ENABLED``. Carries no names: subject_key is a hex id or a
+    class label.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expectation_id: str = Field(..., min_length=1, max_length=128)
+    stream_id: Literal["walkway"]
+    subject_key: str = Field(..., min_length=1, max_length=128)
+    subject_kind: Literal["individual", "label"]
+    window_start: AwareDatetime
+    window_end: AwareDatetime
+    scored_at: AwareDatetime
+    stated_p: float = Field(..., ge=0.0, le=1.0)
+    p: float = Field(..., ge=0.02, le=0.98)
+    happened: bool
+    surprisal: float = Field(..., ge=0.0)
+    calm_surprisal: float = Field(..., ge=0.0)
+    excess: float
+    calm_var: float = Field(..., ge=0.0)
+    key_age_days: float | None = Field(None, ge=0.0)
+
+
 # --- Action bets (docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md) -------
 #
 # HTTP contracts only (orion-prediction :8132, /action-bets/*); no bus channel in v1. A body asks for

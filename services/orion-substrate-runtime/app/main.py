@@ -210,6 +210,14 @@ def _prediction_joint_surprise_status() -> dict | None:
         return None
 
 
+def _prediction_street_rhythm_status() -> dict | None:
+    try:
+        return worker.prediction_street_rhythm_status()
+    except Exception:  # noqa: BLE001 -- counters must never cost /health
+        logger.warning("prediction_street_rhythm_status_failed", exc_info=True)
+        return None
+
+
 @app.get("/health")
 async def health() -> dict:
     s = get_settings()
@@ -234,6 +242,8 @@ async def health() -> dict:
         "prediction_turn_surprise": _prediction_turn_surprise_status(),
         # node:prediction.body_joint / .room_joint windows (orion/substrate/prediction_joint_surprise.py).
         "prediction_joint_surprise": _prediction_joint_surprise_status(),
+        # node:prediction.street_rhythm window + shadow state (orion/substrate/prediction_street_rhythm.py).
+        "prediction_street_rhythm": _prediction_street_rhythm_status(),
         "service": s.service_name,
         "version": s.service_version,
         "node": s.node_name,

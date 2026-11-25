@@ -4124,3 +4124,13 @@ channels:
     stability: "experimental"
     since: "2026-11-18"
     description: "One scored family A joint-group bucket (every raw body and room reading forecast at once, 5 and 15 min ahead): group body (machines, cabinet, closet, AC, office temp) or room (office eCO2, PM2.5, lux, humidity; sound after #3581; a world source, #3580). d2 = Mahalanobis miss of the group's readings under its residual covariance (coupled misses count once), p = adaptive conformal p, excess = -ln p - calm point (0 when calibrated), top_shares = readings carrying the miss. Published only for scored rows with the adaptive p and a target <= 30 min old; the table prediction_joint_surprise is the record. substrate-runtime folds it into node:prediction.body_joint / node:prediction.room_joint (successor of node:substrate.biometrics). Kill switch PREDICTION_JOINT_SURPRISE_EVENTS_ENABLED. services/orion-prediction/app/family_a_live.py"
+
+  - name: "orion:prediction:street_rhythm_surprise"
+    kind: "event"
+    schema_id: "PredictionStreetRhythmSurpriseV1"
+    message_kind: "prediction.street_rhythm_surprise.v1"
+    producer_services: ["orion-prediction"]
+    consumer_services: ["orion-substrate-runtime"]
+    stability: "experimental"
+    since: "2026-11-25"
+    description: "One scored walkway rhythm expectation: how surprised the rhythm forecast (orion-sql-writer vision_rhythm.py, vision_percept_expectation) was by who did or didn't appear. Scores the RAW stated p clamped to [0.02, 0.98]: surprisal = -ln p(outcome), excess = surprisal - binary entropy of p (0 under calibration), calm_var its calm variance. Unscorable windows and individuals unseen for 7+ days are refused, never published. Published only while scored_at <= 30 min old. substrate-runtime folds it into node:prediction.street_rhythm (world node; shadow: fenced from attention and curiosity until the 7-day calm check passes). Kill switch PREDICTION_STREET_RHYTHM_EVENTS_ENABLED. Carries no names. services/orion-prediction/app/street_rhythm.py"

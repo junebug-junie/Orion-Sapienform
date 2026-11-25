@@ -591,6 +591,36 @@ channels:
       sparsity: per_tick
       absent_means: "written once per scored room-group bucket (about every 5 min). Nothing is written when no row passes (prediction service down, a refused bucket, no adaptive p yet, either kill switch off): the node keeps its last value, read as absent by world-first after 600 s and by every reader after 1800 s, never as calm."
 
+  # Walkway rhythm forecast surprise (PE retire design rev 4, item 5; Juniper approved 2026-11-24, shadow
+  # until a 7-day calm check passes). Producer chain: orion-sql-writer vision_rhythm.py states, before a
+  # window opens, p that a known subject (an individual or a class like the mail truck) appears on the
+  # walkway, then scores it met / missed / unscorable (vision_percept_expectation) ->
+  # services/orion-prediction/app/street_rhythm.py scores the RAW stated p (clamped [0.02, 0.98]; held-out
+  # recalibration was worse by 0.0067 nats and was dropped) as excess = -ln p(outcome) - binary entropy,
+  # refusing unscorable windows and individuals unseen for 7+ days -> prediction.street_rhythm_surprise.v1
+  # -> orion/substrate/prediction_street_rhythm.py folds the last 30 min into clip(z / 3, 0, 1), written
+  # on outcomes only. WORLD node (_WORLD_NODE_IDS): absent after 600 s without a write, skipped by the
+  # body-only gates and self-readings. About 150-180 writes a week, under the contests' 200-reading floor:
+  # it can compete only once #3917's calm-theory band table has a street_rhythm entry. SHADOW
+  # (orion/schemas/attention_candidate.py STREET_RHYTHM_SHADOW): world-first and curiosity skip it until
+  # services/orion-prediction/evals/run_street_rhythm_calm_eval.py --days 7 --check passes.
+  - node: "node:prediction.street_rhythm"
+    producer: orion-substrate-runtime
+    channel: prediction_error
+    level: [node]
+    category: self_monitoring
+    meaning: "How surprised the walkway rhythm forecast was by who did or didn't appear: before each window Orion's street rhythm learner states how likely a known subject (a person, a car it knows, the mail truck) is to show up on the walkway, and afterwards the window is scored. This is the forecasts scored in the last 30 minutes, as excess surprise over what the stated probabilities expected, in units of its calm spread (a z-score), 3 sigma = 1.0. 0 = the street went the way the forecast leaned. A window the camera did not watch is not a miss and is not counted. A miss can also mean a subject was re-identified under a new id, not that it stayed away."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:prediction.street_rhythm'"
+    consumers:
+      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
+    semantics:
+      value_kind: surprise_excess
+      rest: "0.0 = the forecasts scored in the last 30 min surprised their stated probabilities no more than calibration predicts (z <= 0). Reachable by theory (calm z about N(0, 1): exact 0 about half the time); 14-day replay (2026-11-11..25, 298 writes): exact 0 on 67 % of writes, p90 0.43, p99 0.89. In SHADOW until its 7-day calm check passes: recorded, not yet competing."
+      rest_range: [0.0, 0.55]
+      sparsity: event_gated
+      absent_means: "written once per scoring pass of the walkway rhythm learner that closes a forecast with information (about 21 a day). No scored outcome (night, the prediction service down, either kill switch off) writes nothing: the node keeps its last value, read as absent by world-first after 600 s and by every reader after 1800 s, never as calm. Replay: fresh 15 % of the time."
+
   # The two cameras are node-qualified `channel: scene_change` entries since
   # 2026-11-24 (PE retire Patch 3,
   # docs/superpowers/specs/2026-11-24-pe-retire-perception-and-alarms-design.md

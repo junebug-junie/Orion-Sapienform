@@ -73,7 +73,22 @@ NO_ATTENTION_CONSUMER_NODE_IDS: frozenset[str] = frozenset({PERCEPTION_WALKWAY_N
 # NO_ATTENTION_CONSUMER_NODE_IDS, or SUBSTRATE_STREET_ATTENTION_ENABLED=false.
 STREET_NODE_ID = "node:substrate.street"
 
-NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID})
+# Walkway rhythm forecast surprise (PE retire design rev 4, item 5; Juniper 2026-11-24): how surprised the
+# rhythm forecast was by who did or didn't appear. Written by orion/substrate/prediction_street_rhythm.py
+# (the id string lives here so this module stays free of orion.substrate imports). A WORLD node (below).
+STREET_RHYTHM_NODE_ID = "node:prediction.street_rhythm"
+
+# SHADOW GATE. A shadow node is written, sampled into the history table and shown on /health and the
+# glossary, but it does not compete in the attention contests (world_first_fenced, so it cannot win, author
+# a goal or reach Prime, which takes its concerns from attention) and cannot seed curiosity
+# (NO_CURIOSITY_CONSUMER_NODE_IDS). street_rhythm goes live only after its 7-day calm check passes:
+#   services/orion-prediction/evals/run_street_rhythm_calm_eval.py --days 7 --check
+# Going live is this one line: STREET_RHYTHM_SHADOW = False (one constant, read by every consumer in every
+# service, so attention and curiosity cannot drift apart the way per-service env flags could).
+STREET_RHYTHM_SHADOW: bool = True
+SHADOW_NODE_IDS: frozenset[str] = frozenset({STREET_RHYTHM_NODE_ID} if STREET_RHYTHM_SHADOW else ())
+
+NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID}) | SHADOW_NODE_IDS
 
 # Per-node band floor for the world-first contests (2026-10-21, Juniper's
 # option D). A node listed here competes as a candidate, but is eligible only at
@@ -112,21 +127,25 @@ ROOM_JOINT_NODE_ID = "node:prediction.room_joint"
 # are absent after 180 s without a reading (longer for a slower writer:
 # orion.attention.world_first.EXTERNAL_MAX_AGE_SEC_BY_NODE), and the body-only
 # self-signal gates (equilibrium episodes, hourly outcomes) do not read it. The
-# street node (doorbell rings, cross-camera handoffs) and the room joint are world too.
+# street node (doorbell rings, cross-camera handoffs) and the room joint are world too, and so is the
+# walkway rhythm forecast surprise (people and vehicles on the street).
 _WORLD_NODE_IDS: frozenset[str] = frozenset(
-    {PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID, STREET_NODE_ID, ROOM_JOINT_NODE_ID}
+    {PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID, STREET_NODE_ID, ROOM_JOINT_NODE_ID, STREET_RHYTHM_NODE_ID}
 )
 
 
 def world_first_fenced(node_id: str) -> bool:
     """True when the world-first contests must not build a candidate for
     ``node_id``: fenced from attention and not admitted under a band floor, or
-    a retired prediction-error node (its stored value is not a reading)."""
+    a retired prediction-error node (its stored value is not a reading), or a
+    shadow node (``SHADOW_NODE_IDS``: written, not yet allowed to compete)."""
     # Lazy: orion.substrate's package init is heavy, and every caller of this
     # function (attention broadcast, attention-runtime) already loaded it.
     from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 
     if is_retired_prediction_error_node(node_id):
+        return True
+    if node_id in SHADOW_NODE_IDS:
         return True
     return node_id in NO_ATTENTION_CONSUMER_NODE_IDS and node_id not in ATTENTION_MIN_BAND_BY_NODE_ID
 

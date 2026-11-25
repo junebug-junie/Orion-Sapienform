@@ -115,7 +115,7 @@ _WORDS: dict[str, tuple[str, str]] = {
 PE_LANE_CUTOVER_DATE = datetime(2026, 11, 24, tzinfo=timezone.utc)
 PE_LANE_MARKER_DAYS = 14
 # Display order for the names; membership comes from the glossary.
-_PE_LANE_ORDER = ("room", "body", "room_joint", "body_joint", "chat_turn")
+_PE_LANE_ORDER = ("room", "body", "room_joint", "body_joint", "chat_turn", "street_rhythm")
 
 
 def prediction_error_lane_nodes() -> list[str]:

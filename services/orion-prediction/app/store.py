@@ -91,6 +91,7 @@ ENERGY_BILL_COLS = ("source", "usage_point_id", "billing_period_start", "billing
                     "energy_charge", "customer_charge", "adjustments", "fees", "taxes", "credits", "current_charges",
                     "amount_due", "due_date", "statement_artifact_id", "retrieved_at", "source_file")
 ENERGY_READ_TIMEOUT_MS = 10_000
+STREET_RHYTHM_READ_TIMEOUT_MS = 10_000   # app/street_rhythm.py, vision_percept_expectation
 
 
 def _since(ts: datetime) -> str:
@@ -991,3 +992,26 @@ class PostgresStore:
         rows = self._all(sql, (never_settled, since, since, since, *args))
         r = rows[0] if rows else {}
         return {k: int(r.get(k) or 0) for k in ("open", "never_settled", "void", "settled")}
+
+    # --- Street rhythm surprise (app/street_rhythm.py; read-only, vision_* are orion-sql-writer's) -----
+    # Kept in its own block, apart from the Juniper-reachable reads.
+    def street_rhythm_outcomes(self, since: datetime, until: datetime | None = None,
+                               stream_id: str = "walkway") -> list[dict]:
+        """Closed walkway rhythm expectations scored in ``[since, until)`` (vision_percept_expectation),
+        oldest first, with each individual subject's latest and earliest sighting START before the
+        window opened (``last_seen_before`` / ``first_seen_before``; None for a label subject or a key
+        with no earlier sighting). The stale-key rule in app/street_rhythm.py reads those two."""
+        sql = ("SELECT e.expectation_id, e.stream_id, e.subject_key, e.window_start, e.window_end, "
+               "e.confidence, e.status, e.scored_at, s.last_seen_before, s.first_seen_before "
+               "FROM vision_percept_expectation e "
+               "LEFT JOIN LATERAL (SELECT max(v.started_at) AS last_seen_before, "
+               "min(v.started_at) AS first_seen_before FROM vision_individual_sighting v "
+               "WHERE e.subject_key LIKE 'individual:%%' "
+               "AND v.individual_id = substr(e.subject_key, 12) AND v.started_at < e.window_start) s ON true "
+               "WHERE e.stream_id = %s AND e.status IN ('met', 'missed', 'unscorable') "
+               "AND e.scored_at >= %s")
+        args: list = [stream_id, since]
+        if until is not None:
+            sql += " AND e.scored_at < %s"
+            args.append(until)
+        return self._read_only(sql + " ORDER BY e.scored_at, e.expectation_id", args, STREET_RHYTHM_READ_TIMEOUT_MS)

@@ -864,6 +864,17 @@ class BiometricsSubstrateWorker:
                     name="substrate-prediction-joint-surprise-listener",
                 )
             )
+        # Street rhythm surprise -> node:prediction.street_rhythm
+        # (orion/substrate/prediction_street_rhythm.py; PE retire rev 4 item 5). Event-driven only:
+        # no scored outcome, no writes, and the node ages to absent (never calm).
+        # SHADOW (orion/schemas/attention_candidate.py STREET_RHYTHM_SHADOW): written, fenced.
+        if self._bus is not None and s.prediction_street_rhythm_node_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._prediction_street_rhythm_listener_loop(),
+                    name="substrate-prediction-street-rhythm-listener",
+                )
+            )
         if s.enable_strain_attention:
             self._tasks.append(
                 asyncio.create_task(
@@ -1845,6 +1856,108 @@ class BiometricsSubstrateWorker:
         except Exception:
             state.bump("failed_total")
             logger.exception("substrate_prediction_joint_surprise_failed")
+
+    # ------------------------------------------------------------------
+    # Street rhythm surprise -> node:prediction.street_rhythm
+    # (orion/substrate/prediction_street_rhythm.py; PE retire design rev 4, item 5)
+    # ------------------------------------------------------------------
+
+    _PREDICTION_STREET_RHYTHM_LISTENER_NAME = "substrate_prediction_street_rhythm_listener"
+
+    def _prediction_street_rhythm_state(self):
+        # getattr: tests build the worker via __new__ and skip __init__.
+        state = getattr(self, "_prediction_street_rhythm", None)
+        if state is None:
+            from orion.substrate.prediction_street_rhythm import StreetRhythmState
+
+            state = StreetRhythmState()
+            self._prediction_street_rhythm = state
+        return state
+
+    def prediction_street_rhythm_status(self) -> dict[str, Any]:
+        """Counters, current window and shadow state, for /health (``prediction_street_rhythm``)."""
+        from orion.schemas.attention_candidate import SHADOW_NODE_IDS
+        from orion.substrate.prediction_street_rhythm import STREET_RHYTHM_NODE_ID
+
+        state = self._prediction_street_rhythm_state()
+        r = state.reading(now=datetime.now(timezone.utc))
+        return {
+            "enabled": bool(self._settings.prediction_street_rhythm_node_enabled),
+            "shadow": STREET_RHYTHM_NODE_ID in SHADOW_NODE_IDS,
+            "counts": state.counts_snapshot(),
+            "node": None if r is None else {
+                "z": round(r.z, 4), "value": round(r.value, 4), "n": r.n,
+                "mean_excess": round(r.mean_excess, 4), "newest_scored_at": r.newest_scored_at.isoformat(),
+            },
+        }
+
+    async def _prediction_street_rhythm_listener_loop(self) -> None:
+        await run_subscription(
+            self._bus,
+            self._settings.prediction_street_rhythm_channel,
+            self._handle_prediction_street_rhythm_message,
+            stop_event=self._stop,
+            name=self._PREDICTION_STREET_RHYTHM_LISTENER_NAME,
+        )
+
+    async def _handle_prediction_street_rhythm_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            self._prediction_street_rhythm_state().bump("invalid_total")
+            logger.warning("substrate_prediction_street_rhythm_decode_failed: %s", decoded.error)
+            return
+        await asyncio.to_thread(self._process_prediction_street_rhythm, decoded.envelope.payload or {})
+
+    def _write_prediction_street_rhythm_node(self, *, now: datetime | None = None) -> bool:
+        """Write the node from the current 30-min window. Nothing in the window = no write (the node ages
+        to absent, never calm). FalkorDB node only, no field receipt."""
+        from orion.substrate.prediction_street_rhythm import REDUCER_KEY
+
+        state = self._prediction_street_rhythm_state()
+        now = now or datetime.now(timezone.utc)
+        reading = state.reading(now=now)
+        if reading is None:
+            state.bump("no_information")
+            return False
+        written = self._write_prediction_error_node(
+            node_id=reading.node_id,
+            error=reading.value,
+            now=now,
+            reducer_key=REDUCER_KEY,
+            evidence_event_ids=[f"vision_percept_expectation:{eid}" for eid in reading.expectation_ids],
+        )
+        state.bump("node_writes_total" if written else "node_write_skipped_total")
+        return bool(written)
+
+    def _process_prediction_street_rhythm(self, payload: Any, *, now: datetime | None = None) -> None:
+        """Fold one PredictionStreetRhythmSurpriseV1 into the 30-min window and write the node. Fail-open.
+        One ``substrate_prediction_street_rhythm`` log line per event. Writes only on an accepted event."""
+        from orion.schemas.prediction import PredictionStreetRhythmSurpriseV1
+
+        state = self._prediction_street_rhythm_state()
+        try:
+            event = PredictionStreetRhythmSurpriseV1.model_validate(payload)
+        except ValueError as exc:
+            state.bump("invalid_total")
+            logger.error("substrate_prediction_street_rhythm_invalid err=%s", exc)
+            return
+        try:
+            now = now or datetime.now(timezone.utc)
+            node_id, verdict = state.add(event, now=now)
+            state.bump(verdict)
+            reading = state.reading(now=now) if verdict == "accepted" else None
+            logger.info(
+                "substrate_prediction_street_rhythm expectation_id=%s kind=%s p=%.3f happened=%s "
+                "excess=%+.3f verdict=%s window_z=%s n=%s",
+                event.expectation_id, event.subject_kind, event.p, event.happened, event.excess, verdict,
+                "none" if reading is None else f"{reading.z:+.3f}",
+                "none" if reading is None else reading.n,
+            )
+            if verdict == "accepted":
+                self._write_prediction_street_rhythm_node(now=now)
+        except Exception:
+            state.bump("failed_total")
+            logger.exception("substrate_prediction_street_rhythm_failed")
 
     # ------------------------------------------------------------------
     # Street events -> node:substrate.street (orion/substrate/street_attention.py)

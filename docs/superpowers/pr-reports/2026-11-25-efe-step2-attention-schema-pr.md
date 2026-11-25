@@ -269,13 +269,15 @@ Only orion-mind changes. No other service needs a restart, and there is no order
 ## Risks / concerns
 
 - Severity: low. Concern: the frame line is UNVERIFIED live in a real Prime thought until orion-mind is
-  redeployed. Mitigation: verify-live ticket (below), checked against the cockpit sighting's prompt.
+  redeployed. Mitigation: verify-live ticket (#3937), checked against the cockpit sighting's prompt.
 - Severity: medium. Concern: 2b's acceptance (S2.2) is not met: no bet exists. Mitigation: the finding and the
-  gated proposal above. The design ticket waits on Juniper.
+  gated proposal above. The design ticket (#3936) waits on Juniper.
 - Severity: low. Concern: the 2026-07-23 reversion finding (62% vs 50%) used the wrong null. Other readers of that
   doc may still trust it. Mitigation: recorded on #3802.
 
-Issues opened / commented: <filled>
+Issues opened: #3936 (design, needs-juniper: the 2b successor bet), #3937 (verify-live: the frame line after
+deploy). Commented: #3802 (the reversion rule fails the gate on the live nodes). Progress on #3432 (not closed:
+2b is open).
 
 ## PR link
 

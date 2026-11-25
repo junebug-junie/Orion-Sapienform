@@ -91,6 +91,6 @@ No restart required. Takes effect on the next post-pull rebuild.
 
 ## PR link
 
-(filled in after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/4002
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

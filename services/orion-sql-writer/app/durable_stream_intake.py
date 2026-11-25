@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, Optional
 
 from orion.core.bus.bus_schemas import BaseEnvelope
@@ -33,6 +34,11 @@ class DurableStreamIntake:
     ``start_id="0"`` on first group creation: the first boot after deploy also writes the entries
     the pool streamed before this group existed (the old pub/sub writer already wrote most of
     them; the primary key skips those). After that the group exists and its cursor rules.
+
+    Dead letters go by AGE, not delivery count: an entry the handler cannot write is retried until
+    it is ``dlq_after_sec`` old (default 12 h, inside the stream's ~1 day MAXLEN horizon). A count
+    (20 deliveries x 30 s) would dead-letter every event of a 10-minute Postgres outage into a DLQ
+    nothing reads -- the #3920 loss again, later. Undecodable entries go to the DLQ at once.
     """
 
     def __init__(
@@ -44,12 +50,13 @@ class DurableStreamIntake:
         consumer: str,
         dlq_stream: str,
         handler: Handler,
-        max_attempts: int = 20,
+        dlq_after_sec: float = 43200.0,
         block_ms: int = 5000,
         autoclaim_idle_ms: int = 30000,
         count: int = 100,
         idle_backoff_sec: float = 1.0,
         start_id: str = "0",
+        now_ms: Callable[[], int] | None = None,
         logger_: Optional[logging.Logger] = None,
     ) -> None:
         self.queue = queue
@@ -58,14 +65,16 @@ class DurableStreamIntake:
         self.consumer = consumer
         self.dlq_stream = dlq_stream
         self.handler = handler
-        self.max_attempts = max(1, int(max_attempts))
+        self.dlq_after_ms = int(float(dlq_after_sec) * 1000)
         self.block_ms = int(block_ms)
         self.autoclaim_idle_ms = int(autoclaim_idle_ms)
         self.count = max(1, int(count))
         self.idle_backoff_sec = float(idle_backoff_sec)
         self.start_id = start_id
+        self.now_ms = now_ms or (lambda: int(time.time() * 1000))
         self.log = logger_ or logger
         self._group_ready = False
+        self._recovered = False
         self._stopped = False
         self.written = 0
         self.failed = 0
@@ -99,59 +108,73 @@ class DurableStreamIntake:
             self.log.warning("durable_intake_dlq_malformed stream=%s message_id=%s error=%s",
                              self.stream, err.message_id, err.error)
 
-    async def _deliveries_for(self, message_id: str) -> Optional[int]:
-        rows = await self.queue.pending_range(self.stream, self.group, start=message_id, end=message_id, count=1)
-        for row in rows:
-            if row.message_id == message_id:
-                return row.deliveries
-        return None
-
-    async def reclaim_stale(self) -> int:
-        """Entries read but never acked (handler raised, or the last process died mid-batch)."""
-        _next, batch = await self.queue.autoclaim(
-            self.stream, self.group, self.consumer,
-            min_idle_ms=self.autoclaim_idle_ms, start_id="0-0", count=self.count,
-        )
-        await self._dlq_decode_errors(batch.decode_errors)
-        handled = len(batch.decode_errors)
-        for msg in batch.messages:
-            attempts = await self._deliveries_for(msg.message_id)
-            if attempts is not None and attempts > self.max_attempts:
-                await self.queue.send_to_dlq(self.dlq_stream, msg, error="handler_failed",
-                                             reason="max_attempts_exceeded", attempt=attempts)
-                await self.queue.ack(self.stream, self.group, msg.message_id)
-                self.dead_lettered += 1
-                self.log.warning("durable_intake_dlq stream=%s message_id=%s attempts=%s",
-                                 self.stream, msg.message_id, attempts)
-                handled += 1
-                continue
+    def _age_ms(self, msg: StreamMessage) -> int:
+        """Entry age from its enqueue stamp, else from the stream id's millisecond part."""
+        born = msg.enqueued_at_ms
+        if born is None:
             try:
-                await self._process(msg)
-                handled += 1
-            except Exception:  # noqa: BLE001 -- left pending for the next pass
-                self.failed += 1
-                self.log.warning("durable_intake_reclaim_failed stream=%s message_id=%s (left pending)",
-                                 self.stream, msg.message_id, exc_info=True)
-        return handled
+                born = int(msg.message_id.split("-", 1)[0])
+            except ValueError:
+                return 0
+        return self.now_ms() - int(born)
 
-    async def drain_new(self) -> int:
-        batch = await self.queue.read_group(self.stream, self.group, self.consumer,
-                                            count=self.count, block_ms=self.block_ms)
-        await self._dlq_decode_errors(batch.decode_errors)
-        handled = 0
-        for msg in batch.messages:
+    async def _handle_batch(self, messages: list[StreamMessage], *, where: str) -> int:
+        handled, first_error = 0, True
+        for msg in messages:
             try:
                 await self._process(msg)
                 handled += 1
             except Exception:  # noqa: BLE001 -- unacked: reclaim_stale retries it
                 self.failed += 1
-                self.log.warning("durable_intake_handle_failed stream=%s message_id=%s (left pending)",
-                                 self.stream, msg.message_id, exc_info=True)
+                # One traceback per batch: a Postgres outage fails every entry the same way.
+                self.log.warning("durable_intake_%s_failed stream=%s message_id=%s (left pending)",
+                                 where, self.stream, msg.message_id, exc_info=first_error)
+                first_error = False
         return handled
+
+    async def reclaim_stale(self, *, min_idle_ms: int | None = None) -> int:
+        """Entries read but never acked (handler raised, or the last process died mid-batch)."""
+        _next, batch = await self.queue.autoclaim(
+            self.stream, self.group, self.consumer,
+            min_idle_ms=self.autoclaim_idle_ms if min_idle_ms is None else min_idle_ms,
+            start_id="0-0", count=self.count,
+        )
+        await self._dlq_decode_errors(batch.decode_errors)
+        retry: list[StreamMessage] = []
+        handled = len(batch.decode_errors)
+        for msg in batch.messages:
+            age_ms = self._age_ms(msg)
+            if age_ms > self.dlq_after_ms:
+                await self.queue.send_to_dlq(self.dlq_stream, msg, error="handler_failed",
+                                             reason="too_old_to_retry", attempt=0)
+                await self.queue.ack(self.stream, self.group, msg.message_id)
+                self.dead_lettered += 1
+                self.log.warning("durable_intake_dlq stream=%s message_id=%s age_s=%.0f",
+                                 self.stream, msg.message_id, age_ms / 1000)
+                handled += 1
+            else:
+                retry.append(msg)
+        return handled + await self._handle_batch(retry, where="reclaim")
+
+    async def drain_new(self) -> int:
+        batch = await self.queue.read_group(self.stream, self.group, self.consumer,
+                                            count=self.count, block_ms=self.block_ms)
+        await self._dlq_decode_errors(batch.decode_errors)
+        return len(batch.decode_errors) + await self._handle_batch(batch.messages, where="handle")
 
     async def run_once(self) -> int:
         await self.ensure_ready()
-        return await self.reclaim_stale() + await self.drain_new()
+        handled = 0
+        if not self._recovered:
+            # Boot: entries the previous process read but never acked (it died mid-batch) are
+            # taken back at once, not after autoclaim_idle_ms. sql-writer is the group's only reader.
+            while True:
+                n = await self.reclaim_stale(min_idle_ms=0)
+                handled += n
+                if n < self.count:
+                    break
+            self._recovered = True
+        return handled + await self.reclaim_stale() + await self.drain_new()
 
     def stop(self) -> None:
         self._stopped = True

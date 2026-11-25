@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     event_stream_enabled: bool = Field(True, alias="GPU_POOL_EVENT_STREAM_ENABLED")
     event_stream_key: str = Field("orion:stream:gpu_pool:event", alias="GPU_POOL_EVENT_STREAM_KEY")
     event_stream_maxlen: int = Field(40000, gt=0, alias="GPU_POOL_EVENT_STREAM_MAXLEN")
+    # One XADD runs inside the runtime lock: bound it so a hung Redis never stalls leasing.
+    event_stream_timeout_sec: float = Field(2.0, gt=0, alias="GPU_POOL_EVENT_STREAM_TIMEOUT_SEC")
 
     # Swap-load guards (read outside the runtime lock, every guard_refresh_sec).
     cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="GPU_POOL_CABINET_URL")

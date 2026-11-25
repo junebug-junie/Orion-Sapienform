@@ -7,6 +7,8 @@ even when the publish fails, and a stream failure never breaks scheduling.
 """
 from __future__ import annotations
 
+import asyncio
+
 import fakeredis.aioredis
 
 from orion.core.bus.work_queue import RedisStreamWorkQueue
@@ -15,12 +17,12 @@ from tests.test_runtime import FakeBus, acq, boot, make, run
 
 
 class Sink:
-    def __init__(self, fail=False):
+    def __init__(self, fail=None):
         self.envs, self.fail = [], fail
 
     async def __call__(self, env):
-        if self.fail:
-            raise ConnectionError("redis down")
+        if self.fail is not None:
+            raise self.fail
         self.envs.append(env)
 
 
@@ -53,12 +55,14 @@ def test_a_failed_publish_still_streams_and_a_failed_stream_never_breaks_a_grant
         assert r.status == "granted"
         assert any(e.payload["event"] == "granted" and e.payload["lease_id"] == r.lease_id for e in sink.envs)
 
-        rt2, _ = make()
-        rt2.event_stream = Sink(fail=True)
-        await boot(rt2)
-        r2 = await rt2.acquire(acq("metacog"))
-        assert r2.status == "granted"
-        assert rt2.bus.events("granted")  # pub/sub unaffected
+        # main.py's sink raises TimeoutError when its wait_for bound trips (a hung Redis).
+        for failure in (ConnectionError("redis down"), asyncio.TimeoutError()):
+            rt2, _ = make()
+            rt2.event_stream = Sink(fail=failure)
+            await boot(rt2)
+            r2 = await rt2.acquire(acq("metacog"))
+            assert r2.status == "granted"
+            assert rt2.bus.events("granted")  # pub/sub unaffected
     run(go())
 
 

@@ -1819,25 +1819,29 @@ class PoolRuntime:
             return
         env = await self._publish(GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND, event.model_dump(mode="json"),
                                   event_envelope_correlation(event))
-        if self.event_stream is not None:
+        if self.event_stream is not None and env is not None:
             await self._stream_event(env)
         if event.event in _GRAMMAR_EVENTS:
             await self._grammar(event)
 
-    async def _publish(self, channel: str, kind: str, payload: dict, corr: str | None) -> BaseEnvelope:
+    async def _publish(self, channel: str, kind: str, payload: dict, corr: str | None) -> BaseEnvelope | None:
         t = time.monotonic()
         try:
             return await self._publish_inner(channel, kind, payload, corr)
         finally:
             self._phase("bus_publish", t)
 
-    async def _publish_inner(self, channel: str, kind: str, payload: dict, corr: str | None) -> BaseEnvelope:
+    async def _publish_inner(self, channel: str, kind: str, payload: dict, corr: str | None) -> BaseEnvelope | None:
+        """Returns the envelope (also when the publish failed, so the stream still gets it), or
+        None when it could not even be built."""
         try:
             cid = uuid.UUID(str(corr)) if corr else uuid.uuid4()
         except ValueError:
             cid = uuid.uuid4()
-        env = BaseEnvelope(kind=kind, source=ServiceRef(name=self.service_name), correlation_id=cid, payload=payload)
+        env = None
         try:
+            env = BaseEnvelope(kind=kind, source=ServiceRef(name=self.service_name), correlation_id=cid,
+                               payload=payload)
             await self.bus.publish(channel, env)
         except Exception:  # noqa: BLE001 -- telemetry must never break scheduling
             logger.warning("gpu_pool_publish_failed channel=%s", channel, exc_info=True)

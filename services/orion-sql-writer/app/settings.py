@@ -154,6 +154,11 @@ class Settings(BaseSettings):
     gpu_pool_event_stream_group: str = Field("cg:sql-writer", alias="SQL_WRITER_GPU_POOL_EVENT_STREAM_GROUP")
     gpu_pool_event_stream_dlq: str = Field("orion:stream:gpu_pool:event:dlq",
                                            alias="SQL_WRITER_GPU_POOL_EVENT_STREAM_DLQ")
+    # An entry that cannot be written (row AND bus_fallback_log write failed: Postgres down) is
+    # retried until it is this old, then dead-lettered. By age, so a long Postgres outage is waited
+    # out, not dead-lettered; 12 h sits inside the stream's ~1 day MAXLEN horizon.
+    gpu_pool_event_stream_dlq_after_sec: float = Field(43200.0, gt=0,
+                                                       alias="SQL_WRITER_GPU_POOL_EVENT_STREAM_DLQ_AFTER_SEC")
 
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="ORION_HEARTBEAT_INTERVAL_SEC")

@@ -120,25 +120,75 @@ def test_first_boot_writes_entries_streamed_before_the_group_existed_and_dedupes
     asyncio.run(go())
 
 
-def test_a_failed_write_stays_pending_and_is_written_on_reclaim(table) -> None:
+def test_postgres_down_leaves_the_entry_pending_through_the_real_handler_then_writes_it(table, monkeypatch) -> None:
+    """The real handle_envelope: the row write AND its bus_fallback_log write both fail -> it
+    raises, the intake does not ack, and the entry is written once Postgres is back."""
     async def go():
         redis = fakeredis.aioredis.FakeRedis()
         env = _event("lease-db-down")
         await _queue(redis).enqueue(GPU_POOL_EVENT_STREAM, env)
-        calls = {"n": 0}
+        working = worker.get_session
 
-        async def flaky(e):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise ConnectionError("postgres unreachable (row and fallback write both failed)")
-            await worker.handle_envelope(e)
+        def down():
+            raise ConnectionError("postgres unreachable")
 
-        intake = _intake(_queue(redis), handler=flaky, autoclaim_idle_ms=0)
+        monkeypatch.setattr(worker, "get_session", down)
+        intake = _intake(_queue(redis), autoclaim_idle_ms=0)
         await intake.run_once()
-        assert table() == [] and intake.failed == 1
+        assert intake.failed == 1 and intake.written == 0
+        assert (await intake.queue.pending_summary(GPU_POOL_EVENT_STREAM, GROUP))["count"] == 1
+
+        monkeypatch.setattr(worker, "get_session", working)
         await intake.run_once()
         assert table() == [env.payload["event_id"]]
         assert (await intake.queue.pending_summary(GPU_POOL_EVENT_STREAM, GROUP))["count"] == 0
+        assert await redis.xlen(GPU_POOL_EVENT_STREAM_DLQ) == 0
+    asyncio.run(go())
+
+
+def test_an_outage_is_waited_out_and_only_an_entry_older_than_dlq_after_is_dead_lettered(table) -> None:
+    """By age, not delivery count: many failed passes inside the window never dead-letter."""
+    async def go():
+        redis = fakeredis.aioredis.FakeRedis()
+        env = _event("lease-long-outage")
+        await _queue(redis).enqueue(GPU_POOL_EVENT_STREAM, env)
+        clock = {"ms": int(datetime.now(timezone.utc).timestamp() * 1000)}
+
+        async def down(e):
+            raise ConnectionError("postgres unreachable")
+
+        intake = _intake(_queue(redis), handler=down, autoclaim_idle_ms=0, dlq_after_sec=3600,
+                         now_ms=lambda: clock["ms"])
+        for _ in range(30):  # 30 failed passes, entry still young
+            await intake.run_once()
+        assert await redis.xlen(GPU_POOL_EVENT_STREAM_DLQ) == 0
+        assert (await intake.queue.pending_summary(GPU_POOL_EVENT_STREAM, GROUP))["count"] == 1
+
+        clock["ms"] += 3601 * 1000
+        await intake.run_once()
+        assert await redis.xlen(GPU_POOL_EVENT_STREAM_DLQ) == 1
+        assert (await intake.queue.pending_summary(GPU_POOL_EVENT_STREAM, GROUP))["count"] == 0
+        assert intake.dead_lettered == 1 and table() == []
+    asyncio.run(go())
+
+
+def test_entries_read_but_not_acked_by_a_crashed_process_are_written_at_boot(table) -> None:
+    """The container dies mid-batch: delivered to sql-writer-<node>, never acked. The next boot
+    takes them back at once, not after autoclaim_idle_ms (30 s)."""
+    async def go():
+        redis = fakeredis.aioredis.FakeRedis()
+        envs = [_event(f"lease-crash-{i}") for i in range(3)]
+        q = _queue(redis)
+        await q.ensure_group(GPU_POOL_EVENT_STREAM, GROUP, start_id="0")
+        for env in envs:
+            await q.enqueue(GPU_POOL_EVENT_STREAM, env)
+        crashed = await q.read_group(GPU_POOL_EVENT_STREAM, GROUP, "sql-writer-test", count=10, block_ms=10)
+        assert len(crashed.messages) == 3  # read, never acked
+
+        fresh = _intake(_queue(redis))  # default autoclaim_idle_ms=30000
+        await fresh.run_once()
+        assert sorted(table()) == sorted(e.payload["event_id"] for e in envs)
+        assert (await fresh.queue.pending_summary(GPU_POOL_EVENT_STREAM, GROUP))["count"] == 0
     asyncio.run(go())
 
 
@@ -162,6 +212,7 @@ def test_stream_on_drops_the_pubsub_subscription_even_from_a_stale_env_list() ->
     assert GPU_POOL_EVENT_CHANNEL not in stale.effective_subscribe_channels
     assert stale.gpu_pool_event_stream_key == GPU_POOL_EVENT_STREAM
     assert stale.gpu_pool_event_stream_dlq == GPU_POOL_EVENT_STREAM_DLQ
+    assert stale.effective_stream_channels == [GPU_POOL_EVENT_STREAM]
     off = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=["orion:biometrics:summary"],
                    SQL_WRITER_GPU_POOL_EVENT_STREAM_ENABLED=False)
     assert GPU_POOL_EVENT_CHANNEL in off.effective_subscribe_channels  # rollback: pub/sub again

@@ -1424,13 +1424,18 @@ so a redelivery is a duplicate skip. The group is created at id `0`, so the firs
 what the pool streamed before it (mostly duplicates of the old pub/sub writes).
 
 A row write that fails goes to `bus_fallback_log` as before and is acked. Only when that fallback
-write also fails (Postgres unreachable) does the entry stay pending; it is reclaimed after 30 s idle
-and dead-lettered to `orion:stream:gpu_pool:event:dlq` after 20 deliveries. Undecodable entries go
-straight to the DLQ.
+write also fails (Postgres unreachable) does the entry stay pending. It is retried every 30 s and
+dead-lettered to `orion:stream:gpu_pool:event:dlq` only once it is older than
+`SQL_WRITER_GPU_POOL_EVENT_STREAM_DLQ_AFTER_SEC` (12 h), so a Postgres outage is waited out. At boot
+the intake first takes back whatever the previous process read but never acked. Undecodable entries
+go straight to the DLQ.
 
 With `SQL_WRITER_GPU_POOL_EVENT_STREAM_ENABLED=true` (default) the pub/sub subscription to
 `orion:gpu_pool:event` is removed, even when a stale `SQL_WRITER_SUBSCRIBE_CHANNELS` still lists it:
 one source, no double intake. `false` is the rollback: pub/sub again, and restarts lose events again.
+The two flags are coupled: with this one on, sql-writer reads only the stream, so turning the
+pool's `GPU_POOL_EVENT_STREAM_ENABLED` off (or changing either `..._KEY`) writes nothing. Turn
+sql-writer's off first. Deploy the pool before (or with) sql-writer.
 
 Check it live: `redis-cli XINFO GROUPS orion:stream:gpu_pool:event` (`lag` near 0, `pending` 0), and
 after a sql-writer rebuild, no gap in `gpu_pool_events.generated_at` across the rebuild window.

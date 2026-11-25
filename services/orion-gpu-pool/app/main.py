@@ -20,6 +20,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter, Rabbit
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.core.bus.work_queue import RedisStreamWorkQueue
+from redis import asyncio as aioredis
 from orion.gpu_pool.value_order import ValueOrderConfig
 from orion.gpu_pool.config import SWAP_GUARDS, PoolConfig, load_pool_config, ready_body_ok
 from orion.gpu_pool.discovery import Probe, load_profiles
@@ -331,12 +332,17 @@ async def lifespan(app: FastAPI):
     if _settings.orion_bus_enabled and _settings.event_stream_enabled:
         quiet = logging.getLogger("orion-gpu-pool.event_stream")
         quiet.setLevel(logging.WARNING)
-        _event_stream = RedisStreamWorkQueue(_settings.orion_bus_url, default_maxlen=_settings.event_stream_maxlen,
-                                             logger_=quiet)
+        # The sink runs inside the runtime lock: socket timeouts on the client (the queue's own
+        # from_url has none) and a hard wait_for bound, so a half-open connection cannot hang leasing.
+        timeout = _settings.event_stream_timeout_sec
+        stream_client = aioredis.from_url(_settings.orion_bus_url, decode_responses=False,
+                                          socket_timeout=timeout, socket_connect_timeout=timeout)
+        _event_stream = RedisStreamWorkQueue(_settings.orion_bus_url, client=stream_client,
+                                             default_maxlen=_settings.event_stream_maxlen, logger_=quiet)
         stream_key = _settings.event_stream_key
 
         async def event_sink(env: BaseEnvelope) -> None:
-            await _event_stream.enqueue(stream_key, env)
+            await asyncio.wait_for(_event_stream.enqueue(stream_key, env), timeout=timeout)
 
         logger.info("gpu_pool_event_stream ON key=%s maxlen=%s", stream_key, _settings.event_stream_maxlen)
     else:
@@ -429,7 +435,7 @@ async def lifespan(app: FastAPI):
         if _bus is not None:
             await _bus.close()
         if _event_stream is not None:
-            await _event_stream.close()
+            await _event_stream.client.aclose()  # passed in, so the queue's close() leaves it open
         if _store is not None:
             await _store.close()
         if _pool is not None:

@@ -1068,9 +1068,10 @@ async def lifespan(app: FastAPI):
                 queue=gpu_pool_event_queue,
                 stream=settings.gpu_pool_event_stream_key,
                 group=settings.gpu_pool_event_stream_group,
-                consumer=f"sql-writer-{settings.node_name}",
+                consumer=f"sql-writer-{settings.node_name or 'athena'}",
                 dlq_stream=settings.gpu_pool_event_stream_dlq,
                 handler=_gpu_pool_event_handler,
+                dlq_after_sec=settings.gpu_pool_event_stream_dlq_after_sec,
             )
             gpu_pool_event_stream_task = asyncio.create_task(gpu_pool_event_intake.run_forever())
             logger.info("gpu_pool_event stream intake ON stream=%s group=%s",

@@ -1105,7 +1105,7 @@ Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.p
   traveled to X?" got NONE, and the reranker scored the stored trip far below the bar against the
   raw first-person question. The rewrite prompt now says who is speaking ("I" = Juniper) and that a
   question about her past always needs a search. When the model still says NONE, fails or times out
-  on a message that `asks_about_past` (a memory verb aimed at Orion, or "did I / was I ...?";
+  on a message that `asks_about_past` (a memory verb in an asking form, or "did I / was I ...?";
   grammar words only, no topic list), recall builds one search from the asking clause: first person
   becomes "Juniper", memory verbs drop, a preamble clause ("running a test") stays out. The trace
   reads `rewrite: fallback` plus `rewrite_model` (what the model answered). This also applies to

@@ -53,7 +53,7 @@ for p in (str(SERVICE), str(REPO)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from app.lived_memory import LivedMemoryConfig, LivedMemoryRecall, rank  # noqa: E402
+from app.lived_memory import LivedMemoryConfig, LivedMemoryRecall, rank, rewrite_label  # noqa: E402
 from orion.introspect.semantic_index import SearchConfig  # noqa: E402
 from orion.memory.lived_memory import COLLECTION  # noqa: E402
 from orion.memory.low_info_social import is_low_info_social  # noqa: E402
@@ -236,7 +236,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             timings.append(out.debug.get("timings_ms") or {})
             g = out.debug.get("gate") or "none"
             gates[g] = gates.get(g, 0) + 1
-            o = (out.debug.get("rewrite") or {}).get("outcome") or "none"
+            o = rewrite_label(out.debug.get("rewrite"))
             outcomes[o] = outcomes.get(o, 0) + 1
             b = out.backend or "no_search"
             backends[b] = backends.get(b, 0) + 1

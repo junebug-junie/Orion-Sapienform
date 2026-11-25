@@ -24,8 +24,8 @@ the same conversation and writes up to ``MAX_QUERIES`` short searches that name 
   question. The prompt now says who is speaking and that a question about Juniper's past always
   needs a search. When the model still answers NONE, fails or times out on a message that
   ``asks_about_past``, recall builds one search itself (``lived_memory.fallback_queries``).
-  The check is grammar, not topics: a memory verb aimed at Orion ("do you remember", "remind me"),
-  or a question about Juniper's own past ("when did I", "was I").
+  The check is grammar, not topics: a memory verb in an asking form ("do you remember", "remind me
+  what"), or a question about Juniper's own past ("when did I ...?", "was I ...?").
 - **Failure.** Any error, refusal or timeout means "no rewrite": recall goes on with the raw
   message, exactly as in step 1 (except for the recall-seeking fallback above).
 
@@ -100,19 +100,29 @@ line. Name the specific thing. Write only the queries, or NONE."""
 # rewritten to this name, because the memories are written about her in the third person.
 SPEAKER = "Juniper"
 
-# Closed-class cues only (memory verbs, past auxiliaries, pronouns): never topic words.
-RECALL_VERB = re.compile(r"\b(?:remember|remembers|recall|recalls|forget|forgot|forgotten|remind|reminded)\b", re.I)
-TO_ORION = re.compile(r"\b(?:you|me)\b", re.I)
-PAST_SELF = re.compile(r"\b(?:did|was|were|had)\s+(?:i|we)\b", re.I)
+# Closed-class cues only (memory verbs, auxiliaries, pronouns, wh-words): never topic words.
+# A memory verb counts only in an asking form: "do you remember / recall", "remind me what /
+# about", "remember when ...?". Plain statements ("I forgot to tell you"), reminders about the
+# future ("remind me to call"), likenesses ("you remind me of") and store requests ("can you
+# remember this") do not ask about the past.
+RECALL_VERB = re.compile(r"\b(?:remember|remembers|remembered|recall|recalls|recalled|remind|reminds|reminded)\b", re.I)
+_RECALL_ASK = re.compile(
+    r"\b(?:do|did|does)\s+(?:you|u)\s+(?:still\s+|even\s+)?(?:remember|recall)\b"
+    r"|\bremind\s+me\s+(?:what|when|where|who|how|why|which|about|of\s+(?:the|that|what|when|where|how))\b"
+    r"|\b(?:remember|recall)\s+(?:when|where|what|who|how|which|the\s+time)\b[^.!?]*\?",
+    re.I)
+PAST_SELF = re.compile(r"\b(?:did|was|were|had)(?:n['\u2019]?t)?\s+(?:i|we)\b", re.I)
+_QUESTION = re.compile(r"[^.!?]*\?")
 
 
 def asks_about_past(text: str) -> bool:
     """True when the message asks Orion to remember something ("do you recall ...", "remind me
-    ...") or asks a question about Juniper's own past ("when did I ...?", "was I ...?")."""
+    what ...") or asks a question about Juniper's own past ("when did I ...?", "was I ...?"; the
+    "?" must close the same sentence)."""
     t = str(text or "")
-    if RECALL_VERB.search(t) and TO_ORION.search(t):
+    if _RECALL_ASK.search(t):
         return True
-    return "?" in t and bool(PAST_SELF.search(t))
+    return any(PAST_SELF.search(q) for q in _QUESTION.findall(t))
 
 
 # Called as ``rewriter(message, context)``; a short-message gate call adds ``short=True``.

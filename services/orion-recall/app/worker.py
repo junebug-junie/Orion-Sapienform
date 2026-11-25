@@ -207,6 +207,8 @@ async def _add_lived_memories(
     rendered = lived.rendered  # a degraded search that found nothing still says so (#3573)
     if rendered:
         bundle.rendered = (bundle.rendered + "\n\n" + rendered).strip() if bundle.rendered else rendered
+    from .lived_memory import rewrite_label
+
     if lived.lines:
         from .lived_memory import items_for
 
@@ -216,7 +218,7 @@ async def _add_lived_memories(
         corr_id,
         len(lived.lines),
         lived.backend or "none",
-        (lived.debug.get("rewrite") or {}).get("outcome"),
+        rewrite_label(lived.debug.get("rewrite")),
         [c.rec.doc_id for c in lived.chosen],
         [round(c.fit, 3) for c in lived.chosen],
         (lived.debug.get("timings_ms") or {}).get("total"),

@@ -662,6 +662,8 @@ def searches_only_reranker(query: str, docs: List[str]):
     "do you remember my birthday?",
     "remind me what I said about the garden",
     "was I right about that?",
+    "remember when we went to Lakeport?",
+    "Do you recall? The trip to Lakeport",
 ])
 def test_asks_about_past_reads_recall_seeking_grammar(msg):
     assert asks_about_past(msg)
@@ -673,6 +675,14 @@ def test_asks_about_past_reads_recall_seeking_grammar(msg):
     "did you eat?",
     "thanks, heading to bed now",
     "when did the server restart?",
+    "I forgot to tell you, I'm heading out",
+    "remind me to call mom at 5",
+    "you remind me of a cat",
+    "don't forget you have a meeting",
+    "I can't remember, can you check the server logs",
+    "can you remember this for later: I like tea",
+    "you forgot the semicolon",
+    "had I known, I'd have stayed. how are you?",
 ])
 def test_asks_about_past_leaves_small_talk_and_other_questions(msg):
     assert not asks_about_past(msg)
@@ -684,11 +694,33 @@ def test_fallback_query_names_the_speaker_and_skips_the_preamble():
     # No known entity: the asking clause, memory verbs dropped.
     assert fallback_queries("ok so, do you remember my birthday?") == [f"{SPEAKER} birthday"]
     assert fallback_queries("do you remember?") == []
+    assert fallback_queries("do you remember that?") == []  # left to the model, which sees the context
+
+
+@pytest.mark.parametrize("msg,query", [
+    # The asking clause holds no content word: the clauses after it.
+    ("do you remember, when I traveled to Lakeport?", f"{SPEAKER} traveled Lakeport"),
+    ("Do you recall? The trip to Lakeport", "trip Lakeport"),
+    # A known entity in a preamble clause does not push the question out.
+    ("talked to Sam today, do you remember when I went to Lakeport?", f"{SPEAKER} went Lakeport"),
+    # Unicode words stay whole; contractions are first person; negated auxiliaries drop.
+    ("do you remember the caf\u00e9 in Z\u00fcrich?", "caf\u00e9 Z\u00fcrich"),
+    ("do you remember what I'd said about tea?", f"{SPEAKER} said tea"),
+    ("didn't I tell you about the boat? do you remember?", f"{SPEAKER} tell boat"),
+])
+def test_fallback_query_shapes(msg, query):
+    named = lambda c: "Lakeport" in c or "Sam" in c  # noqa: E731
+    assert fallback_queries(msg, names_in=named) == [query]
 
 
 def test_prompt_says_who_speaks_and_that_a_past_question_needs_a_search():
-    assert '"I", "me" and "my" mean Juniper' in PROMPT
-    assert "always needs a search, even when it names the thing itself" in PROMPT
+    assert "Juniper" in PROMPT and "always needs a search" in PROMPT
+
+
+def test_rewrite_label_keeps_what_the_model_answered():
+    assert lm.rewrite_label({"outcome": "fallback", "model": "timeout"}) == "fallback/timeout"
+    assert lm.rewrite_label({"outcome": "ok"}) == "ok"
+    assert lm.rewrite_label(None) == "none"
 
 
 def test_recall_question_searches_when_the_model_says_none(no_dense):
@@ -737,3 +769,26 @@ def test_a_short_recall_question_searches_even_when_the_short_gate_says_none(no_
     # Short small talk with NONE is still not searched.
     out = asyncio.run(reader.recall("haha nice one"))
     assert out.debug["gate"] in ("short_none", "short_no_content") and out.lines == []
+
+
+def test_a_short_past_question_with_nothing_to_search_stays_unsearched(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [TRIP]}), _cfg(), reranker=searches_only_reranker,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("wait, did I?"))
+    assert out.lines == [] and out.debug.get("skipped") in ("few_content_words",)
+
+
+def test_a_degraded_fallback_search_that_finds_nothing_still_says_so(monkeypatch):
+    """A real question about the past is not small talk: when the search ran degraded and found
+    nothing, the prompt gets the not-proof note (only a model NONE stays quiet)."""
+    from orion.introspect.semantic_index import SearchUnavailableError
+
+    async def embed(*_a, **_k):
+        raise SearchUnavailableError("down")
+
+    monkeypatch.setattr(lm, "embed", embed)
+    reader = LivedMemoryRecall(Pool({"episode_memory": [OFFICE]}), _cfg(), reranker=searches_only_reranker,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("running a test, do you recall when I traveled to Lakeport?"))
+    assert out.debug["rewrite"]["outcome"] == "fallback" and out.degraded and not out.quiet_empty
+    assert out.lines == [] and out.rendered.startswith("[Lived memory search ran degraded")

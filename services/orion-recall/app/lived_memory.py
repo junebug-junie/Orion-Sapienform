@@ -378,8 +378,37 @@ def rerank_query(raw: str, rewrites: Sequence[str]) -> str:
 
 
 _CLAUSE = re.compile(r"[,;:.!?\n]+|\s[-\u2013\u2014]\s")
-_FIRST_PERSON = frozenset("i me my mine myself we us our ours".split())
+# Unicode words: the fallback's words become the search text itself ("café", "José" stay whole).
+_WORD = re.compile(r"[^\W_][\w'\u2019]*")
+# Closed-class only: first-person pronouns and contractions (they become SPEAKER), and negated
+# auxiliaries, which carry no topic.
+_FIRST_PERSON = frozenset("i me my mine myself we us our ours i'd i'm i've i'll we'd we're we've we'll".split())
+_NEGATED_AUX = frozenset("dont cant didnt wont isnt wasnt werent doesnt havent hadnt couldnt wouldnt".split())
 FALLBACK_MAX_WORDS = 8
+
+
+def _asks(clause: str) -> bool:
+    return bool(RECALL_VERB.search(clause) or PAST_SELF.search(clause))
+
+
+def _clause_words(clauses: Sequence[str]) -> tuple[List[str], bool]:
+    words: List[str] = []
+    seen: set[str] = set()
+    first_person = False
+    for clause in clauses:
+        for m in _WORD.finditer(clause):
+            word = m.group(0)
+            low = word.lower().replace("\u2019", "'")
+            if low in _FIRST_PERSON:
+                first_person = True
+                continue
+            key = (low[:-2] if low.endswith("'s") else low).replace("'", "")
+            if (len(key) < 2 or key in _STOPWORDS or key in _NEGATED_AUX or RECALL_VERB.fullmatch(word)
+                    or key in seen):
+                continue
+            seen.add(key)
+            words.append(word)
+    return words, first_person
 
 
 def fallback_queries(message: str, *, names_in: Callable[[str], bool] = lambda _c: False) -> List[str]:
@@ -387,30 +416,29 @@ def fallback_queries(message: str, *, names_in: Callable[[str], bool] = lambda _
     or a timeout). Live miss 2026-11-25: "running a test, do you recall when I traveled to X?"
     scored the stored trip at logit -8.5; "<speaker> traveled X" scores it above the bar.
 
-    It takes the clause that names a known entity (``names_in``), else the clause that asks
-    (memory verb or "did I"), so a preamble ("running a test") stays out. First-person words become
-    ``SPEAKER``: the memories are written about her in the third person. Memory verbs are dropped:
-    they ask, they are not the thing asked about. ``[]`` when no content word is left."""
+    Words come from the clauses that ask (memory verb or "did I"), so a preamble ("running a test",
+    "talked to Sam today") stays out. When those hold no content word ("do you remember, ..."),
+    the clauses after the first asking one; then the clauses naming a known entity (``names_in``).
+    Never the whole message: a preamble ("wait, did I?") is not what is asked about. First-person words become ``SPEAKER``: the memories are written about
+    her in the third person. Memory verbs are dropped: they ask, they are not the thing asked about.
+    ``[]`` when no content word is left: a question that only points at the conversation ("do you
+    remember that?") is left to the model, which sees the recent turns."""
     clauses = [c for c in _CLAUSE.split(str(message or "")) if c.strip()]
-    pick = [c for c in clauses if names_in(c)] or [c for c in clauses
-                                                   if RECALL_VERB.search(c) or PAST_SELF.search(c)]
-    words: List[str] = []
-    seen: set[str] = set()
+    asking = [i for i, c in enumerate(clauses) if _asks(c)]
+    tiers = [[clauses[i] for i in asking]]
+    if asking:
+        tiers.append(clauses[asking[0] + 1:])
+    tiers.append([c for c in clauses if names_in(c)])
     first_person = False
-    for clause in pick or clauses:
-        for m in _TOKEN.finditer(clause):
-            word = m.group(0)
-            low = word.lower()
-            if low in _FIRST_PERSON:
-                first_person = True
-                continue
-            if not tokenize(word) or RECALL_VERB.fullmatch(word) or low in seen:
-                continue
-            seen.add(low)
-            words.append(word)
+    words: List[str] = []
+    for tier in tiers:
+        words, fp = _clause_words(tier)
+        first_person = first_person or fp
+        if words:
+            break
     if not words:
         return []
-    if first_person and SPEAKER.lower() not in seen:
+    if first_person and SPEAKER.lower() not in {w.lower() for w in words}:
         words.insert(0, SPEAKER)
     return [" ".join(words[:FALLBACK_MAX_WORDS])[:REWRITE_QUERY_MAX_CHARS]]
 
@@ -1236,6 +1264,14 @@ def status_of(debug: Dict[str, Any] | None, served: int, *, backend: str | None 
 
 
 TRACE_MAX_IDS = 32
+
+
+def rewrite_label(rewrite: Dict[str, Any] | None) -> str:
+    """The rewrite outcome for logs and eval counters. A fallback keeps what the model answered
+    ("fallback/timeout"), so rewrite timeouts stay countable (#3674's run-to-run noise source)."""
+    r = rewrite or {}
+    out = str(r.get("outcome") or "none")
+    return f"{out}/{r['model']}" if out == "fallback" and r.get("model") else out
 
 
 def trace_of(debug: Dict[str, Any] | None) -> Dict[str, Any]:

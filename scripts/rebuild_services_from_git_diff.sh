@@ -121,6 +121,30 @@ rebuild_log() {
 }
 
 
+# Judge every `up` of this run against the commit the run started on, not
+# against an origin/main that a PR merge moves mid-run (2026-10-20: one merge
+# refused 55 remaining services). safe_docker_build.sh still refuses a main
+# that moved, is ahead of, or diverged from origin/main. Pin only when the run
+# STARTS in sync with origin/main: a run started on an already-stale main stays
+# unpinned, so the wrapper refuses it exactly as before.
+# "Starts" means before the lock wait (#3880, 2026-11-25 00:42Z: four PRs merged
+# while a pull waited 4 min for the lock; the pin, then taken after the wait, saw
+# a stale main and the run refused all 13 services and its migration).
+in_sync_head() {
+    git -C "$REPO_ROOT" fetch --quiet origin main 2>/dev/null || return 0
+    _h=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+    _o=$(git -C "$REPO_ROOT" rev-parse --verify origin/main 2>/dev/null || true)
+    if [ -n "$_h" ] && [ "$_h" = "$_o" ]; then
+        printf '%s' "$_h"
+    fi
+}
+ORION_DEPLOY_PINNED_HEAD=""
+PIN_HEAD_BEFORE_WAIT=""
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
+    ORION_DEPLOY_PINNED_HEAD="$(in_sync_head)"
+    PIN_HEAD_BEFORE_WAIT=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+fi
+
 # One deploy run at a time (2026-11-18 05:10Z: a pull landed mid-run, its own run
 # planned nothing while the first run's remaining `up`s were refused). A second
 # real run waits here for the first to finish (bounded by
@@ -151,19 +175,14 @@ else
     fi
 fi
 
-# Judge every `up` of this run against the commit the run started on, not
-# against an origin/main that a PR merge moves mid-run (2026-10-20: one merge
-# refused 55 remaining services). safe_docker_build.sh still refuses a main
-# that moved, is ahead of, or diverged from origin/main. Pin only when the run
-# STARTS in sync with origin/main: a run started on an already-stale main stays
-# unpinned, so the wrapper refuses it exactly as before.
-ORION_DEPLOY_PINNED_HEAD=""
-if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] &&
-    git -C "$REPO_ROOT" fetch --quiet origin main 2>/dev/null; then
-    _pin_head=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
-    _pin_origin=$(git -C "$REPO_ROOT" rev-parse --verify origin/main 2>/dev/null || true)
-    if [ -n "$_pin_head" ] && [ "$_pin_head" = "$_pin_origin" ]; then
-        ORION_DEPLOY_PINNED_HEAD="$_pin_head"
+# The pin is taken before the lock wait (above). Re-judge from now when main
+# itself moved while we waited (a later pull), or when there is no pin yet (the
+# fetch before the wait failed, or main was behind): a main that was stale before
+# the wait cannot become in sync without HEAD moving, so this never pins a stale main.
+if [ -n "${PIN_HEAD_BEFORE_WAIT:-}" ]; then
+    _now_head=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+    if [ "$_now_head" != "$PIN_HEAD_BEFORE_WAIT" ] || [ -z "$ORION_DEPLOY_PINNED_HEAD" ]; then
+        ORION_DEPLOY_PINNED_HEAD="$(in_sync_head)"
     fi
 fi
 export ORION_DEPLOY_PINNED_HEAD

@@ -248,10 +248,12 @@ def _git(repo: Path, *args: str) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def checkout_problem(repo: Path) -> str:
+def checkout_problem(repo: Path, env=os.environ) -> str:
     """Why this checkout may not write to the live database ("" = it may). Same rule as a live
     deploy in safe_docker_build.sh: primary checkout, main, clean, synchronized with origin/main
-    (as of the fetch the pull just did)."""
+    (as of the fetch the pull just did). A post-pull run pins the commit it started on in sync
+    (ORION_DEPLOY_PINNED_HEAD): then main must equal the pin, and the pin may be behind origin/main
+    (a PR merged while the run waited or ran, #3880), never ahead of or diverged from it."""
     git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
     common = _git(repo, "rev-parse", "--git-common-dir")
     if common and not os.path.isabs(common):  # relative to the -C directory
@@ -269,6 +271,13 @@ def checkout_problem(repo: Path) -> str:
     head, origin = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "--verify", "origin/main")
     if not origin:
         return "origin/main is unknown"
+    pin = str(env.get("ORION_DEPLOY_PINNED_HEAD") or "").strip()
+    if pin:
+        if head != pin:
+            return f"main ({(head or '?')[:9]}) is not the run's pinned head ({pin[:9]})"
+        if _git(repo, "merge-base", "--is-ancestor", pin, origin) is None:
+            return f"the pinned head ({pin[:9]}) is not in origin/main's history ({origin[:9]})"
+        return ""
     if head != origin:
         return f"main ({head[:9]}) is not origin/main ({origin[:9]})"
     return ""
@@ -412,7 +421,7 @@ def run(paths: list[str], *, repo: Path = REPO_ROOT, ref: str = "HEAD", dry_run:
         out(f"{TAG}: auto-apply OFF ({KILL_SWITCH}=0) -- nothing applied; see the report below")
         return 0
     if not dry_run:
-        why = checkout_problem(repo)
+        why = checkout_problem(repo, env)
         if why:
             out(f"{TAG}: not applying anything -- {why}. Only the clean primary main checkout, "
                 "synchronized with origin/main, writes to the live database (the deploy rule).")

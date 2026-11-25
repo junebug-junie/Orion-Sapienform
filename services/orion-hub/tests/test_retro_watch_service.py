@@ -354,6 +354,45 @@ def test_the_timer_interval_is_one_env_key_and_zero_turns_it_off():
     run(go())
 
 
+def test_a_timer_game_with_the_watch_off_counts_no_timer_look():
+    async def go():
+        rig = Rig(calibration=NO_SEPARATION)
+        assert await rig.watch.set_juniper("off")
+        rig.press()
+        for i in range(100):
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert not rig.bids and rig.watch.state.counters["timer_looks"] == 0
+    run(go())
+
+
+def test_an_unread_calibration_gives_no_timer_look():
+    async def go():
+        rig = Rig(calibration=None)
+        rig.watch.pool_provider = lambda: None     # the floor table cannot be read: the game's floor is unknown
+        rig.press()
+        for i in range(90):                        # 3 minutes of presses
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert not rig.bids and rig.watch.state.counters["timer_looks"] == 0
+        assert rig.watch.status()["status"]["code"] == "no_floor"
+    run(go())
+
+
+def test_a_calibration_read_late_starts_the_timer_at_once():
+    """A hub restart mid-sitting: the floor table answers only later (flush -> recalibrate)."""
+    async def go():
+        rig = Rig(calibration=None)
+        rig.watch.pool_provider = lambda: None
+        rig.press()
+        for i in range(45):                        # 90 s, floor unknown: no look
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert not rig.bids
+        rig.watch.pool_provider = lambda: rig.db   # the database answers again
+        rig.watch.calibrations[GAME] = NO_SEPARATION
+        await rig.step(press=True, moving=False)   # more than 60 s since the first check: a look now
+        assert len(rig.bids) == 1 and rig.watch.state.counters["timer_looks"] == 1
+    run(go())
+
+
 def test_a_refused_timer_bid_waits_the_interval_and_says_why():
     async def go():
         rig = Rig(decision="deferred", calibration=NO_SEPARATION)

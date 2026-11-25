@@ -112,6 +112,18 @@ async def test_line_rows_keep_the_hard_order_and_the_player_signals() -> None:
             notes = await conn.fetch(rc.NOTES_SQL, "s1", NOW - timedelta(hours=1))
             assert {r["look_id"] for r in notes} == {"look-1", "look-2"}
             assert await conn.fetch(rc.PREVIOUS_LINES_SQL, "s1") == []      # no delivered line has text yet
+            # The newest note for the line gate skips a stored repeat of the note before it (a timer look on a still
+            # screen): the same words are a true look, not a reason for another line.
+            await conn.execute(
+                "INSERT INTO retro_watch_look (look_id, sitting_id, looked_at, outcome, want_id, note) VALUES "
+                "('r-1', 's9', $1, 'stored', 'w9a', 'A still globe.'), ('r-2', 's9', $2, 'stored', 'w9b', 'A still globe.'),"
+                " ('r-3', 's9', $3, 'unclear', 'w9c', 'unclear')",
+                NOW - timedelta(minutes=3), NOW - timedelta(minutes=2), NOW - timedelta(minutes=1))
+            newest = await conn.fetchval(rc.NEWEST_NOTE_SQL, "s9")
+            assert newest == NOW - timedelta(minutes=3)
+            await conn.execute("INSERT INTO retro_watch_look (look_id, sitting_id, looked_at, outcome, want_id, note) "
+                               "VALUES ('r-4', 's9', $1, 'stored', 'w9d', 'The globe turns.')", NOW)
+            assert await conn.fetchval(rc.NEWEST_NOTE_SQL, "s9") == NOW
 
             # The outcome check refuses an unknown outcome.
             with pytest.raises(asyncpg.CheckViolationError):

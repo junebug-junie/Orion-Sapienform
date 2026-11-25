@@ -19,7 +19,7 @@ The whole path, in order:
 3. **Floor.** Once a minute the histograms are added to ``retro_watch_change_hist`` and each game's floor is
    computed again (``calibrate``) into ``retro_watch_floor``. A game without a floor (any status but ``set``)
    looks on a timer instead: one look every ``HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC`` (60) while a button changed
-   in the last 60 s, counted ``timer_looks``; it bids and seats exactly as a floor look does. On a timer look
+   in the last 60 s, counted ``timer_looks`` when it bids; it bids and seats exactly as a floor look does. On a timer look
    an exact repeat of the previous note is stored, not ``copied``: the prompt is stateless, so on a still
    screen (SimEarth) the same words are a true look, and dropping them would leave no fresh note.
 4. **Mode.** Before every bid, Orion's own choices (``dig watch``: act rows of actor ``orion.watch_choice``)
@@ -417,8 +417,6 @@ class WatchService:
             st.last_over_floor_at = now
         if result in W.LOOK_GATES and not st.looking and (self._look_task is None or self._look_task.done()):
             timer = result == W.GATE_TIMER
-            if timer:
-                st.counters["timer_looks"] += 1
             st.looking, st.last_look_at = True, now
             self._look_task = self._spawn(self._look(st, cur, st.max_change, timer=timer))   # one look at a time
         return result
@@ -465,6 +463,8 @@ class WatchService:
         if mode.mode == "off":
             logger.info("retro_watch_no_bid sitting=%s mode=off set_by=%s", st.sitting_id, mode.set_by)
             return
+        if timer:
+            st.counters["timer_looks"] += 1       # a timer look that bids (not one the line or the switch stopped)
         want_id = str(uuid.uuid4())
         decision = await self._bid(self._want(want_id, st, cur, timer=timer), self._object_text(cur, st))
         outcome = getattr(decision, "outcome", None)

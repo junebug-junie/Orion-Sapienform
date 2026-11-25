@@ -619,7 +619,7 @@ want and the same GPU seat as a floor look, so chat still wins. Counter: `retro_
 Page/watch status: `timer` (a stored note under 3 min old), `timer_waiting`, `timer_input_stale`, or
 `refused`/`refused_heat`. On a timer look an exact repeat of the previous note is `stored`, not `copied`: the
 prompt is stateless, so on a still screen the same words are a true look (its `similar_to_previous` is 1.0, so
-a line turn groups it). Calibration keeps running, so a floor can still be set; then the floor rules apply.
+a line turn groups it; the line gate's newest-note read skips such a repeat, so a still screen earns no extra line). `timer_looks` counts timer looks that bid. Calibration keeps running, so a floor can still be set; then the floor rules apply.
 `HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC=0` restores the old rule (no floor, no look, "No looks for this game yet").
 Check it live: `redis-cli -u "$ORION_BUS_URL" GET orion:retro:watch` while playing a game with no
 floor shows `"status":"timer"` and a rising `timer_looks`; the gateway log line `retro_watch_look ... trigger=timer`.

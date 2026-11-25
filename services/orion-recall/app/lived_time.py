@@ -1,6 +1,6 @@
 """Time windows in a chat message, for lived-memory recall (issue #3674).
 
-"What happened with Amanda over the last month or so?" names a time. Recall used to ignore it:
+"What happened with Robin over the last month or so?" names a time. Recall used to ignore it:
 older rows that fit the topic better filled the candidate pool, and the record from the named
 month never reached the rerank (issue #3881). This module turns the time words in a message
 into one window, ``[start, end)`` in UTC, resolved against "now" in Juniper's time zone
@@ -401,7 +401,7 @@ def _shape_month(text: str, now: datetime, today: date, z: ZoneInfo) -> Shape:
     elif _PAST_TENSE_RE.search(text):
         y = today.year - 1   # "where was I in December?" asked in November: last December
     else:
-        return None          # "I'm seeing Amanda in December": a plan, not a past time
+        return None          # "I'm seeing Robin in December": a plan, not a past time
     last = calendar.monthrange(y, mo)[1]
     part = " ".join(((m.group("part") or "") or (m.group("prep") or "")).lower().split())
     d0, d1 = 1, last

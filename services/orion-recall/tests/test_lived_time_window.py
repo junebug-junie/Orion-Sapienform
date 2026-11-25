@@ -34,7 +34,7 @@ def _dates(text: str, now: datetime = NOW):
 # --- the date grammar ----------------------------------------------------------------------
 
 @pytest.mark.parametrize("text,expected", [
-    ("What has happened with Amanda's health over the last month or so?", ("2026-10-10", "2026-11-25", "rolling")),
+    ("What has happened with Robin's health over the last month or so?", ("2026-10-10", "2026-11-25", "rolling")),
     ("the past few days", ("2026-11-22", "2026-11-25", "rolling")),
     ("in the last 2 weeks", ("2026-11-11", "2026-11-25", "rolling")),
     ("Last week, which game kept crashing?", ("2026-11-16", "2026-11-25", "calendar")),
@@ -48,7 +48,7 @@ def _dates(text: str, now: datetime = NOW):
     ("What did I tell you about my job on November 20th?", ("2026-11-20", "2026-11-20", "date")),
     ("Where did I spend the day on Saturday, October 18th?", ("2026-10-18", "2026-10-18", "date")),
     ("the 3rd of October", ("2026-10-03", "2026-10-03", "date")),
-    ("What did Addy and I do on the night of October 30th?", ("2026-10-30", "2026-10-30", "date")),
+    ("What did Sam and I do on the night of October 30th?", ("2026-10-30", "2026-10-30", "date")),
     ("the end of October 2025", ("2025-10-21", "2025-10-31", "month")),
     ("on 10/30", ("2026-10-30", "2026-10-30", "date")),
     ("10/30/26", ("2026-10-30", "2026-10-30", "date")),
@@ -79,7 +79,7 @@ def test_parser_reads_the_common_time_phrases(text, expected):
     "What am I doing on Friday?",
     "How are you today?",                         # the present, not a past time
     "what should we cook tonight",
-    "I'm going to see Amanda in December",        # a month still ahead: a plan
+    "I'm going to see Robin in December",        # a month still ahead: a plan
     "I rated it 8/10 and it's about 3/4 done",    # a rating and a fraction
     "add 1/2 cup of flour",
     "I read 3 of mark's books and 2 of decent ones",
@@ -90,7 +90,7 @@ def test_parser_finds_no_window_where_no_time_is_named(text):
 
 
 def test_the_first_time_phrase_in_the_message_wins():
-    assert _dates("Today I kept thinking about what happened with Amanda two weeks ago")[2] == "ago"
+    assert _dates("Today I kept thinking about what happened with Robin two weeks ago")[2] == "ago"
     assert _dates("Last week, or maybe on November 20th?")[2] == "calendar"
     assert _dates("On November 20th, or was it last week?")[2] == "date"
 
@@ -206,9 +206,9 @@ AUG = datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc)
 OCT = datetime(2026, 10, 28, 18, 0, tzinfo=timezone.utc)
 # Fifteen August records fit the words better than the October one: without the window they
 # fill the exact-word top 10 and the October record never reaches the rerank (issue #3881).
-CROWD = [_rec(f"aug{i}", f"Amanda health scare hospital visit number {i}", AUG) for i in range(15)]
-TARGET = _rec("oct1", "Amanda health news: surgery on her leg veins", OCT)
-QUESTION = "What has happened with Amanda's health over the last month or so?"
+CROWD = [_rec(f"aug{i}", f"Robin health scare hospital visit number {i}", AUG) for i in range(15)]
+TARGET = _rec("oct1", "Robin health news: surgery on her leg veins", OCT)
+QUESTION = "What has happened with Robin's health over the last month or so?"
 
 
 def _reader(pool, **kw) -> LivedMemoryRecall:
@@ -236,7 +236,7 @@ def test_the_window_brings_in_window_records_into_the_pool_before_the_cut(no_den
 
 
 def test_a_window_with_nothing_in_it_changes_nothing(no_dense):
-    q = "What happened with Amanda's health in March?"
+    q = "What happened with Robin's health in March?"
     plain = asyncio.run(_reader(Pool(CROWD), time_window=False).recall(q))
     windowed = asyncio.run(_reader(Pool(CROWD)).recall(q))
     assert [s.rec.doc_id for s in windowed.chosen] == [s.rec.doc_id for s in plain.chosen]
@@ -273,7 +273,7 @@ def test_rank_caps_lines_outside_the_window_only_when_something_inside_fits():
 # --- past state: the as-of reader and the label ---------------------------------------------
 
 EARLY_OCT = datetime(2026, 10, 5, 18, 0, tzinfo=timezone.utc)
-HOME_NOW = _rec("home-now", "Juniper lives in Ogden and works from her office", datetime(2026, 11, 10, tzinfo=timezone.utc))
+HOME_NOW = _rec("home-now", "Juniper lives in the city and works from her office", datetime(2026, 11, 10, tzinfo=timezone.utc))
 TRIP = _rec("trip", "Juniper was staying at a hotel on the lake in Chicago for work", EARLY_OCT,
             invalid_at=datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc))
 
@@ -346,7 +346,7 @@ def test_the_trace_keeps_dates_and_shape_never_the_message_words(no_dense):
 
 def test_the_best_outside_hits_ride_in_the_first_rerank_chunk(no_dense):
     """A wrong or narrow window must not push the message's own top hits past a short deadline."""
-    inside = [_rec(f"oct{i}", f"Amanda update number {i} from the clinic visit", OCT) for i in range(12)]
+    inside = [_rec(f"oct{i}", f"Robin update number {i} from the clinic visit", OCT) for i in range(12)]
     out = asyncio.run(_reader(Pool(CROWD + inside)).recall(QUESTION))
     first_chunk = out.debug["candidate_ids"][: lm.RERANK_CHUNK]
     assert sum(1 for c in first_chunk if c.startswith("episode_memory:aug")) == lm.OUT_OF_WINDOW_FIRST

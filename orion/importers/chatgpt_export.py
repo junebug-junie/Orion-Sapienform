@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import socket
 import tempfile
 import zipfile
@@ -131,22 +132,66 @@ def _service_ref(node_name: Optional[str] = None) -> ServiceRef:
     return ServiceRef(name=CHATGPT_IMPORTER_NAME, version=CHATGPT_IMPORTER_VERSION, node=node)
 
 
+_SHARD_RE = re.compile(r"^conversations-\d+\.json$")
+
+
+def _conversation_members(names: Iterable[str]) -> List[str]:
+    """Pick the conversation files from an export listing.
+
+    Older exports hold one ``conversations.json``. Newer exports split it into
+    ``conversations-000.json``, ``conversations-001.json``, ... Match on the exact
+    file name: ``shared_conversations.json`` and ``sectioned_conversations.json``
+    are different data and must never be read as the conversation list.
+    """
+    names = list(names)
+    single = [n for n in names if Path(n).name == "conversations.json"]
+    if single:
+        return [sorted(single, key=len)[0]]
+    return sorted(n for n in names if _SHARD_RE.match(Path(n).name))
+
+
+def _merge_shards(shards: List[Path], out_dir: Path) -> Path:
+    merged: List[Any] = []
+    for shard in shards:
+        data = json.loads(shard.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError(f"{shard.name} did not contain a list")
+        merged.extend(data)
+    out = out_dir / "conversations.json"
+    out.write_text(json.dumps(merged), encoding="utf-8")
+    return out
+
+
 def resolve_export_path(export_path: str | Path) -> Path:
+    """Return a single ``conversations.json`` for a zip, dir, or file export.
+
+    Sharded exports are merged (in shard order) into a temp ``conversations.json``.
+    """
     path = Path(export_path).expanduser().resolve()
     if path.is_dir():
-        candidate = path / "conversations.json"
-        if candidate.exists():
-            return candidate
-        raise FileNotFoundError(f"conversations.json not found in directory: {path}")
+        members = _conversation_members(p.name for p in path.iterdir())
+        if not members:
+            raise FileNotFoundError(f"conversations.json not found in directory: {path}")
+        if members == ["conversations.json"]:
+            return path / "conversations.json"
+        temp_dir = tempfile.TemporaryDirectory(prefix="chatgpt_export_")
+        _TEMP_DIRS.append(temp_dir)
+        return _merge_shards([path / m for m in members], Path(temp_dir.name))
     if path.is_file() and path.suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as zf:
-            members = [name for name in zf.namelist() if name.endswith("conversations.json")]
+            members = _conversation_members(zf.namelist())
             if not members:
                 raise FileNotFoundError("conversations.json not found inside zip export")
             temp_dir = tempfile.TemporaryDirectory(prefix="chatgpt_export_")
             _TEMP_DIRS.append(temp_dir)
-            zf.extract(members[0], path=temp_dir.name)
-            return Path(temp_dir.name) / members[0]
+            for m in members:
+                zf.extract(m, path=temp_dir.name)
+            extracted = [Path(temp_dir.name) / m for m in members]
+            if len(extracted) == 1 and extracted[0].name == "conversations.json":
+                return extracted[0]
+            merge_dir = Path(temp_dir.name) / "_merged"
+            merge_dir.mkdir()
+            return _merge_shards(extracted, merge_dir)
     if path.is_file() and path.name == "conversations.json":
         return path
     raise FileNotFoundError(f"Unsupported export path: {path}")

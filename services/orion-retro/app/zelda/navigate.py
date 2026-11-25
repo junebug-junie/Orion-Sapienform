@@ -17,6 +17,8 @@ from .observe import COLS, ROWS, HUD, summary, digest, tile_of
 
 POLICY_ID = 'zelda-navigator-v1'
 INTERVAL = 0  # send on every worker tick: one decision per native frame (60.0988 fps > 1/60 s)
+HOLD_DOWN_MODE = 0x0C  # game mode that waits for DOWN (see ZeldaGoals._track_release)
+RELEASE_MAX_FRAMES = 600  # ~14x the 42 frames the live room-73 stall needed
 GOALS = ('exit', 'enter', 'fight', 'retreat', 'collect', 'explore', 'wait')
 PREDICTIONS = ('reach_room', 'enter_cave', 'item_gained', 'enemies_cleared', 'survive', 'unknown')
 UP, DOWN, LEFT, RIGHT, A = 16, 32, 64, 128, 256
@@ -202,6 +204,8 @@ class ZeldaGoals:
         self.idle_offers = 0  # consecutive offers that expired with no goal
         self.human_intervention = False
         self.recovering = None  # set by an observed death; cleared when play returns
+        self.releasing = None   # set by game mode $0C (waits for DOWN); cleared when play returns
+        self.hold_down = False
         self._reset_motor()
 
     # ---- worker/Scripted surface -------------------------------------------------
@@ -209,7 +213,7 @@ class ZeldaGoals:
         return self.accepted is not None
 
     def mask(self, now, seq):
-        return self.current_mask if self.accepted or self.recovering else 0
+        return self.current_mask if self.accepted or self.recovering or self.releasing else 0
 
     def public(self):
         return dict(attempt=self.attempt, goal=self.accepted, last_finished=self.last_finished,
@@ -298,10 +302,35 @@ class ZeldaGoals:
             return False  # fall through: offer a fresh decision this frame
         return True
 
+    def _track_release(self, obs, frame):
+        """Game mode $0C ignores every button but DOWN. Live 2026-11-16 and 11-25: Link sat
+        in room 73 at y=213 for 7,200 probe frames and 17 live minutes with no input; held
+        DOWN returned him to play in 42 frames, every other button left him there. Returns
+        True while DOWN should be held (only under this script grant: mask() gates it).
+        Bounded: past RELEASE_MAX_FRAMES the hold stops and the stall is journaled."""
+        if obs.get('status') != 'observed': return False
+        r = self.releasing
+        if obs.get('mode_code') == HOLD_DOWN_MODE:
+            if r is None:
+                r = self.releasing = dict(room=obs['room'], level=obs['level'], frame=frame, capped=False)
+                if not self.accepted: self.attempt = None   # an offer from before the stall is stale
+            if not r['capped'] and frame - r['frame'] > RELEASE_MAX_FRAMES:
+                r['capped'] = True
+                link = obs.get('link') or {}
+                self.record('mode_wait_unreleased', room=r['room'], level=r['level'], submode=obs.get('submode'),
+                            x=link.get('x'), y=link.get('y'), wait_frame=r['frame'], frames=frame - r['frame'])
+            return not r['capped']
+        if r and obs['mode'] in ('play', 'cave') and obs['link']['controllable']:
+            if not r['capped']:
+                self.record('mode_wait_released', room=r['room'], level=r['level'], wait_frame=r['frame'],
+                            frames=frame - r['frame'], room_after=obs['room'])
+            self.releasing = None
+        return False
+
     def note_applied(self, decision_id, mask):
         """Count only inputs the arbiter really applied for this goal (not computed masks)."""
-        if self.accepted and decision_id == self.accepted['decision_id'] and mask:
-            self.applied += 1
+        if self.accepted and decision_id == self.accepted['decision_id'] and mask and not self.releasing:
+            self.applied += 1   # a $0C DOWN hold is the game's wait, not effort toward the goal
 
     def abort(self, reason):
         """Policy stopped (takeover, pause, sponsor loss, deadline miss, load)."""
@@ -313,6 +342,7 @@ class ZeldaGoals:
     def observe_frame(self, port, epoch, frame, obs, now):
         """Called once per native frame after core.step. Updates the motor's next mask."""
         self.latest = obs; self.frame = frame
+        self.hold_down = self._track_release(obs, frame)
         if self.accepted:
             if self.start_obs is None:
                 if now >= self.deadline:  # never hang on a run of unknown observations
@@ -327,6 +357,9 @@ class ZeldaGoals:
                 self.current_mask = self._drive(obs) if obs.get('status') == 'observed' else 0
                 return
         self.current_mask = 0
+        if self.releasing and (obs.get('status') != 'observed' or obs.get('mode_code') == HOLD_DOWN_MODE):
+            self.current_mask = DOWN if self.hold_down else 0
+            return   # other modes (death, a later scroll) fall through to recovery as before
         if self._recover(obs, frame): return
         stable = obs.get('status') == 'observed' and obs['link']['controllable']
         if stable and (self.attempt is None or now - self.offered_at > OFFER_TTL):
@@ -419,6 +452,8 @@ class ZeldaGoals:
 
     def _drive(self, obs):
         self.tick += 1
+        if obs.get('mode_code') == HOLD_DOWN_MODE:   # see _track_release
+            self.last_pos = None; self.bump_count = 0; return DOWN if self.hold_down else 0
         if not obs['link']['controllable'] or 'walls' not in obs:
             # Scroll, transition, cave text, item lift: the game ignores input. Hands off,
             # and never count these frames as a bump or as being stuck.

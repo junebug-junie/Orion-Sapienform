@@ -859,3 +859,63 @@ def test_dungeon_sides_count_bombed_holes_three_tiles_short_of_the_edge():
     solid = [[ch == '#' or (r in (10, 11) and c in (3, 28)) for c, ch in enumerate(row)]
              for r, row in enumerate(ROOM_85)]
     assert open_sides(solid, set(), (4, 11), dungeon=True) == []   # plain walls stay closed
+
+
+def test_mode_0c_holds_down_until_play_returns_with_or_without_a_goal():
+    # Live 11-16 and 11-25: room 73 mode $0C waits for DOWN; no input froze Orion's play.
+    rows = []
+    g = ZeldaGoals(lambda kind, **f: rows.append(dict(kind=kind, **f)))
+    stuck = dict(mode=0x0C, room=0x49, x=112, y=213)
+    assert not obs(**stuck)['link']['controllable']
+    g.observe_frame(0, 2, 1, obs(**stuck), 0)
+    assert g.attempt is None and g.mask(0, 0) == DOWN            # no goal, still released
+    g.observe_frame(0, 2, 40, obs(**stuck), .5)
+    assert g.mask(0, 1) == DOWN
+    g.observe_frame(0, 2, 60, obs(room=0x49), 1)
+    assert [r for r in rows if r['kind'] == 'mode_wait_released'] == [
+        dict(kind='mode_wait_released', room=0x49, level=0, wait_frame=1, frames=59, room_after=0x49)]
+    assert g.mask(0, 2) == 0 and g.attempt                       # hands off, fresh decision offered
+    # Mid-goal: the motor holds DOWN instead of going hands-off like other transitions.
+    g.accept(dict(port=0, expected_epoch=2, decision_id=g.attempt['decision_id'], goal={'kind': 'exit', 'dir': 'N'},
+                  prediction={'kind': 'unknown', 'value': None}, rationale='t', planner_id='t', budget_seconds=30), 1)
+    g.observe_frame(0, 2, 61, obs(room=0x49), 1.1)
+    g.observe_frame(0, 2, 62, obs(**stuck), 1.2)
+    assert g.mask(0, 3) == DOWN
+    g.observe_frame(0, 2, 63, obs(mode=0x0A, room=0x49), 1.3)     # another transition: hands off
+    assert g.mask(0, 4) == 0
+
+
+def test_mode_0c_hold_is_bounded_clears_a_stale_offer_and_journals_mid_goal():
+    from app.zelda.navigate import RELEASE_MAX_FRAMES
+    stuck = dict(mode=0x0C, room=0x49, x=112, y=213)
+    rows = []
+    g = ZeldaGoals(lambda kind, **f: rows.append(dict(kind=kind, **f)))
+    g.observe_frame(0, 2, 1, obs(room=0x49), 0)
+    offered = g.attempt['decision_id']
+    g.observe_frame(0, 2, 2, obs(**stuck), .1)
+    assert g.attempt is None                                     # the pre-stall offer is gone
+    with pytest.raises(ValueError):
+        g.accept(dict(port=0, expected_epoch=2, decision_id=offered, goal={'kind': 'wait'},
+                      prediction={'kind': 'unknown', 'value': None}, rationale='t', planner_id='t',
+                      budget_seconds=30), .2)
+    g.observe_frame(0, 2, 2 + RELEASE_MAX_FRAMES, obs(**stuck), 5)
+    assert g.mask(0, 0) == DOWN
+    g.observe_frame(0, 2, 3 + RELEASE_MAX_FRAMES, obs(**stuck), 6)
+    assert g.mask(0, 1) == 0                                     # cap reached: stop holding
+    un = [r for r in rows if r['kind'] == 'mode_wait_unreleased']
+    assert len(un) == 1 and un[0]['frames'] == RELEASE_MAX_FRAMES + 1 and (un[0]['x'], un[0]['y']) == (112, 213)
+    g.observe_frame(0, 2, 4 + RELEASE_MAX_FRAMES, obs(**stuck), 7)
+    assert len([r for r in rows if r['kind'] == 'mode_wait_unreleased']) == 1
+    g.observe_frame(0, 2, 5 + RELEASE_MAX_FRAMES, obs(room=0x49), 8)
+    assert not [r for r in rows if r['kind'] == 'mode_wait_released'] and g.releasing is None and g.attempt
+
+    rows.clear()   # mid-goal stall: held, journaled, and not counted as goal effort
+    g.accept(dict(port=0, expected_epoch=2, decision_id=g.attempt['decision_id'], goal={'kind': 'exit', 'dir': 'N'},
+                  prediction={'kind': 'unknown', 'value': None}, rationale='t', planner_id='t', budget_seconds=30), 8)
+    g.observe_frame(0, 2, 1000, obs(room=0x49), 8.1)
+    g.observe_frame(0, 2, 1001, obs(**stuck), 8.2)
+    applied = g.applied
+    g.note_applied(g.accepted['decision_id'], DOWN)
+    assert g.mask(0, 2) == DOWN and g.applied == applied
+    g.observe_frame(0, 2, 1010, obs(room=0x49, y=150), 8.3)
+    assert [r for r in rows if r['kind'] == 'mode_wait_released'][0]['frames'] == 9

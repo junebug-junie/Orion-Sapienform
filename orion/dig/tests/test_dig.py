@@ -147,7 +147,7 @@ def test_printout_caps_keep_the_file_path():
 
 def dig_help_cap() -> int:
     """The one cap on `dig help` length; test_capacities_cmd.py reads it from here."""
-    return 4600
+    return 4800
 
 
 def test_help_fits_and_teaches_the_source_labels(capsys):
@@ -160,6 +160,7 @@ def test_help_fits_and_teaches_the_source_labels(capsys):
     # 3750 -> 4000 (2026-11-16): `organs` added two (the daily dig roundup, integration patch 4; main was at 3750);
     # 4250 -> 4500 (2026-11-17): `digs` added one (day-dream spec Patch 1; main was at 4193);
     # 4500 -> 4600 (2026-11-18): `watch` added one (game company patch 2, Orion's own switch; main was at 4463);
+    # 4600 -> 4800 (2026-11-25): `gpt` added one line + the gpt_archive label (Juniper's ChatGPT archive; main was at 4580);
     # help loads on demand only, so this guards growth, not every-turn context
     assert code == 0 and len(out) <= dig_help_cap()
     for label in ("code_then", "pr_text", "lived_record", "now", "reflection"):

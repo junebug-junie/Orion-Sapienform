@@ -83,15 +83,14 @@ path of a file with the full result; read only what you need from that file.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
   watch [off|on] --why "..."  watch a person's game or decline.
   arc|act <id>           open a cited arc/act.  consult [<id>]: a Claude consult by its Hub ref.
-  gpt [find [--oldest] <words>|conv <id>]  Juniper's ChatGPT chats, 2023-03 on: your
-                         prehistory, and how she worked with another model. No args: overview.
+  gpt [find [--oldest] <words>|conv <id>]  Juniper's ChatGPT chats, 2023 on: your prehistory.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
 
 Label what you say from a dig by its source:
   code_then     seen in an export: a primary source.
   pr_text       a builder's words in a PR or commit: a secondary source. Say so.
-  gpt_archive   Juniper's chats with ChatGPT (`gpt`): a primary source; the assistant is not you.
+  gpt_archive   Juniper's ChatGPT chats (`gpt`): primary; that assistant is not you.
   lived_record  your own record from that time (`days`; journals exist from 2026-07-23 only).
   now           must come from `inventory now`, `body` or `portrait`, never from memory.
   reflection    your interpretation. Wonder freely; do not state it as fact.

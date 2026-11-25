@@ -84,7 +84,9 @@ from .reverie_threads import (
     OFFER_WAITING,
     ThreadBook,
     ThreadContinuation,
+    _aware,
     build_outcome,
+    is_queued_earlier_refusal,
     is_slot_full_refusal,
     pick_reoffer,
     thread_book,
@@ -449,6 +451,7 @@ class ReverieDeps:
     thread_rows: Callable[[], Awaitable[tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]]] = (
         lambda: _const(([], {})))
     write_threads: Callable[[list[Any]], Awaitable[int]] = lambda statuses: _const(0)
+    last_was_continuation: Callable[[], Awaitable[bool]] = lambda: _const(False)
     threads_enabled: bool = False
 
 
@@ -491,6 +494,8 @@ async def run_reverie_once(deps: ReverieDeps) -> ReverieQuestionV1 | None:
 # A waiting question Hub refused again for any reason but a full slot is not retried for this long.
 REOFFER_RETRY_SEC = 900.0
 _REOFFER_TRIED: dict[str, datetime] = {}
+# The adopt sweep (rows Hub refused before Patch 3) runs once per process start, not every poll.
+_SWEEP_DONE: list[bool] = [False]
 
 
 async def reconcile_outcomes(deps: ReverieDeps) -> int:
@@ -518,7 +523,8 @@ async def read_threads(deps: ReverieDeps) -> ThreadBook:
     try:
         rows, stored = await deps.thread_rows()
         book = thread_book(rows, stored, now=deps.now(),
-                           lapse=timedelta(days=float(settings.reverie_thread_lapse_days)))
+                           lapse=timedelta(days=float(settings.reverie_thread_lapse_days)),
+                           max_digs=int(settings.reverie_thread_max_digs))
     except Exception as exc:  # noqa: BLE001
         _count_skip("threads_unreadable", err=type(exc).__name__)
         return ThreadBook()
@@ -540,7 +546,8 @@ def _question_from_row(row: Mapping[str, Any]) -> ReverieQuestionV1:
         seed_kind=row["seed_kind"], seed_refs=list(row.get("seed_refs") or []),
         seed_material=str(row.get("seed_material") or ""), question=row.get("question"), why=row.get("why"),
         refs=list(row.get("refs") or []), cites=list(row.get("cites") or []),
-        correlation_id=row.get("correlation_id"), model_id=row.get("model_id"), created_at=row["created_at"],
+        correlation_id=row.get("correlation_id"), model_id=row.get("model_id"),
+        created_at=_aware(row.get("created_at")) or datetime.now(timezone.utc),
     )
 
 
@@ -548,9 +555,11 @@ async def reoffer_waiting(deps: ReverieDeps) -> ReverieQuestionV1 | None:
     """Offer the oldest waiting question again when the focus slot is free. No model call; the quiet
     stretch is not spent. Returns the question when it reached the slot (or was dropped), else None."""
     try:
-        swept = await deps.sweep_waiting()
-        if swept.get("adopted"):
-            logger.info("reverie_waiting_adopted n=%d", swept["adopted"])
+        if not _SWEEP_DONE[0]:
+            swept = await deps.sweep_waiting()
+            _SWEEP_DONE[0] = True
+            if swept.get("adopted"):
+                logger.info("reverie_waiting_adopted n=%d", swept["adopted"])
         waiting = await deps.waiting()
     except Exception as exc:  # noqa: BLE001
         _count_skip("waiting_unreadable", err=type(exc).__name__)
@@ -559,7 +568,8 @@ async def reoffer_waiting(deps: ReverieDeps) -> ReverieQuestionV1 | None:
     lapse_days = float(settings.reverie_thread_lapse_days)
     fresh = []
     for w in waiting:
-        if now - w["created_at"] > timedelta(days=lapse_days):
+        created = _aware(w.get("created_at"))
+        if created is not None and now - created > timedelta(days=lapse_days):
             note = f"lapsed: waited {lapse_days:g} days for the focus slot"
             await deps.update_route(str(w["question_id"]), "none", note, OFFER_LAPSED)
             logger.info("reverie_waiting_lapsed q=%s", w["question_id"])
@@ -603,12 +613,35 @@ async def reoffer_waiting(deps: ReverieDeps) -> ReverieQuestionV1 | None:
         _REOFFER_TRIED.pop(question.question_id, None)
     elif is_slot_full_refusal(note):
         await deps.update_route(question.question_id, "none", waiting_note(question.created_at), OFFER_WAITING)
+    elif is_queued_earlier_refusal(note):
+        # These words were queued before and that focus is gone: a re-offer can never succeed.
+        await deps.update_route(question.question_id, "none", f"lapsed: {note}"[:300], OFFER_LAPSED)
+        _REOFFER_TRIED.pop(question.question_id, None)
     else:
         # Refused for another reason (the cap at Hub, routing off, no answer): it keeps waiting and is
         # tried again after REOFFER_RETRY_SEC. The note says what happened.
         await deps.update_route(question.question_id, "none", f"waiting; last re-offer: {note}"[:300], OFFER_WAITING)
     logger.info("reverie_reoffer q=%s routed=%s note=%s", question.question_id, routed_to, note)
     return question.model_copy(update={"routed_to": routed_to, "route_note": note})
+
+
+async def _pick_new_seed(deps: ReverieDeps, key: str) -> tuple[ReverieSeedV1, str] | None:
+    """The picker's seed (least recently used kind with material) and its thread_id, or None (logged)."""
+    if _STRETCH_NO_MATERIAL.get(key):
+        _count_skip("no_material_this_stretch")
+        return None
+    try:
+        state = await deps.seed_state()
+    except Exception as exc:  # noqa: BLE001
+        _count_skip("seed_state_unreadable", err=type(exc).__name__)
+        return None
+    seed = await pick_seed_lazily(state.get("last_used") or {}, deps.seed_readers, set(state.get("spent_refs") or ()))
+    if seed is None:
+        _remember(_STRETCH_NO_MATERIAL, key, True)
+        _count_skip("no_material")
+        return None
+    thread_id = (state.get("threads") or {}).get(seed.thread_key) or str(uuid4())
+    return seed.model_copy(update={"thread_id": thread_id}), thread_id
 
 
 async def _run(deps: ReverieDeps) -> ReverieQuestionV1 | None:
@@ -643,6 +676,20 @@ async def _run(deps: ReverieDeps) -> ReverieQuestionV1 | None:
     thread = book.continuation
     seed: ReverieSeedV1 | None = None
     if thread is not None:
+        # At most every other stretch (review of #3997): when the last stretch went to a thread, this one
+        # goes to the picker first; the thread waits unless the picker has no material.
+        try:
+            alternate = await deps.last_was_continuation()
+        except Exception as exc:  # noqa: BLE001 -- unknown: give the picker its turn
+            logger.warning("reverie_last_continuation_unreadable err=%s", type(exc).__name__)
+            alternate = True
+        if alternate:
+            picked = await _pick_new_seed(deps, key)
+            if picked is not None:
+                logger.info("reverie_thread_deferred thread=%s reason=alternate", thread.thread_id)
+                thread = None
+                seed, thread_id = picked
+    if thread is not None:
         # Thread first (Patch 3): the dig said continue; the next question is asked on the same thread,
         # from the same material, before the picker rotates kinds.
         try:
@@ -655,23 +702,11 @@ async def _run(deps: ReverieDeps) -> ReverieQuestionV1 | None:
     if thread is not None and seed is not None:
         thread_id = thread.thread_id
         logger.info("reverie_thread_continue thread=%s after_q=%s", thread_id, thread.dug_question_id)
-    else:
-        if _STRETCH_NO_MATERIAL.get(key):
-            _count_skip("no_material_this_stretch")
+    elif seed is None:
+        picked = await _pick_new_seed(deps, key)
+        if picked is None:
             return None
-        try:
-            state = await deps.seed_state()
-        except Exception as exc:  # noqa: BLE001
-            _count_skip("seed_state_unreadable", err=type(exc).__name__)
-            return None
-        seed = await pick_seed_lazily(state.get("last_used") or {}, deps.seed_readers,
-                                      set(state.get("spent_refs") or ()))
-        if seed is None:
-            _remember(_STRETCH_NO_MATERIAL, key, True)
-            _count_skip("no_material")
-            return None
-        thread_id = (state.get("threads") or {}).get(seed.thread_key) or str(uuid4())
-        seed = seed.model_copy(update={"thread_id": thread_id})
+        seed, thread_id = picked
 
     question_id, correlation_id = str(uuid4()), str(uuid4())
     cue = await deps.now_cue(correlation_id, f"reverie_question:{question_id}")
@@ -810,6 +845,7 @@ def live_deps(bus: OrionBusAsync) -> ReverieDeps:
         write_outcome=lambda qid, o: asyncio.to_thread(store.write_reverie_outcome, qid, o),
         thread_rows=lambda: asyncio.to_thread(store.load_reverie_thread_rows),
         write_threads=lambda statuses: asyncio.to_thread(store.upsert_reverie_threads, statuses),
+        last_was_continuation=lambda: asyncio.to_thread(store.last_reverie_was_continuation),
         threads_enabled=bool(settings.reverie_threads_enabled),
     )
 

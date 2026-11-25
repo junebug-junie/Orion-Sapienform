@@ -47,6 +47,10 @@ CLOSED_THREAD_STATUSES = (THREAD_CONCLUDED, THREAD_EXHAUSTED, THREAD_LAPSED)
 # (live 2026-11-25: 14:14:48 ran, 14:14:53 register, 14:15:22 finish). The outcome waits for the finish
 # row, but never longer than this: a run whose finish row never lands still gets an outcome.
 OUTCOME_GRACE = timedelta(minutes=30)
+# A thread closes `exhausted` once this many of its questions have been dug (review of #3997: live, 77% of
+# curiosity finishes say continue, so without a bound one thread holds the reverie for days).
+# Overridden by ORION_REVERIE_THREAD_MAX_DIGS.
+THREAD_MAX_DIGS = 3
 FINDING_EXCERPT_CHARS = 600
 CONTINUE_NOTE_CHARS = 600
 # Focus statuses that mean the focus will not change again (orion/curiosity/focus.py).
@@ -58,6 +62,16 @@ def _slot_full_messages() -> tuple[str, ...]:
     from orion.curiosity.focus import JUNIPER_PROTECTED, PENDING_KEPT
 
     return (PENDING_KEPT, JUNIPER_PROTECTED)
+
+
+def is_queued_earlier_refusal(route_note: str | None) -> bool:
+    """True when Hub refused because these exact words were queued before and that focus is gone
+    (replaced, expired, cleared, refused). The focus id comes from the words, so a re-offer can never
+    succeed: the waiting question lapses instead of retrying until the lapse window."""
+    from orion.curiosity.focus import QUEUED_EARLIER
+
+    note = str(route_note or "")
+    return note.startswith(FOCUS_REFUSED_PREFIX) and note[len(FOCUS_REFUSED_PREFIX):].startswith(QUEUED_EARLIER)
 
 
 def is_slot_full_refusal(route_note: str | None) -> bool:
@@ -232,11 +246,13 @@ def _activity(row: Mapping[str, Any]) -> datetime:
     return max(t for t in times if t is not None) if any(times) else datetime.min.replace(tzinfo=timezone.utc)
 
 
-def thread_status(rows: Sequence[Mapping[str, Any]], *, now: datetime, lapse: timedelta) -> tuple[str, str, bool]:
+def thread_status(rows: Sequence[Mapping[str, Any]], *, now: datetime, lapse: timedelta,
+                  max_digs: int = THREAD_MAX_DIGS) -> tuple[str, str, bool]:
     """(status, reason, wants_continue) for one thread's rows (any order).
 
     Checked in order: concluded (the latest dig ended with no continue and nothing was asked after it),
-    exhausted (the last two reveries on the thread produced no usable question), lapsed (no activity for
+    exhausted (the last two reveries on the thread produced no usable question, or ``max_digs`` of its
+    questions have been dug), lapsed (no activity for
     the lapse window), else open. ``wants_continue``: open, the latest dig said continue, and no accepted
     question was written on the thread after it (a waiting or sent follow-up already carries the thread)."""
     ordered = sorted(rows, key=lambda r: (_aware(r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc),
@@ -249,6 +265,8 @@ def thread_status(rows: Sequence[Mapping[str, Any]], *, now: datetime, lapse: ti
         return THREAD_CONCLUDED, f"the dig on reverie_question:{latest_dug.get('question_id')} ended with no continue", False
     if len(ordered) >= 2 and _no_question(ordered[-1]) and _no_question(ordered[-2]):
         return THREAD_EXHAUSTED, "two reveries in a row on this thread left no usable question", False
+    if max_digs > 0 and len(dug) >= max_digs and not asked_after:
+        return THREAD_EXHAUSTED, f"{len(dug)} questions on this thread were dug (the most is {max_digs})", False
     last = max(_activity(r) for r in ordered)
     if now - last > lapse:
         return THREAD_LAPSED, f"no activity since {last:%Y-%m-%d}", False
@@ -259,6 +277,7 @@ def thread_status(rows: Sequence[Mapping[str, Any]], *, now: datetime, lapse: ti
 
 def thread_book(
     rows: Iterable[Mapping[str, Any]], stored: Mapping[str, Mapping[str, Any]], *, now: datetime, lapse: timedelta,
+    max_digs: int = THREAD_MAX_DIGS,
 ) -> ThreadBook:
     """Every open (or not yet recorded) thread's status, and the one continuation to offer first.
 
@@ -276,7 +295,7 @@ def thread_book(
         prior = stored.get(thread_id) or {}
         if prior.get("status") in CLOSED_THREAD_STATUSES:
             continue  # closed is final; a new seed on the same thread_key starts a new thread
-        status, reason, wants = thread_status(trows, now=now, lapse=lapse)
+        status, reason, wants = thread_status(trows, now=now, lapse=lapse, max_digs=max_digs)
         newest = max(trows, key=lambda r: (_aware(r.get("created_at")) or now, str(r.get("question_id"))))
         last_activity = max(_activity(r) for r in trows)
         if (status != prior.get("status") or reason != (prior.get("status_reason") or "")
@@ -327,7 +346,9 @@ __all__ = [
     "ThreadBook",
     "ThreadContinuation",
     "ThreadStatus",
+    "THREAD_MAX_DIGS",
     "build_outcome",
+    "is_queued_earlier_refusal",
     "is_slot_full_refusal",
     "pick_reoffer",
     "thread_book",

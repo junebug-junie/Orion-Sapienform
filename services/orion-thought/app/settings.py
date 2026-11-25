@@ -110,6 +110,8 @@ class ThoughtSettings(BaseSettings):
     # question; a dig that said continue makes its thread the next reverie's seed. Off = Patch 1 behavior.
     # Requires services/orion-sql-db/manual_migration_reverie_question_threads.sql.
     reverie_threads_enabled: bool = Field(True, alias="ORION_REVERIE_THREADS_ENABLED")
+    # A thread closes `exhausted` after this many of its questions were dug. 0 = no bound.
+    reverie_thread_max_digs: int = Field(3, ge=0, alias="ORION_REVERIE_THREAD_MAX_DIGS")
     # Chroma that holds the orion_lived_memory index (orion-recall writes it; same URL recall reads).
     reverie_far_memory_chroma_url: str = Field(
         "http://orion-athena-vector-db:8000", alias="ORION_REVERIE_FAR_MEMORY_CHROMA_URL"

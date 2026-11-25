@@ -441,6 +441,7 @@ async def gather_reverie_questions(conn: Any, start: datetime, end: datetime) ->
     return [ReverieQuestionDayV1(
         question_id=str(r["question_id"]), thread_id=r["thread_id"], seed_kind=str(r["seed_kind"]),
         question=str(r["question"]), why=r["why"], routed_to=str(r["routed_to"] or "none"),
+        offer_status=r.get("offer_status"),
         outcome=_obj(r["outcome"]) if isinstance(_obj(r["outcome"]), dict) else None,
         created_at=_aware(r["created_at"]),
     ) for r in sorted(rows, key=lambda r: (r["created_at"], str(r["question_id"])))]

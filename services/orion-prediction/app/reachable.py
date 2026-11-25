@@ -31,10 +31,12 @@ are the past hours; weight = 0.5 ** (age / 60 days).
         hub_lt15m / hub_15_60m Juniper had the Hub open and in view in the 15 min before the origin /
                                15-60 min before and not in the last 15 (hub_attention_minute, orion-hub
                                #3179, live 2026-11-11). Her rule: looking at the Hub means reachable.
-                               The first input with cold-hour skill (#3578, 2026-11-25).
+                               The first sign of cold-hour skill (#3578, 2026-11-25; 14 days, P 0.87).
         hub_unknown            the hour's 60 min window starts before the sensor's first minute: hub
                                features are 0 there and this flag soaks it up, so the months before the
-                               sensor still train every other rule without reading as "not looking".
+                               sensor still train every other rule without reading as "not looking". It
+                               is an era flag, so it also absorbs base-rate drift between then and now;
+                               harmless, since a live origin is always after the sensor started.
     Office camera and walkway/doorbell presence were tested and dropped (1.2-1.4x, no replay gain).
 
 Grade: log loss per hour. The unit of the test is the local DAY (its mean log loss), because hours
@@ -44,7 +46,7 @@ better -- no alpha, no pass/fail. Two subsets:
 
     all     every hour
     cold    hours with no message in the 3 h before the origin: the question outreach timing needs
-            ("will she come back?"). The Hub attention inputs are the first to show skill here.
+            ("will she come back?"). The Hub attention inputs are the first sign of skill here.
 
 A Wilcoxon / sign test on daily differences is the wrong test here: most days have no message, the
 model wins each of them by a hair, and the sign test calls that significant even where the mean loss
@@ -122,7 +124,7 @@ def _ns(ts: datetime) -> int:
 
 
 def _ns_td(td: timedelta) -> int:
-    return int(td.total_seconds()) * 1_000_000_000
+    return td // timedelta(microseconds=1) * 1000
 
 
 def hour_floor(ts: datetime) -> datetime:

@@ -17,10 +17,27 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
+
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[3])]
 
 from app import reachable as R  # noqa: E402
 from app.store import PostgresStore  # noqa: E402
+
+
+def _paired(pairs) -> dict:
+    """Hub (row p) vs no Hub (q) on the same origins: mean log loss and the daily gap (hub - no hub)."""
+    if not pairs:
+        return {"n_hours": 0}
+    a, b = {}, {}
+    for r, q in pairs:
+        d = r["origin"].astimezone(R.LOCAL_TZ).date()
+        a.setdefault(d, []).append(R.log_loss(r["p"], r["happened"]))
+        b.setdefault(d, []).append(R.log_loss(q, r["happened"]))
+    days = sorted(a)
+    return {"n_hours": len(pairs), "n_days": len(days), "n_hours_with_message": sum(1 for r, _ in pairs if r["happened"]),
+            "log_loss": {"hub": sum(map(sum, a.values())) / len(pairs), "no_hub": sum(map(sum, b.values())) / len(pairs)},
+            "hub_vs_no_hub": R._gap(np.array([np.mean(a[d]) for d in days]), np.array([np.mean(b[d]) for d in days]))}
 
 
 def main() -> None:
@@ -50,9 +67,15 @@ def main() -> None:
     # The fair test of the typing features: only origins the typing log covered.
     cov = R.verdict([r for r in rows if r["typing_log_covered"]])
     v["typing_covered_only"] = {k: cov[k] for k in ("all", "cold")}
-    # The fair test of the Hub inputs: only origins whose 60 min hub window the sensor covered.
-    hubv = R.verdict([r for r in rows if not r["features"]["hub_unknown"]])
-    v["hub_covered_only"] = {k: hubv[k] for k in ("all", "cold")}
+    # The fair test of the Hub inputs: the same origins with and without them, over the full local
+    # days the sensor covered (from the first Denver midnight after its first known hour).
+    if hub_since is not None:
+        first = (hub_since + R.HUB_BACK).astimezone(R.LOCAL_TZ)
+        day0 = (first.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).astimezone(timezone.utc)
+        paired = [(r, R.forecast(msgs, r["origin"], typed, coverage)["p"]) for r in rows if r["origin"] >= day0]
+        v["hub_paired"] = {"from": day0.isoformat(), **{name: _paired([(r, q) for r, q in paired if keep(r)])
+                           for name, keep in (("all", lambda r: True),
+                                              ("cold", lambda r: r["state_bucket"] >= R.COLD_BUCKET))}}
     v["replay"] = {"from": start.isoformat(), "to": now.isoformat(), "messages": len(msgs), "claude_typed_windows": len(typed),
                    "hub_minutes": len(hub), "hub_since": hub_since,
                    "origins_typing_uncovered": sum(1 for r in rows if not r["typing_log_covered"])}

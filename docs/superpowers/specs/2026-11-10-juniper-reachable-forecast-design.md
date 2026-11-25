@@ -173,20 +173,21 @@ message; `--no-hub` for before):
 | cold: log loss model / state / base | 0.0708 / 0.0733 / 0.0709 | 0.0700 / 0.0733 / 0.0709 |
 | cold: vs base gap/day (se), P | -0.0001 (0.004), 0.52 | -0.0017 (0.004), 0.65 |
 
-Over 118 days, 104 have no sensor, so the whole-history numbers barely move. The fair comparison is
-the same origins with and without hub, over the sensor's days (each origin refit from scratch, data
+Over ~117 days, ~103 have no sensor, so the whole-history numbers barely move. The fair comparison is
+the same origins with and without hub, over the sensor's full days (`hub_paired` in the replay output; each origin refit from scratch, data
 before it only):
 
-| sensor-covered origins | hours / msgs | loss with hub vs without | gap/day (se), P(hub better) |
+| `hub_paired`, 11-11 00:00 .. 11-25 00:00 Denver (14 full days) | hours / msgs | loss with hub vs without | gap/day (se), P(hub better) |
 |---|---|---|---|
-| all, 14 full days | 335 / 55 | 0.3247 vs 0.3487 (incl. the 2 h stub day) | -0.026 (0.019), 0.91 |
-| all, last 7 days | | | -0.054 (0.023), 0.97 |
-| cold, 14 days | 235 / 18 | 0.2587 vs 0.2679 | -0.013 (0.011), 0.87 |
-| cold, last 7 days | | | -0.027 (0.013), 0.95 |
+| all | 336 / 56 | 0.3220 vs 0.3500 | -0.028 (0.021), 0.90 |
+| cold | 235 / 18 | 0.2587 vs 0.2679 | -0.013 (0.011), 0.87 |
+
+Last 7 of those days alone (scratch split of the same rows): all -0.054 (se 0.023, P 0.97), cold -0.027
+(se 0.013, P 0.95).
 
 The first week is about level (the hub coefficients sit at the prior with little sensor data behind
-them); the second week is where it pays. The 2-hour stub day 11-10 (local) is left out of the day
-means: one message there swings a 2-hour mean by +0.28. Coefficients at 2026-11-25 06:00Z: hub < 15 min
+them); the second week is where it pays. `hub_paired` starts at the first full Denver day, so a 2-hour
+stub day cannot swing a day mean. Coefficients at 2026-11-25 06:00Z: hub < 15 min
 +1.29, hub 15-60 min +0.68, hub_unknown -0.34. Juniper's direction holds; the data put the 15-60 min
 rule a bit above her +0.5.
 

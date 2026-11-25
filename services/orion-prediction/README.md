@@ -332,8 +332,8 @@ Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than
 (P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
 
 Hub attention (2026-11-25, #3578), replay over the 14 full days the sensor covered, Hub vs no Hub on the
-same origins: all hours -0.026 loss/day (se 0.019, P 0.91), cold hours -0.013 (se 0.011, P 0.87); last 7
-days -0.054 (P 0.97) and -0.027 (P 0.95). The first input with cold-hour skill. Fitted: Hub in the last
+same origins: all hours -0.028 loss/day (se 0.021, P 0.90), cold hours -0.013 (se 0.011, P 0.87); last 7
+days -0.054 (P 0.97) and -0.027 (P 0.95). The first sign of cold-hour skill. Fitted: Hub in the last
 15 min +1.29 log-odds, 15-60 min +0.68.
 
 ## Act chain: what will Orion do in the next 15 minutes? (`GET /act-chain`, family B)

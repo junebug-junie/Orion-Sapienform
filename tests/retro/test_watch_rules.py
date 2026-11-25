@@ -78,6 +78,30 @@ def test_the_gates_in_order():
     assert W.gate(0.01, 0.01, now=now, last_input_at=now, last_look_at=None) == W.GATE_READY   # at the floor = over
 
 
+def test_a_game_with_no_floor_looks_on_the_timer_only_while_buttons_are_pressed():
+    now = 1000.0
+    kw = dict(now=now, timer_sec=60.0, timer_from=now - 100)
+    # the screen change is never read on the timer: a still screen still gets its look
+    assert W.gate(0.0, None, last_input_at=now - 5, last_look_at=None, **kw) == W.GATE_TIMER
+    assert W.gate(None, None, last_input_at=now - 5, last_look_at=now - 60, **kw) == W.GATE_TIMER
+    assert W.gate(0.0, None, last_input_at=now - 5, last_look_at=now - 59, **kw) == W.GATE_TIMER_WAIT
+    assert W.gate(0.0, None, last_input_at=now - 60, last_look_at=now - 120, **kw) == W.GATE_TIMER_STALE
+    assert W.gate(0.0, None, last_input_at=None, last_look_at=None, **kw) == W.GATE_TIMER_STALE
+    # no look yet: the timer runs from the sitting's first check, so the ring holds frames first
+    assert W.gate(0.0, None, now=now, last_input_at=now, last_look_at=None, timer_sec=60.0,
+                  timer_from=now - 10) == W.GATE_TIMER_WAIT
+    # no timer (unread calibration, or interval 0): no look, as before
+    assert W.gate(0.5, None, now=now, last_input_at=now, last_look_at=None, timer_sec=None) == W.GATE_NO_FLOOR
+    assert W.gate(0.5, None, now=now, last_input_at=now, last_look_at=None, timer_sec=0.0) == W.GATE_NO_FLOOR
+    # a floor wins over the timer: the floor gates are unchanged
+    assert W.gate(0.001, 0.01, now=now, last_input_at=now, last_look_at=None, timer_sec=60.0) == W.GATE_STATIC
+    # timer gates touch no floor counter
+    c = {k: 0 for k in W.COUNTERS}
+    for g in W.TIMER_GATES:
+        W.count(c, g, input_in_window=True)
+    assert not any(c.values())
+
+
 def test_a_paused_game_counts_static_skips_and_a_still_screen_with_presses_counts_a_likely_miss():
     c = {k: 0 for k in W.COUNTERS}
     for _ in range(300):                       # 10 minutes paused, nobody pressing
@@ -176,5 +200,15 @@ def test_why_orion_is_not_watching():
     assert status(last_over_floor_at=10_000.0 - 360)["text"] == "Orion is looking; the screen has not changed for 6 min."
     assert status(last_over_floor_at=10_000.0, last_input_at=10_000.0 - 130)["code"] == "input_stale"
     assert status(enabled=False)["code"] == "disabled" and status(sitting_open=False)["code"] == "no_sitting"
+    # a game with no floor and the timer on: its own status, never no_floor
+    still = W.Calibration(None, "no_separation", 500, 500, 2000.0)
+    assert status(calibration=still, timer_sec=60.0)["code"] == "timer_waiting"
+    assert status(calibration=still, timer_sec=60.0, last_stored_at=10_000.0 - 90)["code"] == "timer"
+    assert "one look every 60 s" in status(calibration=still, timer_sec=60.0, last_stored_at=9_910.0)["text"]
+    assert status(calibration=still, timer_sec=60.0, last_input_at=10_000.0 - 130)["code"] == "timer_input_stale"
+    assert status(calibration=still, timer_sec=60.0, last_refusal=("deferred:price", 9_999.0))["code"] == "refused"
+    assert status(calibration=still, timer_sec=0.0)["code"] == "no_floor"
+    assert status(calibration=None, timer_sec=60.0)["code"] == "no_floor"       # calibration unread: no timer
+    assert status(timer_sec=60.0)["code"] == "waiting"                          # a floor: the timer is not read
     # an old refusal does not hide a newer note
     assert status(last_refusal=("deferred:price", 9_000.0), last_stored_at=9_950.0)["code"] == "watching"

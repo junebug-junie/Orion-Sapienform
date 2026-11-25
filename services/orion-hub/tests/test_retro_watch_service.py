@@ -256,9 +256,10 @@ def test_a_changing_screen_with_no_press_for_two_minutes_gives_no_look_after_six
     run(go())
 
 
-def test_a_game_with_no_floor_gets_no_look_and_the_page_says_so():
+def test_a_game_with_no_floor_and_the_timer_off_gets_no_look_and_the_page_says_so():
     async def go():
         rig = Rig(calibration=None)
+        rig.watch.no_floor_look = 0.0             # HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC=0: the old rule
         rig.press()
         for _ in range(40):
             await rig.step(press=True)
@@ -267,6 +268,139 @@ def test_a_game_with_no_floor_gets_no_look_and_the_page_says_so():
         # every check with a check ~30 s before it lands in the game's histogram, labelled by input in those 30 s
         # (40 checks, 2 s apart: the first 14 have no 30-second base yet)
         assert sum(n for (g, i, _b), n in rig.watch.hist_pending.items() if g == GAME and i) == 26
+    run(go())
+
+
+NO_SEPARATION = W.Calibration(None, "no_separation", 900, 900, 3600.0)
+
+
+def test_a_game_with_no_floor_looks_on_the_timer_while_buttons_are_pressed():
+    """SimEarth, 2026-11-25: 302 ring checks, 0 looks. Now a still screen with presses gets one look a minute."""
+    async def go():
+        rig = Rig(calibration=NO_SEPARATION)
+        rig.press()
+        results = []
+        for i in range(150):                       # 5 minutes, a still screen, a press every 10 s
+            results.append(await rig.step(press=i % 5 == 0, moving=False))
+        c = rig.watch.state.counters
+        assert c["timer_looks"] == len(rig.bids) == len(rig.db.looks) == 4    # at 60, 120, 180, 240 s
+        stamps = [w.opened_at.timestamp() for w, _ in rig.bids]
+        assert [round(b - a) for a, b in zip(stamps, stamps[1:])] == [60, 60, 60]
+        assert stamps[0] - 1_000_000.0 >= 60       # the timer starts at the first check, not at once
+        # the same want as a floor look (family, producer, verb, tier, lanes) and the same GPU seat
+        want, _ = rig.bids[0]
+        assert (want.family, want.verb, want.tier, want.producer, want.lanes) == (
+            "hub.retro_watch", "look", 1, "orion-hub.retro_watch.binding", ["chat"])
+        assert rig.log.count("granted") == 4 and rig.log.count("released") == 4
+        # the screen never changed: the model wrote the same words each time, and each is stored (a true look)
+        assert [row[7] for row in rig.db.looks] == ["stored"] * 4 and c["notes_stored"] == 4
+        assert rig.db.looks[-1][15] == 1.0         # similar_to_previous says it is the same note
+        # no floor counter moved, and the page names the timer, never no_floor
+        assert c["checks_over_floor"] == 0 and c["static_skips"] == 0 and c["input_stale_skips"] == 0
+        assert rig.watch.status()["status"]["code"] == "timer"
+        assert rig.watch.watch_snapshot()["status"] == "timer"
+        assert rig.watch.watch_snapshot()["counts"]["timer_looks"] == 4
+        # a note at most ~60 s old: world:play's 3-minute rule holds
+        assert rig.t - rig.watch.state.last_stored_at < W.WATCHING_FRESH_SEC
+    run(go())
+
+
+def test_a_game_with_no_floor_and_no_button_press_gets_no_timer_look():
+    async def go():
+        rig = Rig(calibration=W.Calibration(None, "too_little_play", 10, 10, 40.0))
+        rig.press()
+        for i in range(150):                       # 5 minutes, the screen moves (a demo), one press at 42 s
+            await rig.step(press=i == 20)
+        c = rig.watch.state.counters
+        assert len(rig.bids) == c["timer_looks"] == 1            # the one at 62 s, while the press was fresh
+        assert rig.bids[0][0].opened_at.timestamp() - 1_000_000.0 == 62
+        assert rig.watch.status()["status"]["code"] == "timer_input_stale"
+        rig2 = Rig(calibration=W.Calibration(None, "one_sided", 900, 3, 1806.0))
+        rig2.press()
+        rig2.t += 61                                # the press is already stale when the watch starts
+        for _ in range(60):
+            await rig2.step()
+        assert not rig2.bids and rig2.watch.state.counters["timer_looks"] == 0
+    run(go())
+
+
+def test_a_floored_game_never_looks_on_the_timer():
+    async def go():
+        rig = Rig()                                # FLOOR set
+        rig.press()
+        for i in range(150):                       # a still screen with presses: under the floor, no look
+            assert await rig.step(press=i % 5 == 0, moving=False) in (W.GATE_STATIC,)
+        assert not rig.bids and rig.watch.state.counters["timer_looks"] == 0
+        assert rig.watch.status()["status"]["code"] == "static"
+    run(go())
+
+
+def test_the_timer_interval_is_one_env_key_and_zero_turns_it_off():
+    async def go():
+        rig = Rig(calibration=NO_SEPARATION)
+        rig.watch.no_floor_look = 0.0
+        rig.press()
+        for i in range(60):
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert not rig.bids and rig.watch.status()["status"]["code"] == "no_floor"
+        rig = Rig(calibration=NO_SEPARATION)
+        rig.watch.no_floor_look = 30.0
+        rig.press()
+        for i in range(60):                        # 2 minutes
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert rig.watch.state.counters["timer_looks"] == 3       # at 32, 62, 92 s (first check at 2 s)
+        cfg = SimpleNamespace(HUB_RETRO_WATCH_ENABLED=True, HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC=45)
+        assert WatchService(cfg, sitting=rig.sitting).no_floor_look == 45.0
+    run(go())
+
+
+def test_a_timer_game_with_the_watch_off_counts_no_timer_look():
+    async def go():
+        rig = Rig(calibration=NO_SEPARATION)
+        assert await rig.watch.set_juniper("off")
+        rig.press()
+        for i in range(100):
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert not rig.bids and rig.watch.state.counters["timer_looks"] == 0
+    run(go())
+
+
+def test_an_unread_calibration_gives_no_timer_look():
+    async def go():
+        rig = Rig(calibration=None)
+        rig.watch.pool_provider = lambda: None     # the floor table cannot be read: the game's floor is unknown
+        rig.press()
+        for i in range(90):                        # 3 minutes of presses
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert not rig.bids and rig.watch.state.counters["timer_looks"] == 0
+        assert rig.watch.status()["status"]["code"] == "no_floor"
+    run(go())
+
+
+def test_a_calibration_read_late_starts_the_timer_at_once():
+    """A hub restart mid-sitting: the floor table answers only later (flush -> recalibrate)."""
+    async def go():
+        rig = Rig(calibration=None)
+        rig.watch.pool_provider = lambda: None
+        rig.press()
+        for i in range(45):                        # 90 s, floor unknown: no look
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert not rig.bids
+        rig.watch.pool_provider = lambda: rig.db   # the database answers again
+        rig.watch.calibrations[GAME] = NO_SEPARATION
+        await rig.step(press=True, moving=False)   # more than 60 s since the first check: a look now
+        assert len(rig.bids) == 1 and rig.watch.state.counters["timer_looks"] == 1
+    run(go())
+
+
+def test_a_refused_timer_bid_waits_the_interval_and_says_why():
+    async def go():
+        rig = Rig(decision="deferred", calibration=NO_SEPARATION)
+        rig.press()
+        for i in range(70):
+            await rig.step(press=i % 5 == 0, moving=False)
+        assert len(rig.bids) == 2 and not rig.db.looks and not rig.log      # no seat without funding
+        assert rig.watch.status()["status"]["code"] == "refused"
     run(go())
 
 

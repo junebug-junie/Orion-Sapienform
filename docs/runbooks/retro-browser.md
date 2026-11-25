@@ -585,7 +585,7 @@ no model: perception begins in Hub's gateway.
 2. Every 2 s while a sitting is open, the newest packet is decoded to a 32 x 28 brightness grid
    (`orion/retro/frames.py`). Two numbers: the change against the check 30 s earlier (for the game's histogram)
    and the change since the last look (the trigger).
-3. Gates, in order (`orion/retro/watch.py`): no floor for this game -> no look; change under the floor ->
+3. Gates, in order (`orion/retro/watch.py`): no floor for this game -> the timer (below); change under the floor ->
    `static_skips` (+ `under_floor_with_input` when a button changed or was held); last press 60 s old or more
    -> `input_stale_skips`; less than `HUB_RETRO_LOOK_SEC` (60) since the last look -> wait; watch mode off ->
    no bid.
@@ -607,8 +607,22 @@ no model: perception begins in Hub's gateway.
 Past, and the 2-second step did not (`services/orion-hub/evals/retro_look_replay.py`). Once a minute each game's floor
 is computed again into `retro_watch_floor`: a game gets one when it has 30 minutes of checks and one value has
 at most 10% of the still checks and at least 90% of the played checks at or above it. Nothing is seeded by
-hand. A game with no floor gets no look, and the page says "No looks for this game yet". On The Legend of Zelda
-(NES) no value separated still from walking in step 0, so that game may stay without looks.
+hand.
+
+**A game with no floor looks on a timer** (2026-11-25). Any floor status but `set` (`too_little_play`,
+`one_sided`, `no_separation`) gives one look every `HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC` (60) while a button
+changed in the last 60 s. The screen change is not read, so a slow screen (SimEarth: 302 checks, 0 looks on
+2026-11-25) still gets a look a minute. No press for 60 s: no look (page code `timer_input_stale`). The first
+timer look comes one interval after the sitting's first check. Each one bids in the same family, with the same
+want and the same GPU seat as a floor look, so chat still wins. Counter: `retro_sitting.timer_looks` (needs
+`manual_migration_retro_watch_v3.sql`; post-pull applies it) and `counts.timer_looks` in `orion:retro:watch`.
+Page/watch status: `timer` (a stored note under 3 min old), `timer_waiting`, `timer_input_stale`, or
+`refused`/`refused_heat`. On a timer look an exact repeat of the previous note is `stored`, not `copied`: the
+prompt is stateless, so on a still screen the same words are a true look (its `similar_to_previous` is 1.0, so
+a line turn groups it; the line gate's newest-note read skips such a repeat, so a still screen earns no extra line). `timer_looks` counts timer looks that bid. Calibration keeps running, so a floor can still be set; then the floor rules apply.
+`HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC=0` restores the old rule (no floor, no look, "No looks for this game yet").
+Check it live: `redis-cli -u "$ORION_BUS_URL" GET orion:retro:watch` while playing a game with no
+floor shows `"status":"timer"` and a rising `timer_looks`; the gateway log line `retro_watch_look ... trigger=timer`.
 
 **The switch.** Juniper's switch on the game page (Off / Watch quietly / Watch and talk: `POST /api/retro/sitting/watch
 {"mode": "off"|"quiet"|"on"}`, a standing setting for every game; "quiet" means looks and no lines) and Orion's own `dig watch` (`orion/dig/watch.py`:
@@ -617,7 +631,8 @@ its ledger (actor `orion.watch_choice`); the gateway copies it into `retro_watch
 The lower of the two is in force. Neither side can turn the other's "off" back on.
 
 **What the page says.** "Orion is watching." only while a stored note is under 3 minutes old. Otherwise why
-not: the watch is off (by Orion, with Orion's words, or by the switch), no floor for this game, a refused bid
+not: the watch is off (by Orion, with Orion's words, or by the switch), no floor for this game and the timer
+off, a timer game with no press for N min, a refused bid
 or seat (with the reason), the screen has not changed for N min, or no button press for N min.
 
 **What Orion gets.** The notes reach a line turn's game block (patch 3, below). Only a note a line turn checked

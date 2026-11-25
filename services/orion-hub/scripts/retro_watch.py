@@ -17,7 +17,11 @@ The whole path, in order:
    look goes through the gates
    (orion/retro/watch.py ``gate``). Every gate outcome is a counter on the sitting row.
 3. **Floor.** Once a minute the histograms are added to ``retro_watch_change_hist`` and each game's floor is
-   computed again (``calibrate``) into ``retro_watch_floor``. A game without a floor gets no look.
+   computed again (``calibrate``) into ``retro_watch_floor``. A game without a floor (any status but ``set``)
+   looks on a timer instead: one look every ``HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC`` (60) while a button changed
+   in the last 60 s, counted ``timer_looks`` when it bids; it bids and seats exactly as a floor look does. On a timer look
+   an exact repeat of the previous note is stored, not ``copied``: the prompt is stateless, so on a still
+   screen (SimEarth) the same words are a true look, and dropping them would leave no fresh note.
 4. **Mode.** Before every bid, Orion's own choices (``dig watch``: act rows of actor ``orion.watch_choice``)
    are copied into ``retro_watch_preference`` and read with Juniper's page switch. The lower wins. Off: no bid.
 5. **Bid.** One want in family ``hub.retro_watch`` (tier 1). Only ``funded`` runs the look; anything else is
@@ -174,6 +178,7 @@ class SittingWatch:
     last_stored_note: Optional[str] = None
     last_refusal: Optional[tuple[str, float]] = None
     looking: bool = False
+    first_check_at: Optional[float] = None  # the timer of a no-floor game starts here (the ring holds frames)
 
 
 # --- default I/O (tests replace each) ---------------------------------------------------------------
@@ -211,6 +216,7 @@ class WatchService:
         self.sitting = sitting
         self.enabled = bool(getattr(config, "HUB_RETRO_WATCH_ENABLED", True)) and bool(getattr(sitting, "enabled", False))
         self.look_gap = _setting(config, "HUB_RETRO_LOOK_SEC", W.LOOK_GAP_SEC)
+        self.no_floor_look = _setting(config, "HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC", W.NO_FLOOR_LOOK_SEC)
         self.seat_wait = _setting(config, "HUB_RETRO_WATCH_SEAT_WAIT_SEC", 30.0)
         self.check_sec = W.CHECK_SEC
         self.pool_provider, self.clock = pool_provider, clock
@@ -380,6 +386,8 @@ class WatchService:
             self._warn("retro_watch_undecodable_packet")
             return None
         st.counters["ring_checks"] += 1
+        if st.first_check_at is None:
+            st.first_check_at = kept_at
         held = bool(getattr(self.sitting.tracker, "held", lambda _s: False)(sid))
         since = st.prev_check_at if st.prev_check_at is not None else kept_at - self.check_sec
         input_in_window = held or float(cur.last_input_at) >= since
@@ -402,19 +410,27 @@ class WatchService:
         cal = self.calibrations.get(str(game)) if game else None
         floor = cal.floor if cal is not None else None
         result = W.gate(st.max_change, floor, now=now, last_input_at=float(cur.last_input_at),
-                        last_look_at=st.last_look_at, look_gap_sec=self.look_gap)
+                        last_look_at=st.last_look_at, look_gap_sec=self.look_gap,
+                        timer_sec=self._timer_sec(cal), timer_from=st.first_check_at)
         W.count(st.counters, result, input_in_window=input_in_window)
-        if result not in (W.GATE_NO_FLOOR, W.GATE_STATIC):
+        if result not in (W.GATE_NO_FLOOR, W.GATE_STATIC) and result not in W.TIMER_GATES:
             st.last_over_floor_at = now
-        if result == W.GATE_READY and not st.looking and (self._look_task is None or self._look_task.done()):
+        if result in W.LOOK_GATES and not st.looking and (self._look_task is None or self._look_task.done()):
+            timer = result == W.GATE_TIMER
             st.looking, st.last_look_at = True, now
-            self._look_task = self._spawn(self._look(st, cur, st.max_change))   # one look at a time, any sitting
+            self._look_task = self._spawn(self._look(st, cur, st.max_change, timer=timer))   # one look at a time
         return result
 
+    def _timer_sec(self, cal: Optional[W.Calibration]) -> Optional[float]:
+        """The no-floor interval, only once the game's calibration was read and it has no floor."""
+        if cal is None or cal.floor is not None or self.no_floor_look <= 0:
+            return None
+        return self.no_floor_look
+
     # --- the look ---------------------------------------------------------------------------------
-    async def _look(self, st: SittingWatch, cur: Any, change: float) -> None:
+    async def _look(self, st: SittingWatch, cur: Any, change: float, *, timer: bool = False) -> None:
         try:
-            await self._look_inner(st, cur, change)
+            await self._look_inner(st, cur, change, timer=timer)
         except Exception:  # noqa: BLE001
             self._warn("retro_watch_look_failed", st.sitting_id)
         finally:
@@ -434,7 +450,7 @@ class WatchService:
             self._warn("retro_watch_line_lock_unread")
             return False
 
-    async def _look_inner(self, st: SittingWatch, cur: Any, change: float) -> None:
+    async def _look_inner(self, st: SittingWatch, cur: Any, change: float, *, timer: bool = False) -> None:
         if await self.line_running():
             st.last_refusal = ("line_running", self.clock())
             logger.info("retro_watch_no_bid sitting=%s reason=line_running", st.sitting_id)
@@ -447,8 +463,10 @@ class WatchService:
         if mode.mode == "off":
             logger.info("retro_watch_no_bid sitting=%s mode=off set_by=%s", st.sitting_id, mode.set_by)
             return
+        if timer:
+            st.counters["timer_looks"] += 1       # a timer look that bids (not one the line or the switch stopped)
         want_id = str(uuid.uuid4())
-        decision = await self._bid(self._want(want_id, st, cur), self._object_text(cur, st))
+        decision = await self._bid(self._want(want_id, st, cur, timer=timer), self._object_text(cur, st))
         outcome = getattr(decision, "outcome", None)
         if outcome != "funded":
             reason = (f"{outcome}:{getattr(decision, 'reason', None) or '-'}" if decision is not None else "no_answer")
@@ -469,7 +487,7 @@ class WatchService:
                 self._warn("retro_watch_bus_failed")
                 return
             await self._publish_act(bus, opened=True, want_id=want_id, sitting_id=st.sitting_id)
-            produced, note = await self._seated(bus, st, cur, want_id, change)
+            produced, note = await self._seated(bus, st, cur, want_id, change, timer=timer)
             await self._publish_act(bus, opened=False, want_id=want_id, sitting_id=st.sitting_id,
                                     produced=produced, note=note)
         finally:
@@ -478,7 +496,8 @@ class WatchService:
                 with contextlib.suppress(Exception):
                     await bus.close()
 
-    async def _seated(self, bus: Any, st: SittingWatch, cur: Any, want_id: str, change: float) -> tuple[bool, str]:
+    async def _seated(self, bus: Any, st: SittingWatch, cur: Any, want_id: str, change: float, *,
+                      timer: bool = False) -> tuple[bool, str]:
         """The hold, the frames, the call, the row. (act produced, act note)."""
         asked = self.clock()
         try:
@@ -496,7 +515,7 @@ class WatchService:
         try:
             granted = self.clock()
             return await self._at_grant(bus, st, cur, want_id, change, lease,
-                                        lane_wait_ms=int((granted - asked) * 1000))
+                                        lane_wait_ms=int((granted - asked) * 1000), timer=timer)
         except BaseException as exc:
             error = exc
             raise
@@ -504,7 +523,7 @@ class WatchService:
             await seat_cm.__aexit__(type(error) if error else None, error, error.__traceback__ if error else None)
 
     async def _at_grant(self, bus: Any, st: SittingWatch, cur: Any, want_id: str, change: float, lease: Any, *,
-                        lane_wait_ms: int) -> tuple[bool, str]:
+                        lane_wait_ms: int, timer: bool = False) -> tuple[bool, str]:
         from orion.retro.frames import FrameError, decode_packet, luma_grid, png
 
         now = self.clock()
@@ -555,6 +574,8 @@ class WatchService:
                 raise LookFailed("gateway_error_text")
             note = W.clean_note(content)
             outcome = W.classify(note, st.last_note)
+            if timer and outcome == "copied":
+                outcome = "stored"        # a still screen, a stateless prompt: the same words are a true look
             if last_grid is not None:
                 st.ref_grid, st.max_change = last_grid, 0.0
         except LookFailed as exc:
@@ -576,8 +597,9 @@ class WatchService:
         if hashes and frames_expire_at is not None:
             await self._db("execute", EXPIRY_SQL, hashes, frames_expire_at, quiet="retro_watch_expiry_failed")
         logger.info("retro_watch_look sitting=%s want_id=%s lease_id=%s outcome=%s failure=%s frames=%d "
-                    "change=%.4f lane_wait_ms=%s seconds=%s prompt_tokens=%s", st.sitting_id, want_id, lease_id,
-                    outcome, failure, len(hashes), change, lane_wait_ms, seconds, prompt_tokens)
+                    "change=%.4f lane_wait_ms=%s seconds=%s prompt_tokens=%s trigger=%s", st.sitting_id, want_id,
+                    lease_id, outcome, failure, len(hashes), change, lane_wait_ms, seconds, prompt_tokens,
+                    "timer" if timer else "floor")
         # Never "failed:..." at the start: self-monitor reads such a note as a run that never happened.
         return outcome == "stored", f"look {outcome}: {note or failure or '-'}"
 
@@ -637,14 +659,16 @@ class WatchService:
         return AttachmentRefV1(kind="percept", sha256=sha, mime="image/png", bytes=len(data), width=width,
                                height=height, source_url=f"{base}/{sha}")
 
-    def _want(self, want_id: str, st: SittingWatch, cur: Any) -> Any:
+    def _want(self, want_id: str, st: SittingWatch, cur: Any, *, timer: bool = False) -> Any:
         from orion.schemas.physiology_want import WantV1, WantWindowV1
 
         now = _utc(self.clock())
-        # Deferrable 0 in effect: the producer never holds. latest = one look interval.
+        gap = self.no_floor_look if timer else self.look_gap
+        # Deferrable 0 in effect: the producer never holds. latest = one look interval. A timer look is the same
+        # want (family, producer, verb, tier, lanes) as a floor look: only its trigger differs.
         return WantV1(want_id=want_id, family=W.FAMILY, producer=W.BINDING_PRODUCER, verb=W.VERB, tier=W.TIER,
                       object_ref=W.OBJECT_PREFIX + st.sitting_id, correlation_id=want_id, opened_at=now,
-                      window=WantWindowV1(latest=now + timedelta(seconds=self.look_gap)), lanes=["chat"])
+                      window=WantWindowV1(latest=now + timedelta(seconds=gap)), lanes=["chat"])
 
     @staticmethod
     def _object_text(cur: Any, st: SittingWatch) -> str:
@@ -869,7 +893,8 @@ class WatchService:
             last_stored_at=st.last_stored_at if st else None, last_refusal=st.last_refusal if st else None,
             last_over_floor_at=st.last_over_floor_at if st else None,
             last_input_at=float(cur.last_input_at) if cur is not None else None,
-            sitting_started_at=float(cur.started_at) if cur is not None else None)
+            sitting_started_at=float(cur.started_at) if cur is not None else None,
+            timer_sec=self._timer_sec(cal))
         return {
             "enabled": self.enabled, "mode": self.mode.mode, "set_by": self.mode.set_by, "why": self.mode.why,
             "juniper_mode": (self.juniper or {}).get("mode", "on"), "status": line,

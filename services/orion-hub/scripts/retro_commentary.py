@@ -71,7 +71,14 @@ HOLDER = "orion-hub.retro_commentary"
 NOW_ORGAN = "play"
 CITING_PREFIX = "retro_line"
 
-NEWEST_NOTE_SQL = ("SELECT max(looked_at) FROM retro_watch_look WHERE sitting_id = $1 AND outcome = 'stored'")
+# The newest stored note that says something new: a stored note equal to the stored note before it (a timer look on
+# a still screen, scripts/retro_watch.py) is a true look but no reason for another line.
+NEWEST_NOTE_SQL = """
+SELECT max(looked_at) FROM (
+    SELECT looked_at, note, lag(note) OVER (ORDER BY looked_at) AS prev_note
+    FROM retro_watch_look WHERE sitting_id = $1 AND outcome = 'stored'
+) s WHERE s.prev_note IS DISTINCT FROM s.note
+"""
 NEWEST_NOTE_TEXT_SQL = ("SELECT note FROM retro_watch_look WHERE sitting_id = $1 AND outcome = 'stored' "
                         "ORDER BY looked_at DESC LIMIT 1")
 NOTES_SQL = """

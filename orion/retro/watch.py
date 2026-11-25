@@ -8,7 +8,12 @@ is the I/O around it; ``orion/dig/watch.py`` uses the mode rules for Orion's sid
 A look needs something to see. Every 2 s while a sitting is open the gateway reads the newest relayed
 frame and measures the screen change (orion/retro/frames.py). Then, in order:
 
-1. The game has no calibrated floor: no look (the page says "no looks for this game yet").
+1. The game has no calibrated floor (any status but ``set``, still calibrating included): the timer instead
+   (``NO_FLOOR_LOOK_SEC``, Hub's ``HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC``). The last button change is 60 s old or
+   more: no look (``timer_input_stale``). Less than the interval since the last look (or since the sitting's
+   first check): wait. Otherwise a timer look (``timer_looks``), then steps 5-6 as for any look. The screen
+   change is not read: a slow screen (SimEarth) still gets a look a minute while someone plays. Interval 0:
+   no look (the page says "no looks for this game yet"). Calibration keeps running, so a floor can still be set.
 2. The change since the last look is under the game's floor: ``static_skips`` (and ``under_floor_with_input``
    when a button changed or was held in the window: a likely miss).
 3. Over the floor (``checks_over_floor``) but the last button change is 60 s old or more: ``input_stale_skips``.
@@ -44,6 +49,7 @@ GAME_PREFIX = "retro_game:"
 CHECK_SEC = 2.0             # one ring check (and one kept packet) every 2 s
 RING_MAX = 30               # the last minute of play, still compressed
 LOOK_GAP_SEC = 60.0         # at most one look a minute (a ceiling, never a timer)
+NO_FLOOR_LOOK_SEC = 60.0    # a game with no floor: one look this often while buttons are pressed (a timer)
 INPUT_FRESH_SEC = 60.0      # the last button change must be younger than this
 FRAMES_PER_LOOK = 4
 LOOK_WINDOW_SEC = 30.0      # the frames of a look span the last 30 s at lease grant
@@ -70,7 +76,7 @@ EDGES = tuple(BIN_LOW * 10 ** (k / BINS_PER_DECADE) for k in range(N_EDGES))
 N_BINS = N_EDGES + 1
 
 HEAT_PREFIX = "heat:"        # a refusal the heat reflex caused (the gateway tags it; the page names it)
-COUNTERS = ("ring_checks", "checks_over_floor", "input_stale_skips", "under_floor_with_input", "static_skips",
+COUNTERS = ("ring_checks", "checks_over_floor", "timer_looks", "input_stale_skips", "under_floor_with_input", "static_skips",
             "bids_funded", "model_calls", "notes_stored", "failed_looks")
 OUTCOMES = ("stored", "empty", "unclear", "copied", "failed")
 VERDICTS = ("unchecked", "checked_holds", "contradicted")
@@ -168,13 +174,29 @@ GATE_STATIC = "static"
 GATE_INPUT_STALE = "input_stale"
 GATE_TOO_SOON = "too_soon"
 GATE_READY = "ready"
+GATE_TIMER_STALE = "timer_input_stale"
+GATE_TIMER_WAIT = "timer_wait"
+GATE_TIMER = "timer"
+TIMER_GATES = (GATE_TIMER_STALE, GATE_TIMER_WAIT, GATE_TIMER)
+LOOK_GATES = (GATE_READY, GATE_TIMER)
 
 
 def gate(change: Optional[float], floor: Optional[float], *, now: float, last_input_at: Optional[float],
-         last_look_at: Optional[float], look_gap_sec: float = LOOK_GAP_SEC) -> str:
-    """Which gate one ring check stops at (module docstring, steps 1-4)."""
+         last_look_at: Optional[float], look_gap_sec: float = LOOK_GAP_SEC,
+         timer_sec: Optional[float] = None, timer_from: Optional[float] = None) -> str:
+    """Which gate one ring check stops at (module docstring, steps 1-4). ``timer_sec``: the no-floor interval,
+    None or <= 0 for no timer (the caller passes None until the game's calibration was read, so a game whose
+    floor is still unread never gets a timer look). ``timer_from``: when the timer starts without a look yet
+    (the sitting's first check, so the ring holds frames first)."""
     if floor is None:
-        return GATE_NO_FLOOR
+        if timer_sec is None or timer_sec <= 0:
+            return GATE_NO_FLOOR
+        if last_input_at is None or now - last_input_at >= INPUT_FRESH_SEC:
+            return GATE_TIMER_STALE
+        anchor = last_look_at if last_look_at is not None else timer_from
+        if anchor is not None and now - anchor < timer_sec:
+            return GATE_TIMER_WAIT
+        return GATE_TIMER
     if change is None or change < floor:
         return GATE_STATIC
     if last_input_at is None or now - last_input_at >= INPUT_FRESH_SEC:
@@ -185,8 +207,9 @@ def gate(change: Optional[float], floor: Optional[float], *, now: float, last_in
 
 
 def count(counters: dict, gate_result: str, *, input_in_window: bool) -> None:
-    """The sitting's counters for one ring check that had a floor to compare with."""
-    if gate_result == GATE_NO_FLOOR:
+    """The sitting's counters for one ring check that had a floor to compare with. Timer gates count nothing
+    here: the gateway counts ``timer_looks`` when it starts one."""
+    if gate_result == GATE_NO_FLOOR or gate_result in TIMER_GATES:
         return
     if gate_result == GATE_STATIC:
         counters["static_skips"] = counters.get("static_skips", 0) + 1
@@ -313,9 +336,10 @@ def _mins(sec: float) -> int:
 def status(*, enabled: bool, sitting_open: bool, mode: Mode, calibration: Optional[Calibration],
            now: float, last_stored_at: Optional[float], last_refusal: Optional[tuple[str, float]],
            last_over_floor_at: Optional[float], last_input_at: Optional[float],
-           sitting_started_at: Optional[float]) -> dict:
+           sitting_started_at: Optional[float], timer_sec: Optional[float] = None) -> dict:
     """One status line for the game page. "Orion is watching" only with a stored note under 3 minutes old;
-    otherwise why not. ``last_refusal``: (reason, at) of the newest bid or lease that was refused."""
+    otherwise why not. ``last_refusal``: (reason, at) of the newest bid or lease that was refused.
+    ``timer_sec``: the no-floor interval in force (None: no timer), read only when the game has no floor."""
     def out(code: str, text: str) -> dict:
         return {"code": code, "text": text}
 
@@ -329,7 +353,20 @@ def status(*, enabled: bool, sitting_open: bool, mode: Mode, calibration: Option
         return out("off_juniper", "The watch is off (the switch on this page).")
     if calibration is None or calibration.floor is None:
         detail = calibration.words() if calibration is not None else "nothing measured yet"
-        return out("no_floor", f"No looks for this game yet: {detail}.")
+        if calibration is None or timer_sec is None or timer_sec <= 0:
+            return out("no_floor", f"No looks for this game yet: {detail}.")
+        every = f"one look every {int(round(timer_sec))} s while buttons are pressed, no floor yet ({detail})"
+        if last_stored_at is not None and now - last_stored_at < WATCHING_FRESH_SEC:
+            return out("timer", f"Orion is watching on a timer: {every}.")
+        if last_refusal is not None and (last_stored_at is None or last_refusal[1] > last_stored_at):
+            reason = last_refusal[0]
+            if reason.startswith(HEAT_PREFIX):
+                return out("refused_heat", f"Orion is not looking: the body is too hot ({reason}).")
+            return out("refused", f"Orion is not looking: bid refused ({reason}).")
+        if last_input_at is None or now - last_input_at >= INPUT_FRESH_SEC:
+            idle = f"no button press for {_mins(now - last_input_at)} min" if last_input_at is not None else "no button press yet"
+            return out("timer_input_stale", f"Orion looks on a timer, but {idle}: {every}.")
+        return out("timer_waiting", f"Orion is looking on a timer; no note yet: {every}.")
     if last_stored_at is not None and now - last_stored_at < WATCHING_FRESH_SEC:
         return out("watching", "Orion is watching.")
     if last_refusal is not None and (last_stored_at is None or last_refusal[1] > last_stored_at):
@@ -347,7 +384,7 @@ def status(*, enabled: bool, sitting_open: bool, mode: Mode, calibration: Option
 
 __all__ = [
     "ACTOR", "BINDING_PRODUCER", "CHOICE_ACTOR", "COUNTERS", "Calibration", "EDGES", "FAMILY", "FRAMES_PER_LOOK",
-    "MODES", "Mode", "N_BINS", "OUTCOMES", "POOL_CLASS", "POOL_ROUTE", "VERB", "bin_of", "calibrate", "classify",
+    "MODES", "Mode", "NO_FLOOR_LOOK_SEC", "N_BINS", "OUTCOMES", "POOL_CLASS", "POOL_ROUTE", "VERB", "bin_of", "calibrate", "classify",
     "clean_note", "count", "effective", "gate", "orion_choice", "pick_frames", "prompt", "similar", "status",
     "valid_mode",
 ]

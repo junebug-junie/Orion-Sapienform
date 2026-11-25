@@ -20,7 +20,8 @@ pytestmark = pytest.mark.skipif(not DSN, reason="ORION_TEST_PG_URI (throwaway da
 REPO = Path(__file__).resolve().parents[3]
 MIGRATIONS = [REPO / "services/orion-sql-db" / n for n in (
     "manual_migration_retro_play_sessions_v1.sql", "manual_migration_retro_watch_v1.sql",
-    "manual_migration_retro_watch_v2.sql", "manual_migration_retro_watch_v2.sql")]   # v2 twice: changes nothing
+    "manual_migration_retro_watch_v2.sql", "manual_migration_retro_watch_v2.sql",   # v2 twice: changes nothing
+    "manual_migration_retro_watch_v3.sql", "manual_migration_retro_watch_v3.sql")]
 # The columns of grammar_acts the copy of Orion's choices reads (the live table has more).
 GRAMMAR_ACTS = """CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, verb varchar, object_ref text,
   test_before text, session_id varchar, opened_at timestamptz, outcome_note text, created_at timestamptz DEFAULT now())"""
@@ -76,11 +77,13 @@ async def test_the_watch_tables_round_trip() -> None:
 
             # counters on the sitting row
             watch._state_for(cur)
-            watch.state.counters.update(ring_checks=900, static_skips=600, checks_over_floor=300, notes_stored=7)
+            watch.state.counters.update(ring_checks=900, static_skips=600, checks_over_floor=300, notes_stored=7,
+                                       timer_looks=4)
             await watch._write_counters(cur.sitting_id, dict(watch.state.counters))
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT * FROM retro_sitting WHERE sitting_id = $1", cur.sitting_id)
             assert (row["ring_checks"], row["static_skips"], row["checks_over_floor"], row["notes_stored"]) == (900, 600, 300, 7)
+            assert row["timer_looks"] == 4
 
             # a look row, then a later post of one of its frames moves its expiry; a verdict defaults to unchecked
             t0 = now.replace(microsecond=0)

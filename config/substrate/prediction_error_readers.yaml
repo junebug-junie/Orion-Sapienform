@@ -138,9 +138,6 @@ files:
     class: not_a_reader
     reason: transports pressure hints into the field channel "prediction_error" (alarms included); the
       cross-node merge (orion/field/pressure.py skips_merge, #3307) drops alarm nodes from that channel
-  services/orion-heartbeat/app/substrate/bus_synaptic.py:
-    class: not_a_reader
-    reason: its own gap z-score mirror; reads no node prediction_error
   services/orion-hub/scripts/main.py:
     class: not_a_reader
     reason: wires the node-history introspect listener only

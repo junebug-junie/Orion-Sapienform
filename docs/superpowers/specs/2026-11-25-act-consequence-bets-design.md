@@ -84,15 +84,42 @@ No new ledger, no new store, no new status words.
     `correlation_id`, AND `citing_organ` is not the acting organ, OR
   - (b) the act's `act_downstream_use` row has `used = true`.
 
-  Otherwise it is graded 0 at the horizon (`outcome_source = expired`). An act that produced nothing
-  closes 0 with note `no_output`. A failed act gets no separate signal.
+  It closes 1 at the first use (the 60 s resolver sweep, `SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC`), so a
+  hit is fresh. It closes 0 only at the horizon (`outcome_source = expired`), so a miss is at least one
+  horizon old by nature: "nobody used it in a day" takes a day to know.
+- **Observable or not (review Q4).** Three cases, three treatments:
+  - *observable*: the act's output landed as a `temporal_self_event` (same `correlation_id`) or has a
+    `linked` `act_downstream_use` row. Graded 1 or 0 as above. Counts in the posterior.
+  - `no_output`: the act ran and made nothing (`act_downstream_use.link_status = 'no_output'`, or the
+    producer closes failed). A real 0: nothing was there to use. Counts.
+  - `no_link_path`: output exists but no reader could ever be observed using it (1,185 of 1,511 rows
+    in `act_downstream_use`, 7 d). Closes with `outcome_source = expired`, note `unobservable`, and is
+    **masked out of the effect posterior and the self-monitor grade**, the way the reachable forecast
+    masks untyped hours. Counting these as zeros would teach "nobody uses it" from acts that cannot be
+    seen. A family switches in Patch 1b only when its observable share is >= 50% over 7 days (today:
+    say 100%, infer 100%, make 67%, look 66%, sense 65%, ask 55%; play and maintain 0%, so they stay).
 - The grader is a resolver in `act_ledger.py`, beside `resolve_ask_acts`, on the same sweep.
   It writes the outcome only; `error` and `surprise_nats` follow the ledger's existing close path, and
   the effect posterior updates as it does today.
 - **Consumer-first.** `ActSignal` is a Literal on `extra=forbid` models read by orion-sql-writer and
   substrate-runtime (`grammar_events`). Ship the new value to readers first. Producers switch in
   Patch 1b, one family at a time, behind `ACT_OUTPUT_USED_FAMILIES` (ships ON with the families
-  that have a link today: make, look, ask, infer, sense).
+  that pass the observable-share bar above).
+- **Writer sweep (review Q2).** `"artifact_produced"` is written by 17 non-test source files (prime acts,
+  durable-runs `run_acts.py`, Hub `act_emit.py`, curiosity replica, dig look, consent/intention/
+  day_letter, town sessions). Patch 1b does NOT edit each call site's literal. It adds one helper,
+  `act_signal_for(verb, actor)`, that returns `output_used` for switched families and
+  `artifact_produced` otherwise, and every call site calls it. A site that is not swept keeps
+  sending `artifact_produced`, which is still a valid Literal value: a silent fallthrough, not a
+  rejection. So the patch carries a test that greps for a literal `"artifact_produced"` at an act-open
+  call site and fails, and a live check that no switched (verb, actor) opened `artifact_produced`
+  after deploy.
+- **Series break (review Q1).** The self-monitor keys a belief on
+  `grammar_acts:{verb}|{actor}|{signal_id}` (`orion/self_monitor/adapters.py:140`). A switch is a new
+  claim, so a new key is correct: "my looks get used" is not "my looks finish". But the old key's
+  grade must not silently vanish from the act gate and consults. Patch 1b: (a) writes a
+  `series_break` row naming old key -> new key and the switch time; (b) the act gate reads the old
+  key's grade until the new key has n >= 30 settled observable acts; (c) a test pins (b).
 - **Retire, don't keep:** a family that switches stops opening `artifact_produced`. Families that
   already bet on Juniper (`juniper_replied`, `juniper_answered`, `promise_kept`) keep their signal.
   Those already are consequences.
@@ -123,9 +150,19 @@ No new ledger, no new store, no new status words.
 
 ### Patch 2: acts serve goals, goals close (attention-runtime, sql-writer, schemas)
 
-- **Bind.** When an act opens while a field goal is active, `bind_act_to_workspace`'s sibling stamps
-  `goal_ref = "field_goal:<artifact_id>"` (artifact_id of the newest active goal announcement).
-  Prime concerns and curiosity runs keep their own `goal_ref` and are not overwritten.
+- **Bind (review Q7: attribution).** Binding by time alone is wrong: a goal is re-announced about
+  1,100 times a day, so almost every act would be "serving" it, and almost every episode would read
+  completed off incidental acts. An act binds `goal_ref = "field_goal:<artifact_id>"` only when the
+  act's own target matches the goal's `field_target_id` (`world:chat` <- `act:say` on
+  `hub.chat_reply`/`hub.outreach`; `capability:*` <- the matching capability act). The match table
+  must come from the field-attention target registry (`FieldAttentionTargetV1.target_id`), not a
+  hand list. Whether that registry already names act targets is UNVERIFIED. If it does not, Patch 2a
+  builds that mapping first, with a test per pair. Acts with no match get no field goal. Prime
+  concerns and curiosity runs keep their own `goal_ref` and are not overwritten.
+- **Episode key (review Q6).** Episodes fold on `field_target_id` with a 10-min gap. `artifact_id` is
+  unique per announcement (1,112 of 1,112 in 24 h), so it is only the lookup key, never the episode
+  key. `field_goal_episode` is not in the live database yet. Merge order: #3941, then #3940, then
+  Patch 2. Patch 2's acceptance checks cannot run before #3940 is deployed.
 - **Resolve.** The sql-writer maps `field_goal:<artifact_id>` to `episode_id` by direct lookup in
   `field_goal_episode_artifact` (artifact_id -> episode_id, kept 48 h; PR #3940,
   `services/orion-sql-writer/app/field_goal_episode.py`). Acts older than 48 h fall back to
@@ -142,12 +179,21 @@ No new ledger, no new store, no new status words.
 - **Experience contract.** New `TemporalSourceKind` `goal_episode`: one event per closed episode
   ("I wanted `world:chat` for 2 h, 3 acts, completed"). Reader in `orion/temporal_self/sources.py`. Organ
   `field_goals` registered in `config/integration/organs.yaml`.
-- **Read the now back (closes the loop in the grammar).** The goal producer reads
-  `GET /temporal-self/now` for `goal_episode` events, and `record_use`s what it reads. It lowers
-  `priority` on a target whose last 3 episodes in 24 h are `failed`, by the share failed, floor 0.2.
-  goal_context then weights that goal less, through the field it already reads (`priority`). No
-  goal_context logic changes.
-- Juniper heuristic note: the 3-in-24 h rule is a prior, tunable from data later. Not a veto.
+- **Shadow first.** Patch 2b writes verdicts and the `goal_episode` events only. The discount stays
+  off until 7 days of verdicts show the completed/failed split per target. Expected split: UNKNOWN
+  today. If more than 90% of episodes read `completed`, the bind rule is still too loose, and the
+  discount does not ship.
+- **Read the now back (closes the loop in the grammar; review Q8).** The goal producer reads
+  `GET /temporal-self/now` for `goal_episode` events, and `record_use`s what it reads. It writes the
+  discounted `priority` into each new announcement row, since priority lives per row. goal_context
+  then weights that goal less, through the field it already reads. No goal_context logic changes.
+  The discount is NOT a rolling window, because a window oscillates: lower priority -> fewer serving
+  acts -> no verdicts -> the window rolls off -> priority returns, about every 24 h. Instead the
+  discount is a state per target. It is set after 3 `failed` episodes in a row, and it lowers
+  priority by the failed share, floor 0.2. It is cleared only by a `completed` episode. The floor
+  keeps some acts flowing, so a recovery can be observed. If a target has no verdict in 72 h, the
+  state decays by half, so a goal that cannot be served at all is not starved forever.
+- Juniper heuristic note: the 3-failures rule is a prior, tunable from data later. Not a veto.
 
 ### Patch 3: Prime reads its own track record (orion-mind, Prime frame)
 
@@ -157,8 +203,14 @@ No new ledger, no new store, no new status words.
   2 h today, served."
 - It sits after orion-sapienform-87's attention-schema line in `orion/prime/thought.py`. Built after
   their Step 2a merges, to avoid a conflict in the same function.
-- Hunger (`orion/prime/hunger.py`): a family whose P(used) dropped by half week over week becomes a
-  need with content ("my paintings stopped being used"), not a wake on a clock.
+- Hunger (`orion/prime/hunger.py`, review Q9): a family becomes a need with content ("my paintings
+  stopped being used") only when its week-over-week drop passes a two-proportion test at p < 0.05.
+  A rule like "P(used) halved" is about 2 SE at p ~ 4% and a few hundred acts, so it would fire on
+  noise. The drop must also hold with the dominant reader removed. Today reverie wrote 992 of 1,065
+  `experience_use` rows, so a reverie change alone would halve every family's rate. The need names
+  which reader stopped using the family, so "one reader changed" reads differently from "my outputs
+  stopped being useful". A drop confined to one reader becomes a need about that reader, not about
+  the act family.
 
 ### Patch 4: introspection reads surprising misses (orion-thought, curiosity)
 
@@ -167,6 +219,10 @@ No new ledger, no new store, no new status words.
 - Self-inquiry's question producer takes the top-surprise `action_outcome` of the day as one seed
   ("I expected my reading notes to be used and none were. Why?"). Reverie already reads the now,
   so it sees the same event with no change.
+- Staleness (review Q10): the resolver sweeps every 60 s. A hit closes at first use, but a miss
+  closes at the 24 h horizon, so a miss seed is about a day old. That is intended: self-inquiry asks
+  about a pattern ("my notes go unread"), not a moment. A surprising *hit* (an act at P(used) = 0.05
+  that got used) closes within minutes and is the fresh seed.
 - This is the feed the learned chooser (#3433) needs: decisions with real outcomes on a scale that
   differs by act.
 
@@ -208,8 +264,11 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
 
 - Data: act rows, experience rows, and cites. All Orion-internal. Nothing new leaves the mesh.
 - Danger 1: Orion learns to make outputs that get cited, not outputs that matter (Goodhart on cites).
-  Watch: per-family cite rate rises while Juniper-reply and promise-kept rates fall. That check is
-  in the Patch 4 roundup line.
+  Watch (review Q5): `promise_kept` has 16 acts in its lifetime, so it cannot be a counter-metric yet.
+  The measurable counters are `say -> juniper_replied` (110 acts/7 d, 62%) and
+  `ask -> juniper_answered` (74 acts/7 d, 80%). Alarm when either falls by a two-proportion test
+  p < 0.05 over 14 days while the cite rate rises. `promise_kept` joins at n >= 100. The check is in
+  the Patch 4 roundup line.
 - Danger 2: the goal discount starves a goal that matters but is hard (chat when Juniper is away).
   Floor 0.2, never 0, and a discount lasts only the 24 h window.
 - Rollback: `ACT_OUTPUT_USED_FAMILIES=` (empty) restores `artifact_produced` per family.
@@ -218,12 +277,20 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
 
 ## Acceptance checks (live)
 
-1. After Patch 1b: `action_outcome` mean surprise per switched family > 0.05 nats, over 7 days
-   (today 0.0000-0.004).
+1. After Patch 1b: per switched family, surprise is not flat. The 7-day spread of `surprise_nats`
+   has IQR > 0.05 nats (today every family is 0.0000-0.004). Mean surprise alone is not the check,
+   because at P(used) ~ 3% one graded-0 close already gives -ln 0.97 ~ 0.03, so base rate alone would
+   pass a mean bar (review Q3).
 2. Replay: weekly median surprise over 3 weeks shows no monotone drift with posterior age (the
    organs.yaml note becomes false).
-3. At least 3 families have a P(used) posterior with skill > 0 against base rate in orion-prediction's
-   calibration view.
+3. Gate, with numbers (review Q3): at least 3 families with n >= 200 observable settled acts have
+   per-act predictions that sort used from not-used with AUC >= 0.60 and sort p < 0.05 (the same
+   statistic `/turn-self-bets/live` already reports as `sort_auc`/`sort_p`), and Brier skill vs the
+   family base rate >= 0.02. A family-mean posterior alone cannot pass this: it has no per-act
+   spread. So this check also proves the predicted value carries per-act information, for example
+   from object or hour. If no family passes after 21 days, the posterior is only a base rate, and the
+   chooser (#3433) gets it labelled as such.
+3b. Self-monitor: no switched family's act-gate grade flips without a `series_break` row naming it.
 4. After Patch 2: `field_goal_episode` rows with a verdict exist, and both `completed` and `failed`
    appear. The goal producer's `record_use` rows for `goal_episode` exist. A failed target's
    `priority` is lowered in a live announcement.

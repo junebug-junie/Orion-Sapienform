@@ -635,3 +635,160 @@ def test_http_rerank_goes_in_chunks_each_with_a_live_timeout(no_dense):
     assert [s for s, _t in seen] == sizes and len(seen) > 1
     assert all(0 < t <= 2.0 for _s, t in seen)
     assert out.backend == "hybrid" and len(out.reranked) == n
+
+
+# --- recall-seeking questions always search (live miss 2026-11-25) ---------------------------
+
+from app.lived_memory import fallback_queries, trace_of  # noqa: E402
+from app.lived_rewrite import PROMPT, SPEAKER, asks_about_past  # noqa: E402
+
+TRIP = _row("t1", "Juniper headed to Lakeport on Monday, back on Wednesday.")
+
+
+def searches_only_reranker(query: str, docs: List[str]):
+    """Like the live cross-encoder on a first-person question: the raw message fits nothing;
+    only the searches (after " | ") carry the match."""
+    q = set(tokenize(query.split(" | ", 1)[1])) if " | " in query else set()
+
+    async def go():
+        return [(-6.0 + 3.0 * len(q & set(tokenize(d)))) for d in docs]
+
+    return go()
+
+
+@pytest.mark.parametrize("msg", [
+    "running a test, do you recall when I traveled to Lakeport?",
+    "when did I travel to Lakeport?",
+    "do you remember my birthday?",
+    "remind me what I said about the garden",
+    "was I right about that?",
+    "remember when we went to Lakeport?",
+    "Do you recall? The trip to Lakeport",
+])
+def test_asks_about_past_reads_recall_seeking_grammar(msg):
+    assert asks_about_past(msg)
+
+
+@pytest.mark.parametrize("msg", [
+    "hey how was your day?",
+    "I forgot my keys at the office",
+    "did you eat?",
+    "thanks, heading to bed now",
+    "when did the server restart?",
+    "I forgot to tell you, I'm heading out",
+    "remind me to call mom at 5",
+    "you remind me of a cat",
+    "don't forget you have a meeting",
+    "I can't remember, can you check the server logs",
+    "can you remember this for later: I like tea",
+    "you forgot the semicolon",
+    "had I known, I'd have stayed. how are you?",
+])
+def test_asks_about_past_leaves_small_talk_and_other_questions(msg):
+    assert not asks_about_past(msg)
+
+
+def test_fallback_query_names_the_speaker_and_skips_the_preamble():
+    msg = "running a test, do you recall when I traveled to Lakeport?"
+    assert fallback_queries(msg, names_in=lambda c: "Lakeport" in c) == [f"{SPEAKER} traveled Lakeport"]
+    # No known entity: the asking clause, memory verbs dropped.
+    assert fallback_queries("ok so, do you remember my birthday?") == [f"{SPEAKER} birthday"]
+    assert fallback_queries("do you remember?") == []
+    assert fallback_queries("do you remember that?") == []  # left to the model, which sees the context
+
+
+@pytest.mark.parametrize("msg,query", [
+    # The asking clause holds no content word: the clauses after it.
+    ("do you remember, when I traveled to Lakeport?", f"{SPEAKER} traveled Lakeport"),
+    ("Do you recall? The trip to Lakeport", "trip Lakeport"),
+    # A known entity in a preamble clause does not push the question out.
+    ("talked to Sam today, do you remember when I went to Lakeport?", f"{SPEAKER} went Lakeport"),
+    # Unicode words stay whole; contractions are first person; negated auxiliaries drop.
+    ("do you remember the caf\u00e9 in Z\u00fcrich?", "caf\u00e9 Z\u00fcrich"),
+    ("do you remember what I'd said about tea?", f"{SPEAKER} said tea"),
+    ("didn't I tell you about the boat? do you remember?", f"{SPEAKER} tell boat"),
+])
+def test_fallback_query_shapes(msg, query):
+    named = lambda c: "Lakeport" in c or "Sam" in c  # noqa: E731
+    assert fallback_queries(msg, names_in=named) == [query]
+
+
+def test_prompt_says_who_speaks_and_that_a_past_question_needs_a_search():
+    assert "Juniper" in PROMPT and "always needs a search" in PROMPT
+
+
+def test_rewrite_label_keeps_what_the_model_answered():
+    assert lm.rewrite_label({"outcome": "fallback", "model": "timeout"}) == "fallback/timeout"
+    assert lm.rewrite_label({"outcome": "ok"}) == "ok"
+    assert lm.rewrite_label(None) == "none"
+
+
+def test_recall_question_searches_when_the_model_says_none(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [TRIP, OFFICE]}), _cfg(), reranker=searches_only_reranker,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("running a test, do you recall when I traveled to Lakeport?"))
+    assert [s.rec.record_id for s in out.chosen] == ["t1"]
+    assert out.debug["rewrite"]["outcome"] == "fallback" and out.debug["rewrite"]["model"] == "none"
+    trace = trace_of(out.debug)
+    assert trace["rewrite"] == "fallback" and trace["rewrite_model"] == "none"
+    assert trace["queries"] == [f"{SPEAKER} traveled Lakeport"]
+
+
+def test_recall_question_searches_when_the_model_times_out(no_dense):
+    async def slow(message, context):
+        await asyncio.sleep(5)
+        return []
+
+    reader = LivedMemoryRecall(Pool({"episode_memory": [TRIP]}), _cfg(rewrite_timeout_sec=0.05),
+                               reranker=searches_only_reranker, rewriter=slow, clock=lambda: NOW)
+    out = asyncio.run(reader.recall("running a test, do you recall when I traveled to Lakeport?"))
+    assert out.debug["rewrite"]["model"] == "timeout" and [s.rec.record_id for s in out.chosen] == ["t1"]
+
+
+def test_model_queries_are_kept_and_no_fallback_runs(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [TRIP]}), _cfg(), reranker=searches_only_reranker,
+                               rewriter=fixed_rewriter(["Lakeport trip Juniper headed"]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("running a test, do you recall when I traveled to Lakeport?"))
+    assert out.debug["rewrite"] == {"outcome": "ok", "queries": ["Lakeport trip Juniper headed"]}
+
+
+def test_a_statement_that_says_none_gets_no_fallback(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [OFFICE]}), _cfg(), reranker=overlap_reranker,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("I forgot my keys at the office again today, so annoying"))
+    assert out.debug["rewrite"]["outcome"] == "none" and "model" not in out.debug["rewrite"]
+
+
+def test_a_short_recall_question_searches_even_when_the_short_gate_says_none(no_dense):
+    birthday = _row("b1", "Juniper's birthday is in early spring.")
+    reader = LivedMemoryRecall(Pool({"episode_memory": [birthday, OFFICE]}), _cfg(), reranker=searches_only_reranker,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("do you remember my birthday?"))
+    assert out.debug["gate"] == "short_rewrite" and out.debug["rewrite"]["outcome"] == "fallback"
+    assert [s.rec.record_id for s in out.chosen] == ["b1"]
+    # Short small talk with NONE is still not searched.
+    out = asyncio.run(reader.recall("haha nice one"))
+    assert out.debug["gate"] in ("short_none", "short_no_content") and out.lines == []
+
+
+def test_a_short_past_question_with_nothing_to_search_stays_unsearched(no_dense):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [TRIP]}), _cfg(), reranker=searches_only_reranker,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("wait, did I?"))
+    assert out.lines == [] and out.debug.get("skipped") in ("few_content_words",)
+
+
+def test_a_degraded_fallback_search_that_finds_nothing_still_says_so(monkeypatch):
+    """A real question about the past is not small talk: when the search ran degraded and found
+    nothing, the prompt gets the not-proof note (only a model NONE stays quiet)."""
+    from orion.introspect.semantic_index import SearchUnavailableError
+
+    async def embed(*_a, **_k):
+        raise SearchUnavailableError("down")
+
+    monkeypatch.setattr(lm, "embed", embed)
+    reader = LivedMemoryRecall(Pool({"episode_memory": [OFFICE]}), _cfg(), reranker=searches_only_reranker,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("running a test, do you recall when I traveled to Lakeport?"))
+    assert out.debug["rewrite"]["outcome"] == "fallback" and out.degraded and not out.quiet_empty
+    assert out.lines == [] and out.rendered.startswith("[Lived memory search ran degraded")

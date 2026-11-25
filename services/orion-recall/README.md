@@ -57,7 +57,7 @@ the rerank, the injected ids and the backend: ids and Orion's own search text on
 the content-word floor, always searched) · `short_entity` (short, names a known entity: searched) ·
 `short_rewrite` (short; the short-message rewrite asked for a search: searched) · `short_none`
 (short; no entity, and the rewrite said NONE, failed or timed out: not searched, status
-`skipped_short`) · `short_no_content` (no content word at all, "ok" / "thanks!": not searched, not
+`skipped_short`; a question about the past is searched anyway, see 17a) · `short_no_content` (no content word at all, "ok" / "thanks!": not searched, not
 rewritten, status `skipped_short`) · `short_off` (short, gate switched off: the plain floor).
 `lived_trace.rewrite_entities` counts the known entities the short-message searches named.
 `lived_status` keeps the outcome, so a short message that
@@ -1101,6 +1101,15 @@ Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.p
   raw message is searched alone. A message under the content-word floor is neither searched nor
   rewritten (a rewrite bypass was tried: small talk injecting rose to 35%, no hit gained).
   Messages over 1,500 characters skip the rewrite.
+- **Questions about the past always search** (live miss 2026-11-25). "do you recall when I
+  traveled to X?" got NONE, and the reranker scored the stored trip far below the bar against the
+  raw first-person question. The rewrite prompt now says who is speaking ("I" = Juniper) and that a
+  question about her past always needs a search. When the model still says NONE, fails or times out
+  on a message that `asks_about_past` (a memory verb in an asking form, or "did I / was I ...?";
+  grammar words only, no topic list), recall builds one search from the asking clause: first person
+  becomes "Juniper", memory verbs drop, a preamble clause ("running a test") stays out. The trace
+  reads `rewrite: fallback` plus `rewrite_model` (what the model answered). This also applies to
+  short messages: a short question about the past is searched instead of `short_none`.
 - **Link-following.** Memories that share a referent (`episode_memory_referent`) with the top 5
   candidates, or whose referent's name (name-class `referent_alias` only, 4+ characters, not a
   function word) appears in the message or a search, join the rerank: two-hop personalized

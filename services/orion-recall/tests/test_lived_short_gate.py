@@ -219,9 +219,20 @@ def test_a_failing_or_slow_short_rewrite_means_no_search(dense_calls):
         return ["never used"]
 
     for rw in (broken, slow):
-        out = asyncio.run(_reader(rw, rewrite_timeout_sec=0.05).recall("When did I get promoted?"))
+        out = asyncio.run(_reader(rw, rewrite_timeout_sec=0.05).recall("Should I get promoted?"))
         assert out.debug["gate"] == GATE_SHORT_NONE and out.lines == []
     assert dense_calls == []
+
+
+def test_a_failing_or_slow_short_rewrite_still_searches_a_question_about_the_past(dense_calls):
+    # Live miss 2026-11-25: a question about Juniper's past always searches; when the model
+    # fails or times out, recall builds the search itself.
+    async def broken(message, context, short=False):
+        raise RuntimeError("gateway refused")
+
+    out = asyncio.run(_reader(broken).recall("When did I get promoted?"))
+    assert out.debug["gate"] == GATE_SHORT_REWRITE and out.debug["rewrite"]["outcome"] == "fallback"
+    assert out.debug["rewrite"]["queries"] == ["Juniper promoted"] and dense_calls
 
 
 def test_without_a_rewriter_a_short_message_with_no_entity_is_skipped(dense_calls):

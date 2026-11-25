@@ -33,7 +33,8 @@ from app.models.field_goal_episode import FieldGoalEpisodeArtifactSQL, FieldGoal
 GOAL_EPISODE_GAP = timedelta(minutes=10)
 
 # How long a seen artifact_id is kept for dedup. Re-delivery happens within seconds
-# (reconnect / replay); 48 h is a wide margin and keeps the table at ~3 days of ids.
+# (reconnect / replay); 48 h is a wide margin and keeps the table small. A replay of
+# goals older than 48 h WOULD be counted again; there is no such replay path today.
 ARTIFACT_DEDUP_WINDOW = timedelta(hours=48)
 
 # One key for every goal write: the fold reads the newest episode across ALL targets,
@@ -75,6 +76,8 @@ def fold_goal(sess: Any, goal: Any, *, envelope_id: str | None, now: datetime | 
         and latest.field_target_id == goal.field_target_id
         and abs(ts - _aware(latest.last_ts)) <= GOAL_EPISODE_GAP
     ):
+        # first_* stay the first goal SEEN (first_ts matches first_artifact_id and
+        # first_payload_json); a late older goal widens nothing but last_ts = max.
         latest.repeat_count += 1
         latest.last_ts = max(_aware(latest.last_ts), ts)
         latest.max_salience = max(latest.max_salience, goal.salience_score)

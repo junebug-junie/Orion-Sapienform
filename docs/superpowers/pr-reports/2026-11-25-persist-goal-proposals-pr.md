@@ -36,6 +36,7 @@ The goal-mix re-measure that was impossible on 2026-11-25 (#3295) can now run ag
 - `services/orion-sql-db/manual_migration_field_goal_provenance_log_v1.sql`: `CREATE TABLE IF NOT EXISTS` + three `CREATE INDEX IF NOT EXISTS`.
 - `orion/bus/channels.yaml`: add `orion-sql-writer` to `consumer_services`; replace the stale removal note.
 - `services/orion-sql-writer/tests/test_field_goal_provenance_log_sql_shape.py`: new tests.
+- `config/metrics/metric_definitions.lock.json`: re-locked; the channel's declared consumers changed (`check_definition_drift.py`, `routing_changed`, intended).
 - `tests/test_autonomy_goals_bus_catalog.py`: drop the retired `drive_origin` key; assert sql-writer is a listed consumer.
 
 ## Schema / bus / API changes
@@ -70,6 +71,7 @@ tests/test_autonomy_goals_bus_catalog.py -> 4 passed (1 failed on main before th
 tests/test_bus_reply_channel_catalog_coverage.py tests/test_deploy_migration_gate.py -> passed
 scripts/check_integration_seam.py -> OK (16 organs)
 scripts/check_metric_lineage.py --gate -> PASS
+scripts/check_definition_drift.py --gate -> PASS after --update (first CI run failed on the intended consumer change)
 scripts/check_migration_required_by.py -> OK (1 new migration file)
 scripts/check_env_template_parity.py -> PASS
 git diff --check -> clean

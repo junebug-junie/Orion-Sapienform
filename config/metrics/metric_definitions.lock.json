@@ -3,9 +3,9 @@
   "metric_count": 746,
   "_last_change": {
     "change_count": 1,
-    "high_severity_count": 0,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-heartbeat/orion:heartbeat:seat:rollup"
+      "high   routing_changed metric://bus_channel/orion-attention-runtime/orion:memory:goals:proposed (declared_consumers: \u2026n', 'orion-substrate-run\u2026 -> \u2026n', 'orion-sql-writer', 'orion-substrate-run\u2026)"
     ]
   },
   "definitions": {
@@ -455,6 +455,7 @@
       "declared_consumers": [
         "*",
         "orion-spark-concept-induction",
+        "orion-sql-writer",
         "orion-substrate-runtime",
         "orion-world-pulse"
       ],

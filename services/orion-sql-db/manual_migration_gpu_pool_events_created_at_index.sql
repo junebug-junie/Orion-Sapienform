@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: none retention works without it; the index only makes it cheap (#3763)
+-- ORION-MIGRATION-REQUIRED-BY: none retention works without it, the index only makes it cheap, see #3763
 -- orion-sql-writer retention for gpu_pool_events ages rows by created_at
 -- (grammar_truth.py _batch_delete_sql / _count_debt_sql: WHERE created_at < :cutoff),
 -- but every secondary index was on generated_at. So each 60 s retention cycle read the

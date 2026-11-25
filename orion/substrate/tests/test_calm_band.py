@@ -130,3 +130,15 @@ def test_chat_mix_is_the_live_fixture() -> None:
     mix = cb.chat_turn_q_mix()
     assert len(mix) == 71 and all(len(t) == 2 for t in mix)
     assert all(0.0 < q < 1.0 for t in mix for q in t)
+
+
+def test_unreadable_chat_mix_falls_back_to_cantelli(monkeypatch, tmp_path) -> None:
+    """A missing data file must not raise inside the contest's magnitude pass."""
+    cb._chat_mixes.cache_clear()
+    cb.chat_turn_q_mix.cache_clear()
+    monkeypatch.setattr(cb, "CHAT_TURN_Q_MIX_PATH", tmp_path / "missing.json")
+    try:
+        assert cb.calm_percentiles(cb.CHAT_TURN_NODE_ID, 1.0)[0] == pytest.approx(0.9)
+    finally:
+        cb._chat_mixes.cache_clear()
+        cb.chat_turn_q_mix.cache_clear()

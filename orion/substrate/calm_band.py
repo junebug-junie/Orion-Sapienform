@@ -42,6 +42,7 @@ Rollback: delete a node's entry (it returns to the empirical rule and its 200-re
 from __future__ import annotations
 
 import json
+import logging
 import math
 from functools import lru_cache
 from pathlib import Path
@@ -84,6 +85,13 @@ ATTENTION_BAND_RULE_BY_NODE_ID: dict[str, str] = {
 CHAT_TURN_Q_MIX_PATH = Path(__file__).resolve().parent / "data" / "chat_turn_calibrated_q_2026-11-24.json"
 
 _EPS = 1e-12
+_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, exc: Exception) -> None:
+    if key not in _WARNED:
+        _WARNED.add(key)
+        logging.getLogger(__name__).warning("calm_band_%s err=%s", key, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +218,14 @@ def z_tail(rule: str, z: float, *, strict: bool = False) -> float:
     elif rule == RULE_FLOORED:
         tails = [standardized_floored_tail(n, z) for n in range(1, MAX_WINDOW_OUTCOMES + 1)]
     elif rule == RULE_CHAT_BETS:
-        return max((_mix_tail(m, z, strict) for m in _chat_mixes()), default=1.0)
+        try:
+            mixes = _chat_mixes()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # An unreadable q mix must not cost the whole contest its magnitudes: fall back to the
+            # distribution-free bound (conservative: the node reads "high" only at z >= 3).
+            _warn_once("chat_turn_q_mix_unreadable", exc)
+            return z_tail(RULE_CANTELLI, z, strict=strict)
+        return max((_mix_tail(m, z, strict) for m in mixes), default=1.0)
     elif rule == RULE_CANTELLI:
         return 1.0 if z <= 0.0 else 1.0 / (1.0 + z * z)
     else:

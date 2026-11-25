@@ -13,6 +13,17 @@ Two modes, both read-only against the live database (``docker exec orion-athena-
 plus a small receipt delay). The service's own ``SeatRollupAccumulator`` then flushes the buckets.
 The other side is the replay's own query and ``aggregate_grammar_rows``.
 
+The ledger keeps one row per event_id (first write wins), but the bus carries some atoms twice.
+orion-harness-governor publishes ``exec_result_assembled`` at motor close and again at finalize
+(services/orion-harness-governor/app/bus_listener.py ``_emit_finalize_lifecycle_grammar`` ->
+orion/harness/grammar_emit.py ``build_harness_grammar_finalize_events``), with the same event_id and
+the finalize time as emitted_at. The finalize batch also carries the trace's first
+``exec_result_emitted``, with the same emitted_at. So the replay re-feeds each trace's
+``exec_result_assembled`` again just before its ``exec_result_emitted``, stamped with that
+atom's emitted_at: the copy the heartbeat really receives (issue #3900). ``--no-bus-copies`` turns
+this off. A finalize run with ``emit_result=False`` sends no ``exec_result_emitted``, so its copy
+cannot be rebuilt from the ledger and is not fed.
+
 ``--mode table`` (after deploy): compares the rows orion-sql-writer stored in
 ``heartbeat_seat_rollup_5m`` for the window with the replay recompute. Partial rows are left out
 (they are an undercount by design). A small mismatch here can be real: the two consumers read the
@@ -70,7 +81,33 @@ def recompute(replay, start: int, end: int) -> dict[tuple[int, int], tuple[float
     return agg
 
 
-def via_service(replay, start: int, end: int) -> tuple[dict[tuple[int, int], tuple[float, int]], dict]:
+HARNESS = "orion-harness-governor"
+
+
+def with_bus_copies(rows: list) -> tuple[list, int]:
+    """Insert the harness finalize re-publish of exec_result_assembled (same event_id, emitted_at of
+    the trace's exec_result_emitted) just before that exec_result_emitted row. Rows are
+    (event_id, epoch, source_service, atom_json, trace_id), ordered by emitted_at."""
+    assembled: dict[str, tuple] = {}
+    for row in rows:
+        if row[4] and row[2] == HARNESS and json.loads(row[3]).get("semantic_role") == "exec_result_assembled":
+            assembled.setdefault(row[4], row)
+    out, copies = [], 0
+    for row in rows:
+        if row[4] and row[2] == HARNESS and json.loads(row[3]).get("semantic_role") == "exec_result_emitted":
+            first = assembled.get(row[4])
+            # One copy per trace, never ahead of the ledger's own (first) copy.
+            if first is not None and float(first[1]) <= float(row[1]):
+                out.append((first[0], row[1], first[2], first[3], first[4]))
+                copies += 1
+                del assembled[row[4]]
+        out.append(row)
+    return out, copies
+
+
+def via_service(
+    replay, start: int, end: int, *, bus_copies: bool = True
+) -> tuple[dict[tuple[int, int], tuple[float, int]], dict]:
     """Feed the window's ledger atoms through the real service path; return the flushed rollup."""
     from app.seat_rollup import SeatRollupAccumulator
     from app.service import HeartbeatService
@@ -78,10 +115,13 @@ def via_service(replay, start: int, end: int) -> tuple[dict[tuple[int, int], tup
 
     services = ",".join(repr(s) for s in ORGAN_SITE_MAP)
     rows = replay._psql(
-        "select event_id, extract(epoch from emitted_at), source_service, event_json->'atom' "
+        "select event_id, extract(epoch from emitted_at), source_service, event_json->'atom', trace_id "
         f"from grammar_events where event_kind = 'atom_emitted' and source_service in ({services})"
         + _where(start, end) + " order by emitted_at, event_id"
     )
+    copies = 0
+    if bus_copies:
+        rows, copies = with_bus_copies(rows)
     svc = HeartbeatService()
     # Started exactly on the window's first boundary, so the first bucket is complete.
     svc.seat_rollup = SeatRollupAccumulator(
@@ -90,7 +130,7 @@ def via_service(replay, start: int, end: int) -> tuple[dict[tuple[int, int], tup
     clock = {"now": float(start)}
 
     async def feed() -> None:
-        for event_id, epoch, source_service, atom_json in rows:
+        for event_id, epoch, source_service, atom_json, _trace_id in rows:
             emitted = float(epoch)
             clock["now"] = max(clock["now"], emitted + RECEIPT_DELAY_SEC)
             payload = {
@@ -117,7 +157,7 @@ def via_service(replay, start: int, end: int) -> tuple[dict[tuple[int, int], tup
             continue
         if start // BUCKET <= b < end // BUCKET:
             out[(b, ev.site_index)] = (ev.level_sum, ev.atom_count)
-    info = {"atoms_fed": len(rows), "partial_rows": partial, "rollup": svc._seat_rollup_stats()}
+    info = {"atoms_fed": len(rows), "bus_copies_fed": copies, "partial_rows": partial, "rollup": svc._seat_rollup_stats()}
     return out, info
 
 
@@ -170,6 +210,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mode", choices=("replay", "table"), default="replay")
     ap.add_argument("--hours", type=float, default=1.0)
+    ap.add_argument("--no-bus-copies", action="store_true",
+                    help="replay: feed one row per event_id only (skip the harness finalize re-publish)")
     ap.add_argument("--end", help="window end (ISO, UTC); default now - 15 min, aligned to 5 min")
     args = ap.parse_args()
     replay = _load_replay()
@@ -178,7 +220,7 @@ def main() -> int:
     start, end = _window(args.end, args.hours)
     t0 = time.time()
     ledger = recompute(replay, start, end)
-    rollup, info = via_service(replay, start, end) if args.mode == "replay" else from_table(replay, start, end)
+    rollup, info = via_service(replay, start, end, bus_copies=not args.no_bus_copies) if args.mode == "replay" else from_table(replay, start, end)
     result = {
         "mode": args.mode,
         "window": [datetime.fromtimestamp(start, timezone.utc).isoformat(), datetime.fromtimestamp(end, timezone.utc).isoformat()],

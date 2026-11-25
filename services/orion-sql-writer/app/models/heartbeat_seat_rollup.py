@@ -25,6 +25,9 @@ class HeartbeatSeatRollupSQL(Base):
     level_sum = Column(Float, nullable=False)
     atom_count = Column(Integer, nullable=False)
     skipped_count = Column(Integer, nullable=False)
+    # Of atom_count: atoms that arrived after bucket_end, inside the flush grace (#3901).
+    # NULL for rows from a heartbeat that did not measure it.
+    late_count = Column(Integer, nullable=True)
     # Heartbeat was not listening for part of the bucket: an undercount, read as missing.
     partial = Column(Boolean, nullable=False, default=False)
     # Hash of the heartbeat routing rules that produced level_sum (routing.routing_version()).

@@ -13,6 +13,7 @@ from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.codec import OrionCodec
 from orion.grammar.publish import publish_grammar_event
 from orion.schemas.heartbeat_seat_rollup import (
+    HEARTBEAT_SEAT_ROLLUP_BUCKET_SEC,
     HEARTBEAT_SEAT_ROLLUP_CHANNEL,
     HEARTBEAT_SEAT_ROLLUP_KIND,
     HeartbeatSeatRollupV1,
@@ -408,6 +409,7 @@ class HeartbeatService(BaseChassis):
         try:
             now = time.time()
             emitted = parse_emitted_epoch(atom.get("_emitted_at"))
+            real_emitted = emitted is not None
             if emitted is None:
                 self.seat_rollup_emitted_at_fallback += 1
                 emitted = now
@@ -415,14 +417,16 @@ class HeartbeatService(BaseChassis):
             event_id = str(event_id) if event_id else None
             if level is None:
                 outcome = rollup.observe_skip(
-                    site_index=site_index, emitted_epoch=emitted, now_epoch=now, event_id=event_id
+                    site_index=site_index, emitted_epoch=emitted, now_epoch=now, event_id=event_id,
+                    record_lag=real_emitted,
                 )
             else:
                 outcome = rollup.observe_atom(
-                    site_index=site_index, level=level, emitted_epoch=emitted, now_epoch=now, event_id=event_id
+                    site_index=site_index, level=level, emitted_epoch=emitted, now_epoch=now, event_id=event_id,
+                    record_lag=real_emitted,
                 )
             if outcome == "late":
-                bucket = int(emitted // 300) * 300
+                bucket = int(emitted // HEARTBEAT_SEAT_ROLLUP_BUCKET_SEC) * HEARTBEAT_SEAT_ROLLUP_BUCKET_SEC
                 if rollup.late_by_bucket.get(bucket) == 1:  # once per bucket
                     logger.warning(
                         "heartbeat_seat_rollup_late_atom bucket_start=%s lag_sec=%.1f -- the stored row for "
@@ -461,8 +465,17 @@ class HeartbeatService(BaseChassis):
                 if rollup is not None
                 else {}
             ),
+            "late_atoms_dropped_by_seat": (
+                dict(zip(SEAT_ORDER, rollup.late_by_seat)) if rollup is not None else {}
+            ),
             "future_atoms_dropped": rollup.future if rollup is not None else 0,
+            # A repeated event_id is counted once, in the bucket of its first copy, like the
+            # ledger. cross_bucket: the copies fell in different buckets (harness finalize, #3900).
             "duplicate_atoms_ignored": rollup.duplicates if rollup is not None else 0,
+            "duplicate_atoms_cross_bucket": rollup.duplicates_cross_bucket if rollup is not None else 0,
+            # Receive time minus emitted_at per seat, last 4096 first copies (#3901). An atom
+            # later than the flush grace after its bucket ends is dropped as late.
+            "arrival_lag_by_seat": rollup.lag_stats() if rollup is not None else {},
             "emitted_at_fallback": self.seat_rollup_emitted_at_fallback,
             "routing_version": self.routing_version,
             "last": self.last_seat_rollup,

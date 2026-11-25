@@ -13,7 +13,7 @@ import pytest
 
 import app.lived_memory as lm
 from app.lived_memory import (AS_OF_LABEL, OUT_OF_WINDOW_LINES, OUT_OF_WINDOW_MAX, LivedMemoryConfig,
-                              LivedMemoryRecall, rank, render_line, tokenize, trace_of, window_where)
+                              LivedMemoryRecall, rank, render_line, tokenize, trace_of)
 from app.lived_rewrite import PROMPT
 from app.lived_time import parse_time_window
 from orion.introspect.semantic_index import SearchConfig
@@ -231,8 +231,8 @@ def test_the_window_brings_in_window_records_into_the_pool_before_the_cut(no_den
     assert len(outside) <= OUT_OF_WINDOW_LINES                    # the cap on lines outside the window
     w = out.debug["window"]
     assert (w["kind"], w["in_window"]) == ("rolling", 1)
-    # The meaning search is asked once more, filtered to the padded window in Chroma.
-    assert any(isinstance(x, dict) and "$and" in x for x in no_dense)
+    # The meaning search is read once more, deep (filtered to the window here, not in Chroma).
+    assert no_dense == [None, None]
 
 
 def test_a_window_with_nothing_in_it_changes_nothing(no_dense):
@@ -268,13 +268,6 @@ def test_rank_caps_lines_outside_the_window_only_when_something_inside_fits():
     got = rank([(out1, 3.0), (out2, 2.9), (out3, 2.8), (inside, -9.0)], min_fit=0.5, max_lines=4, now=NOW,
                in_window=in_w)
     assert [s.rec.record_id for s in got] == ["o1", "o2", "o3"]      # nothing inside fits: no cap
-
-
-def test_window_where_is_a_chroma_range_filter_on_occurred_ts():
-    w = parse_time_window("on November 20th", NOW)
-    f = window_where(w)
-    lo, hi = f["$and"][0]["occurred_ts"]["$gte"], f["$and"][1]["occurred_ts"]["$lt"]
-    assert hi - lo == pytest.approx(3 * 86400)                        # the day, padded a day each side
 
 
 # --- past state: the as-of reader and the label ---------------------------------------------

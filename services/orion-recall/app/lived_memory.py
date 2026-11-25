@@ -62,7 +62,7 @@ import time
 from collections import Counter
 from itertools import zip_longest
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import httpx
@@ -150,12 +150,14 @@ RERANK_DOC_CHARS = 400
 RERANK_CHUNK = 8
 SNAPSHOT_TTL_SEC = 60.0
 # Time windows (issue #3674). When the message names a time, candidates whose occurred_at falls in
-# the window (padded by a day) go into the pool first, before it is cut: an extra meaning search
-# filtered to the window (Chroma ``where`` on ``occurred_ts``) and an exact-word search over the
-# in-window records. At most OUT_OF_WINDOW_MAX candidates from outside the window stay in the pool,
+# the window (padded by a day) go into the pool first, before it is cut: the message's meaning
+# search read WINDOW_DENSE_DEPTH deep and filtered to the window here, and an exact-word search over
+# the in-window records. (A Chroma ``where`` filter on ``occurred_ts`` was measured at ~1 s a query
+# against ~20 ms for a plain 256-deep query, 2026-11-25.) At most OUT_OF_WINDOW_MAX candidates from outside the window stay in the pool,
 # and at most OUT_OF_WINDOW_LINES of them reach the prompt when an in-window memory clears the bar.
 # A window with nothing in it changes nothing: recall is never emptied by a time word.
 WINDOW_DENSE_TOP_K = 12
+WINDOW_DENSE_DEPTH = 256
 WINDOW_LEXICAL_TOP_K = 8
 OUT_OF_WINDOW_MAX = 4
 OUT_OF_WINDOW_LINES = 2
@@ -353,12 +355,6 @@ def rank(candidates: Sequence[tuple[LivedRecord, float]], *, min_fit: float, max
     return kept[: max(0, int(max_lines))]
 
 
-def window_where(window: TimeWindow, pad: timedelta = WINDOW_PAD) -> Dict[str, Any]:
-    """Chroma metadata filter for the padded window (``occurred_ts`` is a unix timestamp)."""
-    return {"$and": [{"occurred_ts": {"$gte": (window.start - pad).timestamp()}},
-                     {"occurred_ts": {"$lt": (window.end + pad).timestamp()}}]}
-
-
 Reranker = Callable[[str, List[str]], Any]  # async (query, docs) -> list[float]
 
 BACKEND_HYBRID = "hybrid"
@@ -516,12 +512,12 @@ class LivedMemoryRecall:
         vector, _model = await embed(client, self.cfg.search, query, doc_prefix="lived-memory-query")
         return vector
 
-    async def _dense_vec(self, client: httpx.AsyncClient, vector: "asyncio.Future", k: int, *, replay: bool,
-                         where: Dict[str, Any] | None = None) -> List[tuple[str, float]]:
+    async def _dense_vec(self, client: httpx.AsyncClient, vector: "asyncio.Future", k: int, *,
+                         replay: bool) -> List[tuple[str, float]]:
         """Nearest docs for an already-started query embedding (one embed serves the message's plain
         and time-window searches, issue #3674)."""
         vec = await asyncio.shield(vector)
-        return await nearest(client, self.cfg.search, vec, k if not replay else k * 4, where=where)
+        return await nearest(client, self.cfg.search, vec, k if not replay else k * 4)
 
     async def _rewrite(self, query: str, *, session_id: str | None, exclude_ids: Sequence[str],
                        as_of: datetime | None, short: bool = False) -> List[str]:
@@ -682,8 +678,8 @@ class LivedMemoryRecall:
             pending.append(raw_dense)
             window_dense: asyncio.Future | None = None
             if window is not None:  # search the window alongside the plain search
-                window_dense = asyncio.ensure_future(self._dense_vec(client, raw_vec, WINDOW_DENSE_TOP_K,
-                                                                     replay=replay, where=window_where(window)))
+                window_dense = asyncio.ensure_future(self._dense_vec(client, raw_vec, WINDOW_DENSE_DEPTH,
+                                                                     replay=replay))
                 pending.append(window_dense)
             queries = await rewrites()
             as_of_task: asyncio.Future | None = None
@@ -725,8 +721,8 @@ class LivedMemoryRecall:
             if dense_failed == len(dense_tasks):
                 degraded.append("embedder_timeout" if not_done else "embedder_unavailable")
 
-            # Issue #3674: the window's own searches (meaning, filtered in Chroma; exact words, over
-            # the in-window records), and for a past-tense question the facts retired since.
+            # Issue #3674: the window's own searches (meaning, read deep and filtered here; exact
+            # words, over the in-window records), and for a past-tense question the facts retired since.
             in_window: Callable[[LivedRecord], bool] | None = None
             window_lists: List[List[tuple[str, float]]] = []
             as_of_recs: Dict[str, LivedRecord] = {}
@@ -736,8 +732,10 @@ class LivedMemoryRecall:
                 win_info.update(win.trace(self.cfg.timezone))
                 out.debug["window"] = win_info
 
-                def in_window(rec: LivedRecord) -> bool:
+                def _in_win(rec: LivedRecord) -> bool:
                     return rec.doc_id in as_of_recs or win.contains(rec.occurred_at)
+
+                in_window = _in_win
 
                 wd: List[tuple[str, float]] = []
                 if window_dense is not None and window_dense in done and window_dense.exception() is None:
@@ -1294,5 +1292,5 @@ __all__ = [
     "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
     "AS_OF_LABEL", "index_loop", "items_for", "lexical_fallback", "name_tokens", "rank", "recency", "render_line",
     "rerank_query", "rrf", "run_index_pass",
-    "sigmoid", "split_doc_id", "status_of", "tokenize", "trace_of", "window_where",
+    "sigmoid", "split_doc_id", "status_of", "tokenize", "trace_of",
 ]

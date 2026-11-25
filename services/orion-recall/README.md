@@ -1119,8 +1119,9 @@ Code: `app/lived_time.py` (the date grammar), wired in `app/lived_memory.py`.
   57 scoreboard questions (2026-11-25): every wording tried either stopped it writing searches
   (0-3 of 57, against 11 with the plain prompt) or was ignored (0 time lines). The rewrite prompt
   is unchanged; the window never waits on, or times out with, the model.
-- **Before the pool is cut.** With a window, one more meaning search runs filtered to the window
-  in Chroma (`occurred_ts`), and one more exact-word search runs over in-window records. In-window
+- **Before the pool is cut.** With a window, the message's meaning search is also read 256 deep
+  and filtered to the window in recall (a Chroma `where` filter cost ~1 s a query, a plain
+  256-deep query ~20 ms), and one more exact-word search runs over in-window records. In-window
   candidates fill the rerank pool first; at most 4 from outside the window stay, and the best 2 of
   those ride in the first rerank chunk so a short deadline still scores them. After the rerank,
   in-window memories get +1 (logit units, like recency), and when one of them clears the bar at

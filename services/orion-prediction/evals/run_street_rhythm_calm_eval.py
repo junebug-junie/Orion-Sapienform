@@ -15,7 +15,7 @@ Prints, in order:
    under 10 days (sighting life, and forecast span inside the window); miss rate of each key's last 3 expectations against the rest (a re-key looks like
    a run of misses at a key's end).
 5. The node, replayed at its event writes (orion/substrate/prediction_street_rhythm.py, 30-min window,
-   one write per scoring time): exact-0 share, p90 / p99, share of time it is fresh (<= 600 s since a
+   one write per outcome, as live): exact-0 share, p90 / p99, share of time it is fresh (<= 600 s since a
    write), history rows per 7 days against the attention contests' 200-readings floor
    (DEFAULT_MIN_READINGS; #3917 replaces that floor with calm-theory bands for forecast-surprise
    nodes), and the curiosity bar's calm (exact) and observed crossing rates.
@@ -301,8 +301,13 @@ def run(rows, signals, sightings, since, until) -> dict:
         "p90": sr.quantile(vals, 0.9), "p99": sr.quantile(vals, 0.99), "max": max(vals) if vals else None,
         "writes_per_7d": len(vals) * 7.0 / span_days,
     }
-    rates = [calm_crossing_rate([o.terms.p for o in outs if t - fold.WINDOW <= o.scored_at <= t], SEED_BAR)
-             for t, _ in grid]
+    # Calm crossing over the same per-outcome windows the live writer uses (arrival order).
+    ordered = sorted(outs, key=lambda o: (o.scored_at, o.expectation_id))
+    rates = []
+    for k, o in enumerate(ordered):
+        win = [x.terms.p for x in ordered[: k + 1] if x.scored_at >= o.scored_at - fold.WINDOW]
+        if sum(sr.outcome_terms(p, True).calm_var for p in win) > 1e-12:
+            rates.append(calm_crossing_rate(win, SEED_BAR))
     res["node"]["calm_crossing_at_seed_bar"] = statistics.fmean(rates) if rates else None
     res["node"]["observed_crossing_at_seed_bar"] = (sum(1 for v in vals if v >= SEED_BAR) / len(vals)) if vals else None
     nd = res["node"]

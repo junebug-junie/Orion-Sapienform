@@ -137,12 +137,6 @@ def test_live_pass_queues_each_scored_outcome_once_and_counts_refusals():
     assert live.tick() == 0 and live.take_pending_events() == []   # no republish
 
 
-def test_kill_switch_scores_but_queues_nothing():
-    live = sr.StreetRhythmLive(_Store([_row()]), events_enabled=False, clock=lambda: NOW)
-    assert live.tick() == 0 and live.take_pending_events() == []
-    assert live.counts == {"scored": 1, "dropped_events_disabled": 1}
-
-
 def test_store_query_is_read_only_and_reads_sightings_before_the_window():
     from app.store import STREET_RHYTHM_READ_TIMEOUT_MS, PostgresStore
 
@@ -160,6 +154,7 @@ def test_store_query_is_read_only_and_reads_sightings_before_the_window():
     sql = seen["sql"]
     assert "FROM vision_percept_expectation" in sql and "vision_individual_sighting" in sql
     assert "v.started_at < e.window_start" in sql and "substr(e.subject_key, 12)" in sql
+    assert "NOT v.stationary" in sql
     assert seen["timeout"] == STREET_RHYTHM_READ_TIMEOUT_MS
     assert seen["args"] == ["walkway", NOW - timedelta(minutes=30), NOW]
     assert len("individual:") + 1 == 12

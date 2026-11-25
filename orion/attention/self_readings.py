@@ -151,11 +151,16 @@ def pe_lane_marker_line(now: datetime) -> str | None:
     now = _aware(now)
     if not (PE_LANE_CUTOVER_DATE <= now < PE_LANE_CUTOVER_DATE + timedelta(days=PE_LANE_MARKER_DAYS)):
         return None
-    names = [_lane_name(n) for n in prediction_error_lane_nodes()]
-    if not names:
+    from orion.schemas.attention_candidate import SHADOW_NODE_IDS
+
+    nodes = prediction_error_lane_nodes()
+    if not nodes:
         return None
     rank = {name: i for i, name in enumerate(_PE_LANE_ORDER)}
-    names.sort(key=lambda n: (rank.get(n, len(rank)), n))
+    nodes.sort(key=lambda n: (rank.get(_lane_name(n), len(rank)), _lane_name(n)))
+    # A shadow node is recorded but not yet attended: say so, so the line does not promise Orion a
+    # signal its attention cannot see yet.
+    names = [_lane_name(n) + (" (recorded, not yet attended)" if n in SHADOW_NODE_IDS else "") for n in nodes]
     return (
         f"Since {PE_LANE_CUTOVER_DATE:%Y-%m-%d}, my prediction-error lane holds only forecast misses "
         f"({', '.join(names)}). Camera change and alarms are separate signals now."

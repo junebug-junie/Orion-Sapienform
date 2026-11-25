@@ -55,11 +55,12 @@ def test_a_coin_flip_forecast_alone_carries_no_information_and_writes_nothing():
     assert w.writes == [] and w._prediction_street_rhythm_state().counts == {"accepted": 1, "no_information": 1}
 
 
-def test_a_republish_replaces_itself():
+def test_a_republish_is_a_duplicate_and_writes_nothing():
     w = _worker()
     w._process_prediction_street_rhythm(_payload(), now=NOW)
-    w._process_prediction_street_rhythm(_payload(), now=NOW)
-    assert w._prediction_street_rhythm_state().reading(now=NOW).n == 1
+    w._process_prediction_street_rhythm(_payload(), now=NOW + timedelta(minutes=3))
+    assert len(w.writes) == 1
+    assert w._prediction_street_rhythm_state().counts == {"accepted": 1, "node_writes_total": 1, "duplicate": 1}
 
 
 def test_a_backlog_older_than_the_window_writes_nothing():

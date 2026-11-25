@@ -12,13 +12,12 @@ Aggregation (the node's value), same shape as ``node:prediction.chat_turn``
 (``orion/substrate/prediction_turn_surprise.py``): keep the outcomes scored in the last ``WINDOW``
 (30 min of wall-clock time; the rhythm learner scores in batches, so one window is usually one scoring
 pass, median 2 outcomes), ``z = sum(excess) / sqrt(sum(calm_var))``, stored as ``clip(z / 3, 0, 1)``. One
-outcome per expectation_id (a republish replaces itself). Written on outcomes only (no clock rewrite):
-about 21 writes a day. The attention contests' 200-readings-in-7-days floor (#3917) would read that as
-insufficient history; #3917's fix (calm-theory bands for forecast-surprise nodes, one table) must carry a
+outcome per expectation_id (a republish is a duplicate and writes nothing). Written once per accepted
+outcome, no clock rewrite: about 30 writes a day, ~200-250 history rows a week: right at the attention contests' 200-readings-in-7-days
+floor (#3917), so some weeks would read insufficient history; #3917's fix (calm-theory bands for forecast-surprise nodes, one table) must carry a
 street_rhythm entry before this node can compete. It is in shadow until then anyway.
 
-Window choice (14-day fixture, 2026-11-11 .. 11-25, writes at each scoring time): 30 min exact 0 on 67 %
-of writes, p99 0.89; 6 h held a miss for 6 h and re-served it as news on every later write (the "old
+Window choice (14-day fixture, 2026-11-11 .. 11-25): 30 min exact 0 on 65 % of writes, p99 0.82; 6 h held a miss for 6 h and re-served it as news on every later write (the "old
 alarm arriving as news" error), so it was not used.
 
 - calm: a calibrated forecaster reads z ~ N(0, 1) -> exact 0 about half the time. Rest point 0.
@@ -95,7 +94,7 @@ class StreetRhythmState:
 
     def add(self, event: Mapping[str, Any] | Any, *, now: datetime) -> tuple[str | None, str]:
         """Fold one validated ``PredictionStreetRhythmSurpriseV1`` (model or mapping). Only "accepted"
-        changes the node. The same expectation twice replaces itself (idempotent)."""
+        changes the node. The same expectation again is a "duplicate" (no write); a re-scored one replaces itself."""
         get = event.get if isinstance(event, Mapping) else (lambda k: getattr(event, k, None))
         if str(get("stream_id") or "") != "walkway":
             return None, "unknown_stream"
@@ -111,6 +110,11 @@ class StreetRhythmState:
         eid = str(get("expectation_id"))
         with self._lock:
             self._prune(now)
+            old = self.samples.get(eid)
+            if old is not None and old.scored_at == scored and old.excess == excess:
+                # A producer restart republishes its last 30 min. Re-writing would stamp an old outcome
+                # with a fresh observed_at: old news served as new.
+                return STREET_RHYTHM_NODE_ID, "duplicate"
             self.samples[eid] = RhythmSample(expectation_id=eid, scored_at=scored, excess=excess, calm_var=var,
                                              happened=bool(get("happened")), p=float(get("p")))
         return STREET_RHYTHM_NODE_ID, "accepted"
@@ -137,15 +141,16 @@ class StreetRhythmState:
 
 
 def replay_node_values(samples: list[RhythmSample]) -> list[tuple[datetime, float]]:
-    """What the event writer would store at each distinct scoring time: (t, value), skipping a time whose
-    window carries no information. The calm eval reads this for the node-level rest."""
-    rows = sorted(samples, key=lambda s: s.scored_at)
+    """What the live writer stores: one value per outcome, in arrival order (scored_at, then id), each over
+    the window as it stood when that outcome arrived. A write whose window carries no information (only
+    50/50 forecasts) is skipped, as live. The calm eval reads this for the node-level rest."""
+    rows = sorted(samples, key=lambda s: (s.scored_at, s.expectation_id))
     out: list[tuple[datetime, float]] = []
-    for t in sorted({s.scored_at for s in rows}):
-        win = [s for s in rows if t - WINDOW <= s.scored_at <= t]
+    for k, cur in enumerate(rows):
+        win = [s for s in rows[: k + 1] if s.scored_at >= cur.scored_at - WINDOW]
         var = sum(s.calm_var for s in win)
         if var <= 1e-12:
             continue
         z = sum(s.excess for s in win) / math.sqrt(var)
-        out.append((t, max(0.0, min(1.0, z / Z_FULL_SCALE))))
+        out.append((cur.scored_at, max(0.0, min(1.0, z / Z_FULL_SCALE))))
     return out

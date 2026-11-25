@@ -71,9 +71,22 @@ def test_calibrated_windows_rest_at_zero_about_half_the_time():
     assert 0.5 < zeros / n < 0.85
 
 
-def test_replay_writes_once_per_scoring_time():
+def test_replay_writes_once_per_outcome_like_live():
     samples = [psr.RhythmSample("a", NOW, *_terms(0.9, False), happened=False, p=0.9),
                psr.RhythmSample("b", NOW, *_terms(0.7, True), happened=True, p=0.7),
                psr.RhythmSample("c", NOW + timedelta(hours=1), *_terms(0.5, True), happened=True, p=0.5)]
     out = psr.replay_node_values(samples)
-    assert [t for t, _ in out] == [NOW]           # the 50/50-only window carries no information: no write
+    assert [t for t, _ in out] == [NOW, NOW]       # the 50/50-only window carries no information: no write
+    st = psr.StreetRhythmState()
+    live = []
+    for s in sorted(samples[:2], key=lambda s: s.expectation_id):
+        st.add({"expectation_id": s.expectation_id, "stream_id": "walkway", "scored_at": s.scored_at,
+                "excess": s.excess, "calm_var": s.calm_var, "happened": s.happened, "p": s.p}, now=NOW)
+        live.append(st.reading(now=NOW).value)
+    assert [v for _, v in out] == pytest.approx(live)
+
+
+def test_a_republished_outcome_is_a_duplicate_not_fresh_news():
+    st = psr.StreetRhythmState()
+    assert st.add(_ev("a", 0.9, False), now=NOW)[1] == "accepted"
+    assert st.add(_ev("a", 0.9, False), now=NOW + timedelta(minutes=3))[1] == "duplicate"

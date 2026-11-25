@@ -151,9 +151,8 @@ class StreetRhythmLive:
     queue their events for the bus. Read-only on the database. In-memory dedupe: a restart republishes
     the last 30 min once, which the substrate fold absorbs (it keys samples by expectation_id)."""
 
-    def __init__(self, store: Any, *, events_enabled: bool = True, clock=None):
+    def __init__(self, store: Any, *, clock=None):
         self._store = store
-        self._events_enabled = bool(events_enabled)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._seen: dict[str, datetime] = {}
         self._pending: list[dict[str, Any]] = []
@@ -177,9 +176,6 @@ class StreetRhythmLive:
             out, reason = score_row(row)
             self._bump(reason)
             if out is None:
-                continue
-            if not self._events_enabled:
-                self._bump("dropped_events_disabled")
                 continue
             self._pending.append(out.event())
             queued += 1

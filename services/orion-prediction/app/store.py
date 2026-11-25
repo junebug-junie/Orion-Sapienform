@@ -1012,14 +1012,16 @@ class PostgresStore:
         """Closed walkway rhythm expectations scored in ``[since, until)`` (vision_percept_expectation),
         oldest first, with each individual subject's latest and earliest sighting START before the
         window opened (``last_seen_before`` / ``first_seen_before``; None for a label subject or a key
-        with no earlier sighting). The stale-key rule in app/street_rhythm.py reads those two."""
+        with no earlier sighting). Stationary sightings (a parked car) do not count, the same rule the
+        forecaster fits on (vision_rhythm.py), so a parked key cannot stay "fresh". The stale-key rule in app/street_rhythm.py reads those two."""
         sql = ("SELECT e.expectation_id, e.stream_id, e.subject_key, e.window_start, e.window_end, "
                "e.confidence, e.status, e.scored_at, s.last_seen_before, s.first_seen_before "
                "FROM vision_percept_expectation e "
                "LEFT JOIN LATERAL (SELECT max(v.started_at) AS last_seen_before, "
                "min(v.started_at) AS first_seen_before FROM vision_individual_sighting v "
                "WHERE e.subject_key LIKE 'individual:%%' "
-               "AND v.individual_id = substr(e.subject_key, 12) AND v.started_at < e.window_start) s ON true "
+               "AND v.individual_id = substr(e.subject_key, 12) AND v.started_at < e.window_start "
+               "AND NOT v.stationary) s ON true "
                "WHERE e.stream_id = %s AND e.status IN ('met', 'missed', 'unscorable') "
                "AND e.scored_at >= %s")
         args: list = [stream_id, since]

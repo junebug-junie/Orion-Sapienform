@@ -45,8 +45,8 @@ The street rhythm node (PE retire rev 4 item 5, 2026-11-25). ``node:prediction.s
 (orion/substrate/prediction_street_rhythm.py) is the chat node's shape: the same z over the walkway rhythm
 outcomes scored in the last 30 minutes, each one yes/no forecast (the rhythm learner's stated p, raw), so z
 is a sum of two-point variables and the Gamma argument does not apply. Bar from the exact calm tail of the
-real windows (at each of the 298 event writes of the 14-day fixture, 2026-11-11 .. 11-25: enumerate the
-window's outcomes under their own stated p): mean calm crossing 6.1 % at 0.55, 4.3 % at 0.60, 3.1 % at
+real windows (at each of the 403 per-outcome writes of the 14-day fixture, 2026-11-11 .. 11-25: enumerate
+the window's outcomes under their own stated p): mean calm crossing 6.0 % at 0.55, 4.2 % at 0.60, 2.9 % at
 0.67. Bar: 0.60 (z >= 1.8), the lowest of those at or under 5 %. The node is in SHADOW
 (orion/schemas/attention_candidate.py) and cannot seed until its calm check passes; the bar is set now so
 going live is the one shadow line. Re-measured by services/orion-prediction/evals/run_street_rhythm_calm_eval.py
@@ -86,7 +86,7 @@ Z_FULL_SCALE = 3.0
 FORECAST_Z_CUT = 2.0
 # Chat turns: exact calm crossing rate of the live bets <= 5 % (4.6 % on 2026-11-17..24).
 CHAT_TURN_Z_CUT = 2.4
-# Street rhythm: exact calm crossing rate of the real 30-min windows 4.3 % at z >= 1.8 (fixture 11-11..11-25).
+# Street rhythm: exact calm crossing rate of the real 30-min windows 4.2 % at z >= 1.8 (fixture 11-11..11-25).
 STREET_RHYTHM_Z_CUT = 1.8
 # Pre-#3821 bar; unlisted nodes keep it.
 LEGACY_BAR = 0.55

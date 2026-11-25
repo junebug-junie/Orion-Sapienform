@@ -1120,14 +1120,19 @@ Code: `app/lived_time.py` (the date grammar), wired in `app/lived_memory.py` and
   the parser found none; an implausible line (reversed, in the future, years old) is dropped.
 - **Before the pool is cut.** With a window, one more meaning search runs filtered to the window
   in Chroma (`occurred_ts`), and one more exact-word search runs over in-window records. In-window
-  candidates fill the rerank pool first; at most 4 from outside the window stay. After the rerank,
+  candidates fill the rerank pool first; at most 4 from outside the window stay, and the best 2 of
+  those ride in the first rerank chunk so a short deadline still scores them. After the rerank,
   in-window memories get +1 (logit units, like recency), and when one of them clears the bar at
-  most 1 line from outside the window is served. A window with nothing in it changes nothing:
-  recall is never emptied by a time word. Windows are padded a day each side.
+  most 2 lines from outside the window are served. A window with nothing in it changes nothing:
+  recall is never emptied by a time word. Windows are padded a day each side. When a message
+  holds two time phrases, the first one wins. "today" and "tonight" are never a window (they are
+  the present); a bare `8/10` or `1/2` is a rating or a fraction, not a date; a month still ahead
+  this year is a plan unless the message is in the past tense.
 - **Past state.** When the window is wholly past and the message asks in the past tense with a
   state verb ("Where was I in early October?"), or the rewrite says `PAST: yes`, recall also reads
   facts an update has retired since (`orion.memory.lived_memory.fetch_valid_during`, the as-of
-  reader over the window). At most 4 join the rerank. They render as
+  reader over the window, run alongside the meaning search, at most 0.8 s and 500 rows). At most 4
+  join the rerank. They render as
   `(... · <date> · true then, not now: changed <date>)` and are re-checked through the same
   reader before render. A correction's old row is never served: it was never true.
 - **Trace.** `recall_telemetry.lived_trace.window` keeps the window's local dates, its shape,

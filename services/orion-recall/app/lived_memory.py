@@ -90,7 +90,7 @@ from orion.memory.lived_memory import (
 from .lived_entities import EntityIndex, load_entities
 from .lived_links import SEED_DOCS, ReferentGraph, load_graph
 from .lived_rewrite import RewriteResult, Rewriter, as_result, fetch_context
-from .lived_time import DEFAULT_TZ, WINDOW_PAD, TimeWindow, parse_time_window
+from .lived_time import DEFAULT_TZ, WINDOW_PAD, TimeWindow, ends_before_today, local_zone, parse_time_window
 
 logger = logging.getLogger("orion-recall.lived_memory")
 
@@ -158,12 +158,18 @@ SNAPSHOT_TTL_SEC = 60.0
 WINDOW_DENSE_TOP_K = 12
 WINDOW_LEXICAL_TOP_K = 8
 OUT_OF_WINDOW_MAX = 4
-OUT_OF_WINDOW_LINES = 1
+OUT_OF_WINDOW_LINES = 2
+# The best OUT_OF_WINDOW_FIRST outside candidates go into the first rerank chunk, right after the
+# best in-window ones: a deadline that stops the rerank early still scores the message's own top
+# hits, so a wrong window cannot leave only in-window noise (#3662 chunking).
+OUT_OF_WINDOW_FIRST = 2
 W_WINDOW = 1.0  # logit units, like W_RECENCY: orders memories that already fit
 # Past-state questions also read facts an update has retired since (the as-of reader); at most
-# this many join the rerank, chosen by shared rare words.
+# this many join the rerank, chosen by shared rare words. The read runs alongside the meaning
+# search, bounded by AS_OF_TIMEOUT_SEC and by the turn's deadline.
 AS_OF_TOP_K = 4
 AS_OF_TIMEOUT_SEC = 0.8
+AS_OF_READ_LIMIT = 500
 # The referent graph changes only when the distiller writes; it is refreshed in the background.
 GRAPH_TTL_SEC = 600.0
 
@@ -307,12 +313,12 @@ class LivedRecall:
 AS_OF_LABEL = "true then, not now"
 
 
-def render_line(rec: LivedRecord) -> str:
+def render_line(rec: LivedRecord, tz: str = DEFAULT_TZ) -> str:
     text = rec.text if len(rec.text) <= LINE_MAX_CHARS else rec.text[: LINE_MAX_CHARS - 1].rstrip() + "…"
     label = rec.kind if rec.kind == rec.purpose or rec.kind == KIND_PERSON_FACT else f"{rec.kind}/{rec.purpose}"
     when = rec.date
     if rec.invalid_at is not None:
-        when += f" · {AS_OF_LABEL}: changed {rec.invalid_at.date().isoformat()}"
+        when += f" · {AS_OF_LABEL}: changed {rec.invalid_at.astimezone(local_zone(tz)).date().isoformat()}"
     return f"- ({label} · {rec.doc_id} · {when}) {text}"
 
 
@@ -693,8 +699,12 @@ class LivedMemoryRecall:
                                                                      replay=replay, where=window_where(window)))
                 pending.append(window_dense)
             elif (window is not None and said is not None and said.past_state and not window.past_state
-                  and window.end <= ref_now):
+                  and ends_before_today(window, ref_now, self.cfg.timezone)):
                 window = window.with_past_state(True)  # the parser's window, the model's tense
+            as_of_task: asyncio.Future | None = None
+            if window is not None and window.past_state:  # runs alongside the meaning searches
+                as_of_task = asyncio.ensure_future(self._as_of_read(window))
+                pending.append(as_of_task)
             t = time.perf_counter()  # dense time past the rewrite wait (the raw search overlaps it)
             dense_tasks = [raw_dense] + [
                 asyncio.ensure_future(self._dense(client, q, REWRITE_DENSE_TOP_K, replay=replay)) for q in queries]
@@ -759,8 +769,10 @@ class LivedMemoryRecall:
 
                 window_lists = [wd, self.lexical(query, WINDOW_LEXICAL_TOP_K, allowed=allowed_in)]
                 window_lists += [self.lexical(q, REWRITE_LEXICAL_TOP_K, allowed=allowed_in) for q in queries]
-                if win.past_state:
-                    as_of_recs = await self._as_of_candidates(win, query, queries, allowed, win_info)
+                if as_of_task is not None:
+                    budget = min(AS_OF_TIMEOUT_SEC, deadline - time.perf_counter() - RERANK_RESERVE_SEC)
+                    as_of_recs = await self._as_of_candidates(as_of_task, max(0.001, budget), query, queries,
+                                                              allowed, win_info, as_of=as_of)
 
             lexical_lists = [self.lexical(query, allowed=allowed)]
             lexical_lists += [self.lexical(q, REWRITE_LEXICAL_TOP_K, allowed=allowed) for q in queries]
@@ -810,7 +822,10 @@ class LivedMemoryRecall:
                     win_info["out_of_window_kept"] = min(len(out_ids), OUT_OF_WINDOW_MAX)
                     out_ids = out_ids[:OUT_OF_WINDOW_MAX]
                     in_ids = in_ids[: max(0, MAX_RERANK_STEP2 - len(out_ids) - int(self.cfg.link_top_k))]
-                    base, extra = in_ids + out_ids, []
+                    first = RERANK_CHUNK - OUT_OF_WINDOW_FIRST
+                    base = (in_ids[:first] + out_ids[:OUT_OF_WINDOW_FIRST] + in_ids[first:]
+                            + out_ids[OUT_OF_WINDOW_FIRST:])
+                    extra = []
                     rerank_base = list(base)
                     ordered = list(base)
                     fused = fused_all
@@ -940,7 +955,7 @@ class LivedMemoryRecall:
                 s.dense, s.lexical = dense_best.get(s.rec.doc_id), lexical_best.get(s.rec.doc_id)
                 s.link = s.rec.doc_id in link_ids
             out.chosen = chosen
-            out.lines = [render_line(s.rec) for s in chosen]
+            out.lines = [render_line(s.rec, self.cfg.timezone) for s in chosen]
             return out
         except (SearchUnavailableError, httpx.HTTPError, ValueError) as exc:
             out.debug["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -956,18 +971,22 @@ class LivedMemoryRecall:
             if own_client:
                 await client.aclose()
 
-    async def _as_of_candidates(self, window: TimeWindow, query: str, queries: Sequence[str],
-                                allowed: Callable[[LivedRecord], bool], info: Dict[str, Any]) -> Dict[str, LivedRecord]:
-        """Issue #3674: facts true during ``window`` that an update has retired since (the as-of
-        reader, ``fetch_valid_during``). They are not in the live snapshot or the index, so they
-        are ranked here by the rare words they share with the turn (BM25 idf), at most AS_OF_TOP_K.
-        An extra, never a blocker: a failed read adds nothing."""
+    async def _as_of_read(self, window: TimeWindow) -> List[LivedRecord]:
+        return await fetch_valid_during(self.pool, window.start - WINDOW_PAD, window.end + WINDOW_PAD,
+                                        retired_only=True, limit=AS_OF_READ_LIMIT)
+
+    async def _as_of_candidates(self, task: "asyncio.Future", budget: float, query: str, queries: Sequence[str],
+                                allowed: Callable[[LivedRecord], bool], info: Dict[str, Any], *,
+                                as_of: datetime | None = None) -> Dict[str, LivedRecord]:
+        """Issue #3674: facts true during the window that an update has retired since (the as-of
+        reader, ``fetch_valid_during``, started alongside the meaning search). They are not in the
+        live snapshot or the index, so they are ranked here by the rare words they share with the
+        turn (BM25 idf), at most AS_OF_TOP_K. An extra, never a blocker: a failed or late read adds
+        nothing. In a replay (``as_of``), a row retired after then was still current then: skipped."""
         try:
-            rows = await asyncio.wait_for(
-                fetch_valid_during(self.pool, window.start - WINDOW_PAD, window.end + WINDOW_PAD, retired_only=True),
-                timeout=AS_OF_TIMEOUT_SEC)
+            rows = await asyncio.wait_for(asyncio.shield(task), timeout=budget)
         except Exception as exc:  # noqa: BLE001 -- the past-state read is an extra
-            info["as_of_error"] = type(exc).__name__
+            info["as_of_error"] = type(exc).__name__ or "timeout"
             return {}
         idf = self._bm25.idf if self._bm25 is not None else {}
         toks = set(tokenize(query))
@@ -976,6 +995,8 @@ class LivedMemoryRecall:
         scored = []
         for rec in rows:
             if rec.doc_id in self._by_doc or rec.invalid_at is None or not allowed(rec):
+                continue
+            if as_of is not None and rec.invalid_at >= as_of:
                 continue
             s = sum(idf.get(t, 1.0) for t in toks & set(tokenize(rec.text)))
             if s > 0:
@@ -999,14 +1020,27 @@ class LivedMemoryRecall:
                 ids_by_kind.setdefault(s.rec.kind, []).append(s.rec.record_id)
         still_live = {r.doc_id for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind),
                                                                   ids_by_kind=ids_by_kind)} if ids_by_kind else set()
+        reread: Dict[str, LivedRecord] = {}
         if as_of_ids and window is not None:
-            still_live |= {r.doc_id for r in await fetch_valid_during(
-                self.pool, window.start - WINDOW_PAD, window.end + WINDOW_PAD, ids=as_of_ids)}
+            try:
+                rows = await asyncio.wait_for(fetch_valid_during(
+                    self.pool, window.start - WINDOW_PAD, window.end + WINDOW_PAD, ids=as_of_ids),
+                    timeout=AS_OF_TIMEOUT_SEC)
+            except Exception as exc:  # noqa: BLE001 -- an unverified row is never served
+                out.debug["as_of_recheck_error"] = type(exc).__name__ or "timeout"
+                rows = []
+            reread = {r.doc_id: r for r in rows}
+            still_live |= set(reread)
         timings["recheck"] = int((time.perf_counter() - t) * 1000)
         dropped = [s.rec.doc_id for s in chosen if s.rec.doc_id not in still_live]
         if dropped:
             out.debug["recheck_dropped"] = dropped
-        return [s for s in chosen if s.rec.doc_id in still_live]
+        kept = [s for s in chosen if s.rec.doc_id in still_live]
+        for s in kept:
+            fresh = reread.get(s.rec.doc_id)
+            if fresh is not None and fresh.invalid_at is None:
+                s.rec = fresh  # its retirement was undone since: it is true now, so no "true then" label
+        return kept
 
     async def degraded_now(self, query: str, *, reason: str, timeout_sec: float = 0.3) -> LivedRecall:
         """Exact-word recall from the in-memory snapshot, for when the full recall ran out of time

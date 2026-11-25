@@ -18,7 +18,7 @@ the same conversation and writes up to ``MAX_QUERIES`` short searches that name 
   told who is speaking: without that, "how tall am I?" read as a question about Orion and got
   NONE. A YES/NO-first form was tried and said YES to 10 of 22 real small-talk messages, so the
   reply stays "queries or NONE".
-- **Time** (issue #3674). The general prompt says what day it is in Denver and asks for one
+- **Time** (issue #3674). The general prompt says what day it is (in the recall's zone) and asks for one
   ``WHEN: <first day> to <last day>`` line when the message names a time, and ``PAST: yes`` when it
   asks what was true back then. Recall reads time words with its own parser first
   (``app/lived_time.py``), so the window never waits on the model; the model's line is used only
@@ -65,7 +65,7 @@ If yes, write 1 to {max_queries} short search queries, 3 to 8 words each, one pe
 specific thing. If the message is only a greeting, thanks or small talk with nothing to look
 up, write NONE. Write only the queries, or NONE.
 
-Today is {today}, Denver time. If you wrote queries and the message names a time ("last week",
+Today is {today} ({zone} time). If you wrote queries and the message names a time ("last week",
 "in October", "a month or so ago", "yesterday", a date), add one line after them:
 WHEN: <first day> to <last day>
 with both days as YYYY-MM-DD. If it also asks what was true back then that may have changed since
@@ -129,7 +129,7 @@ def build_prompt(message: str, context: Sequence[ContextTurn], *, short: bool = 
         return SHORT_PROMPT.format(context="\n".join(lines) or "(none)", message=_clip(message, MESSAGE_MAX_CHARS),
                                    max_queries=MAX_QUERIES)
     return PROMPT.format(context="\n".join(lines) or "(none)", message=_clip(message, MESSAGE_MAX_CHARS),
-                         max_queries=MAX_QUERIES, today=_today_line(now, tz))
+                         max_queries=MAX_QUERIES, today=_today_line(now, tz), zone=tz or DEFAULT_TZ)
 
 
 _LEAD = re.compile(r"^\s*(?:[-*•]+|\d+[.)]|query\s*\d*\s*:|q\d*\s*:)\s*", re.I)

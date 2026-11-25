@@ -118,19 +118,23 @@ WHERE m.confirmation_state IS DISTINCT FROM 'rejected'
 
 
 async def fetch_valid_during(conn: Any, start: datetime, end: datetime, *,
-                             ids: Iterable[str] | None = None, retired_only: bool = False) -> list[LivedRecord]:
+                             ids: Iterable[str] | None = None, retired_only: bool = False,
+                             limit: int | None = None) -> list[LivedRecord]:
     """Episode memories true at some point in ``[start, end)`` (asyncpg connection or pool).
 
     ``retired_only`` keeps only the rows an update has since retired (``invalid_at`` set): the ones
     the currently-true reader no longer serves. ``ids`` limits the read to those memory ids (the
-    re-check before render)."""
+    re-check before render). ``limit`` keeps the most recently retired rows (a wide window on a
+    chat turn must not read the whole history)."""
     sql = EPISODE_VALID_DURING_SQL
     args: list[Any] = [start, end]
     if retired_only:
         sql += " AND m.invalid_at IS NOT NULL"
     if ids is not None:
-        sql += " AND m.memory_id::text = ANY($3::text[])"
+        sql += f" AND m.memory_id::text = ANY(${len(args) + 1}::text[])"
         args.append(list(ids))
+    if limit is not None:
+        sql += f" ORDER BY m.invalid_at DESC NULLS LAST, m.memory_id LIMIT {max(1, int(limit))}"
     rows = await conn.fetch(sql, *args)
     return records_from_rows(KIND_EPISODE, [dict(r) for r in rows])
 

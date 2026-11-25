@@ -293,7 +293,8 @@ def test_an_update_ends_validity_at_the_new_time_and_stays_reachable_as_history(
         assert old_id not in await _valid_at_ids(dsn, T0 - timedelta(days=1))   # not yet happened
 
         # Issue #3674: the same read over a window ("where was I in early October?").
-        during = await _valid_during_ids(dsn, T0 + timedelta(days=1), T0 + timedelta(days=3), retired_only=True)
+        during = await _valid_during_ids(dsn, T0 + timedelta(days=1), T0 + timedelta(days=3), retired_only=True,
+                                         limit=5)
         assert old_id in during and during[old_id].invalid_at is not None   # true then, labelled not now
         assert new_id not in during                                           # still true: not "retired"
         assert old_id not in await _valid_during_ids(dsn, T0 - timedelta(days=5), T0 - timedelta(days=1))

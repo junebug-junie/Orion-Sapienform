@@ -48,9 +48,13 @@ def _dates(text: str, now: datetime = NOW):
     ("What did I tell you about my job on November 20th?", ("2026-11-20", "2026-11-20", "date")),
     ("Where did I spend the day on Saturday, October 18th?", ("2026-10-18", "2026-10-18", "date")),
     ("the 3rd of October", ("2026-10-03", "2026-10-03", "date")),
-    ("10/30", ("2026-10-30", "2026-10-30", "date")),
+    ("What did Addy and I do on the night of October 30th?", ("2026-10-30", "2026-10-30", "date")),
+    ("the end of October 2025", ("2025-10-21", "2025-10-31", "month")),
+    ("on 10/30", ("2026-10-30", "2026-10-30", "date")),
+    ("10/30/26", ("2026-10-30", "2026-10-30", "date")),
     ("2026-10-30", ("2026-10-30", "2026-10-30", "date")),
-    ("What happened in the week of November 2nd to 8th?", ("2026-11-02", "2026-11-08", "range")),
+    ("What happened in the week of November 2nd to 8th?", ("2026-11-02", "2026-11-08", "week_of")),
+    ("November 2nd to 8th", ("2026-11-02", "2026-11-08", "range")),
     ("between Oct 3 and Oct 10", ("2026-10-03", "2026-10-10", "range")),
     ("the week of Nov 2", ("2026-11-02", "2026-11-08", "week_of")),
     ("Which days was I in Chicago in October?", ("2026-10-01", "2026-10-31", "month")),
@@ -73,13 +77,31 @@ def test_parser_reads_the_common_time_phrases(text, expected):
     "hi Orion, how are you?",
     "What are we doing this weekend?",          # asked on a Wednesday: a plan, not a past time
     "What am I doing on Friday?",
+    "How are you today?",                         # the present, not a past time
+    "what should we cook tonight",
+    "I'm going to see Amanda in December",        # a month still ahead: a plan
+    "I rated it 8/10 and it's about 3/4 done",    # a rating and a fraction
+    "add 1/2 cup of flour",
+    "I read 3 of mark's books and 2 of decent ones",
+    "the last day of the trip was fun",
 ])
 def test_parser_finds_no_window_where_no_time_is_named(text):
     assert parse_time_window(text, NOW) is None
 
 
+def test_the_first_time_phrase_in_the_message_wins():
+    assert _dates("Today I kept thinking about what happened with Amanda two weeks ago")[2] == "ago"
+    assert _dates("Last week, or maybe on November 20th?")[2] == "calendar"
+    assert _dates("On November 20th, or was it last week?")[2] == "date"
+
+
+def test_this_morning_is_a_window_only_in_the_past_tense():
+    assert _dates("what did I say this morning?") == ("2026-11-25", "2026-11-25", "relative_day")
+    assert parse_time_window("this morning feels slow", NOW) is None
+
+
 def test_a_month_without_a_year_is_the_most_recent_one():
-    assert _dates("in December") == ("2025-12-01", "2025-12-31", "month")   # asked in November
+    assert _dates("Where was I in December?") == ("2025-12-01", "2025-12-31", "month")   # asked in November
     jan = datetime(2027, 1, 10, 19, 0, tzinfo=timezone.utc)
     assert _dates("December 30th", jan)[:2] == ("2026-12-30", "2026-12-30")
     assert _dates("January 3rd", jan)[:2] == ("2027-01-03", "2027-01-03")
@@ -264,16 +286,19 @@ def test_rank_caps_lines_outside_the_window_only_when_something_inside_fits():
         return LivedRecord(kind="episode_memory", record_id=rid, purpose="happened", text=rid, occurred_at=at,
                            importance=0.5)
 
-    inside, out1, out2 = rec("in", OCT), rec("o1", AUG), rec("o2", AUG)
+    inside, out1, out2, out3 = rec("in", OCT), rec("o1", AUG), rec("o2", AUG), rec("o3", AUG)
     w = parse_time_window("over the last month", NOW)
 
     def in_w(r):
         return w.contains(r.occurred_at)
 
-    got = rank([(out1, 3.0), (out2, 2.5), (inside, 0.5)], min_fit=0.5, max_lines=4, now=NOW, in_window=in_w)
-    assert [s.rec.record_id for s in got] == ["o1", "in"]            # one outside line, the best one
-    got = rank([(out1, 3.0), (out2, 2.5), (inside, -9.0)], min_fit=0.5, max_lines=4, now=NOW, in_window=in_w)
-    assert [s.rec.record_id for s in got] == ["o1", "o2"]            # nothing inside fits: no cap
+    assert OUT_OF_WINDOW_LINES == 2
+    got = rank([(out1, 3.0), (out2, 2.9), (out3, 2.8), (inside, 0.5)], min_fit=0.5, max_lines=4, now=NOW,
+               in_window=in_w)
+    assert [s.rec.record_id for s in got] == ["o1", "o2", "in"]      # the two best outside lines only
+    got = rank([(out1, 3.0), (out2, 2.9), (out3, 2.8), (inside, -9.0)], min_fit=0.5, max_lines=4, now=NOW,
+               in_window=in_w)
+    assert [s.rec.record_id for s in got] == ["o1", "o2", "o3"]      # nothing inside fits: no cap
 
 
 def test_window_where_is_a_chroma_range_filter_on_occurred_ts():
@@ -344,8 +369,9 @@ def test_render_line_marks_only_retired_rows():
                       importance=0.5)
     assert AS_OF_LABEL not in render_line(rec)
     old = LivedRecord(kind="episode_memory", record_id="r", purpose="happened", text="x", occurred_at=EARLY_OCT,
-                      importance=0.5, invalid_at=datetime(2026, 10, 8, tzinfo=timezone.utc))
-    assert render_line(old) == f"- (episode_memory/happened · episode_memory:r · 2026-10-05 · {AS_OF_LABEL}: changed 2026-10-08) x"
+                      importance=0.5, invalid_at=datetime(2026, 10, 8, 3, 0, tzinfo=timezone.utc))
+    # 03:00Z on the 8th is the evening of the 7th in Denver: the label uses the local date.
+    assert render_line(old) == f"- (episode_memory/happened · episode_memory:r · 2026-10-05 · {AS_OF_LABEL}: changed 2026-10-07) x"
 
 
 def test_the_trace_keeps_dates_and_shape_never_the_message_words(no_dense):
@@ -354,3 +380,50 @@ def test_the_trace_keeps_dates_and_shape_never_the_message_words(no_dense):
     assert set(w) <= {"start", "end", "kind", "source", "past_state", "in_window", "as_of_rows",
                       "out_of_window_kept", "empty", "dense_error", "as_of_error"}
     assert "month" not in " ".join(str(v) for v in w.values())
+
+
+def test_the_best_outside_hits_ride_in_the_first_rerank_chunk(no_dense):
+    """A wrong or narrow window must not push the message's own top hits past a short deadline."""
+    inside = [_rec(f"oct{i}", f"Amanda update number {i} from the clinic visit", OCT) for i in range(12)]
+    out = asyncio.run(_reader(Pool(CROWD + inside)).recall(QUESTION))
+    first_chunk = out.debug["candidate_ids"][: lm.RERANK_CHUNK]
+    assert sum(1 for c in first_chunk if c.startswith("episode_memory:aug")) == lm.OUT_OF_WINDOW_FIRST
+
+
+def test_a_slow_as_of_read_is_cut_off_and_recall_still_serves(no_dense, monkeypatch):
+    monkeypatch.setattr(lm, "AS_OF_TIMEOUT_SEC", 0.05)
+
+    class Slow(Pool):
+        async def fetch(self, sql, *args):
+            if "invalid_at AS invalid_at" in sql:
+                await asyncio.sleep(1.0)
+            return await super().fetch(sql, *args)
+
+    out = asyncio.run(_reader(Slow([HOME_NOW] + CROWD, retired=[TRIP])).recall(
+        "Where was Juniper staying for work in early October?"))
+    assert out.debug["window"]["as_of_error"] in ("TimeoutError", "timeout")
+    assert out.debug["timings_ms"]["total"] < 1000
+    assert all("trip" not in x for x in out.lines)
+
+
+def test_a_replay_never_labels_a_row_retired_after_its_as_of(no_dense):
+    pool = Pool([HOME_NOW] + CROWD, retired=[TRIP])
+    # Replayed as of 2026-10-07: the trip row was retired on 10-08, so it was still current then.
+    out = asyncio.run(_reader(pool).recall("Where was Juniper staying for work in early October?",
+                                           as_of=datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)))
+    assert out.debug["window"].get("as_of_rows", 0) == 0
+
+
+def test_an_undone_retirement_is_served_without_the_true_then_label(no_dense):
+    pool = Pool([HOME_NOW] + CROWD, retired=[TRIP])
+    orig = pool.fetch
+
+    async def fetch(sql, *args):
+        if "invalid_at AS invalid_at" in sql and len(args) > 2:
+            return [dict(TRIP, invalid_at=None)]   # undone since the candidate read: true now
+        return await orig(sql, *args)
+
+    pool.fetch = fetch
+    out = asyncio.run(_reader(pool).recall("Where was Juniper staying for work in early October?"))
+    line = next(x for x in out.lines if "episode_memory:trip" in x)
+    assert AS_OF_LABEL not in line

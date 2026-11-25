@@ -27,12 +27,27 @@ listening and that seat was quiet.
 An atom stamped in a bucket that was already published (or before the process started) cannot be
 added without rewriting a stored row, so it is dropped and counted as ``late`` (also per bucket in
 ``late_by_bucket``, so a stored row that disagrees with grammar_events can be traced). An atom stamped more
-than one bucket in the future (clock skew) is dropped and counted as ``future``. A repeated
-``event_id`` in the same bucket is counted once (the ledger dedupes on event_id too).
+than one bucket in the future (clock skew) is dropped and counted as ``future``.
+
+A repeated ``event_id`` is counted once, in the bucket of its first copy, also when the copies
+fall in different buckets (issue #3900). The ledger does the same: orion/grammar/ledger.py
+``_bulk_insert_events`` inserts with ``on_conflict_do_nothing(event_id)``, so the first write wins.
+orion-harness-governor sends ``exec_result_assembled`` twice with one event_id: at motor close and
+again at finalize, seconds to minutes later, with the finalize time as emitted_at
+(orion/harness/grammar_emit.py ``build_harness_grammar_finalize_events``). When the two copies
+straddle a bucket boundary, a per-bucket dedup counted the second copy in the later bucket. Event
+ids are kept for ``DEDUP_RETENTION_SEC`` after their bucket closes.
+
+Arrival lag (issue #3901): for every first copy with a real emitted_at, the receive time minus
+emitted_at is kept per seat (the last ``LAG_WINDOW`` atoms) for p50/p95/max on /health. A row's
+``late_count`` is the number of its routed atoms that arrived after the bucket ended (inside the
+flush grace). Atoms that arrive after the row was published are dropped and counted on /health
+(``late``, ``late_by_bucket``, ``late_by_seat``), since a stored row is never rewritten.
 """
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, Optional, Sequence
@@ -49,6 +64,13 @@ from orion.schemas.heartbeat_seat_rollup import (
 DEFAULT_SILENCE_GAP_SEC = 60.0
 # Buckets kept in late_by_bucket (4 h).
 LATE_BY_BUCKET_MAX = 48
+# Event ids are remembered this long after their bucket closes. The harness finalize copy comes
+# 20 s to ~2.5 min after the motor copy (11-25 harness-governor logs), so 1 h is wide.
+DEDUP_RETENTION_SEC = 3600
+# Hard cap on remembered event ids (about 7,000 routed-service atoms an hour on 11-25).
+DEDUP_MAX_IDS = 200_000
+# Arrival lags kept per seat for the /health percentiles.
+LAG_WINDOW = 4096
 
 Outcome = Literal["counted", "duplicate", "late", "future"]
 
@@ -63,12 +85,17 @@ class _Bucket:
     levels: list[list[float]] = field(default_factory=list)
     counts: list[int] = field(default_factory=list)
     skipped: list[int] = field(default_factory=list)
-    event_ids: set[str] = field(default_factory=set)
+    late: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.levels = [[] for _ in range(self.n_seats)]
         self.counts = [0] * self.n_seats
         self.skipped = [0] * self.n_seats
+        self.late = [0] * self.n_seats
+
+
+def _nearest_rank(sorted_values: list[float], q: float) -> float:
+    return sorted_values[max(0, math.ceil(q * len(sorted_values)) - 1)]
 
 
 class SeatRollupAccumulator:
@@ -97,8 +124,14 @@ class SeatRollupAccumulator:
         self._last_receipt_epoch = float(started_at_epoch)
         self.late = 0
         self.late_by_bucket: dict[int, int] = {}
+        self.late_by_seat = [0] * len(self._seats)
         self.future = 0
         self.duplicates = 0
+        # Duplicates whose first copy was in another bucket (the #3900 case).
+        self.duplicates_cross_bucket = 0
+        # event_id -> bucket start of its first copy, in arrival order.
+        self._seen: dict[str, int] = {}
+        self._lags: list[deque[float]] = [deque(maxlen=LAG_WINDOW) for _ in self._seats]
 
     def __len__(self) -> int:
         return len(self._buckets)
@@ -128,38 +161,65 @@ class SeatRollupAccumulator:
         if start >= self._open_from:
             self._bucket(start)
 
-    def _place(self, emitted_epoch: float, now_epoch: float, event_id: Optional[str]) -> tuple[Outcome, Optional[_Bucket]]:
+    def _place(
+        self, site_index: int, emitted_epoch: float, now_epoch: float, event_id: Optional[str], record_lag: bool
+    ) -> tuple[Outcome, Optional[_Bucket]]:
         start = bucket_start_epoch(emitted_epoch, self._bucket_sec)
+        if event_id:
+            first = self._seen.get(event_id)
+            if first is not None:
+                self.duplicates += 1
+                if first != start:
+                    self.duplicates_cross_bucket += 1
+                return "duplicate", None
+            # Remembered also when this copy is late or future: the ledger keeps this copy, so a
+            # later copy must not be counted either.
+            self._seen[event_id] = start
+            if len(self._seen) > DEDUP_MAX_IDS:
+                del self._seen[next(iter(self._seen))]
+        if record_lag:
+            self._lags[site_index].append(now_epoch - emitted_epoch)
         if start < self._open_from:
             self.late += 1
             self.late_by_bucket[start] = self.late_by_bucket.get(start, 0) + 1
             while len(self.late_by_bucket) > LATE_BY_BUCKET_MAX:
                 self.late_by_bucket.pop(min(self.late_by_bucket))
+            self.late_by_seat[site_index] += 1
             return "late", None
         if start > bucket_start_epoch(now_epoch, self._bucket_sec) + self._bucket_sec:
             self.future += 1
             return "future", None
-        bucket = self._bucket(start)
-        if event_id:
-            if event_id in bucket.event_ids:
-                self.duplicates += 1
-                return "duplicate", None
-            bucket.event_ids.add(event_id)
-        return "counted", bucket
+        return "counted", self._bucket(start)
 
     def observe_atom(
-        self, *, site_index: int, level: float, emitted_epoch: float, now_epoch: float, event_id: Optional[str] = None
+        self,
+        *,
+        site_index: int,
+        level: float,
+        emitted_epoch: float,
+        now_epoch: float,
+        event_id: Optional[str] = None,
+        record_lag: bool = True,
     ) -> Outcome:
-        outcome, bucket = self._place(emitted_epoch, now_epoch, event_id)
+        """``record_lag=False`` when emitted_epoch is not the atom's real emitted_at (fallback)."""
+        outcome, bucket = self._place(site_index, emitted_epoch, now_epoch, event_id, record_lag)
         if bucket is not None:
             bucket.levels[site_index].append(float(level))
             bucket.counts[site_index] += 1
+            if now_epoch >= bucket_start_epoch(emitted_epoch, self._bucket_sec) + self._bucket_sec:
+                bucket.late[site_index] += 1
         return outcome
 
     def observe_skip(
-        self, *, site_index: int, emitted_epoch: float, now_epoch: float, event_id: Optional[str] = None
+        self,
+        *,
+        site_index: int,
+        emitted_epoch: float,
+        now_epoch: float,
+        event_id: Optional[str] = None,
+        record_lag: bool = True,
     ) -> Outcome:
-        outcome, bucket = self._place(emitted_epoch, now_epoch, event_id)
+        outcome, bucket = self._place(site_index, emitted_epoch, now_epoch, event_id, record_lag)
         if bucket is not None:
             bucket.skipped[site_index] += 1
         return outcome
@@ -179,6 +239,26 @@ class SeatRollupAccumulator:
             out.extend(self._to_events(start, bucket, partial=blind_tail or start in self._partial_starts))
             self._open_from = max(self._open_from, end)
         self._partial_starts = {s for s in self._partial_starts if s >= self._open_from}
+        if out:
+            keep_from = self._open_from - DEDUP_RETENTION_SEC
+            self._seen = {k: v for k, v in self._seen.items() if v >= keep_from}
+        return out
+
+    def lag_stats(self) -> dict[str, dict[str, Optional[float]]]:
+        """Arrival lag (receive time minus emitted_at, seconds) per seat over the last LAG_WINDOW
+        first copies. A seat with no samples reads null, not 0."""
+        out: dict[str, dict[str, Optional[float]]] = {}
+        for seat, lags in zip(self._seats, self._lags):
+            values = sorted(lags)
+            if not values:
+                out[seat] = {"n": 0, "p50_sec": None, "p95_sec": None, "max_sec": None}
+                continue
+            out[seat] = {
+                "n": len(values),
+                "p50_sec": round(_nearest_rank(values, 0.50), 3),
+                "p95_sec": round(_nearest_rank(values, 0.95), 3),
+                "max_sec": round(values[-1], 3),
+            }
         return out
 
     def _to_events(self, start: int, bucket: _Bucket, *, partial: bool) -> list[HeartbeatSeatRollupV1]:
@@ -195,6 +275,7 @@ class SeatRollupAccumulator:
                 level_sum=math.fsum(bucket.levels[i]),
                 atom_count=bucket.counts[i],
                 skipped_count=bucket.skipped[i],
+                late_count=bucket.late[i],
                 partial=partial,
                 routing_version=self._routing_version,
             )

@@ -3249,7 +3249,7 @@ channels:
     schema_id: "HeartbeatSeatRollupV1"
     message_kind: "heartbeat.seat.rollup.v1"
     # One heartbeat seat in one closed 5-minute bucket (summed route_atom level, atom
-    # count, skipped count, partial flag) from orion-heartbeat's seat_rollup accumulator;
+    # count, skipped count, late count (#3901, nullable), partial flag) from orion-heartbeat's seat_rollup accumulator;
     # 5 messages per bucket. orion-sql-writer stores each as one row in
     # heartbeat_seat_rollup_5m (insert-only, rollup_id = "<node>:<seat>:<bucket_start>").
     # Issue #3886: durable seat history for scripts/demon_network_replay.py, since

@@ -497,3 +497,94 @@ def test_late_atoms_are_counted_per_bucket(svc) -> None:
 
 def test_routing_seat_order_matches_schema_site_index() -> None:
     assert dict(enumerate(SEAT_ORDER)) == routing.SITE_ORGAN_MAP
+
+
+# --- #3900: one event_id, two copies in two buckets ---------------------------------------------
+
+
+def test_harness_finalize_copy_in_the_next_bucket_is_not_counted_twice(svc) -> None:
+    """Live 11-25 04:19:55 / 04:20:21 (trace 45d7d6ef): orion-harness-governor sends
+    exec_result_assembled at motor close and again at finalize with the same event_id and the
+    finalize time as emitted_at. The ledger keeps the first copy (on_conflict_do_nothing), so the
+    rollup must too. A per-bucket dedup counted the second copy in the 04:20 bucket: +1 atom."""
+    svc._clock["now"] = float(T0 + 295.05)
+    asyncio.run(svc._handle_grammar_message(
+        _payload("orion-harness-governor", "exec_result_assembled", T0 + 295, "gev_assembled")))
+    svc._clock["now"] = float(T0 + 321.05)
+    asyncio.run(svc._handle_grammar_message(
+        _payload("orion-harness-governor", "exec_result_assembled", T0 + 321, "gev_assembled")))  # finalize copy
+    asyncio.run(svc._handle_grammar_message(
+        _payload("orion-harness-governor", "exec_result_emitted", T0 + 321, "gev_emitted")))
+    rows = _by_seat(svc.seat_rollup.flush_closed(T0 + 2000))
+    assert rows[(T0, "orion-harness-governor")].atom_count == 1
+    assert rows[(T0 + 300, "orion-harness-governor")].atom_count == 1  # emitted only, not the copy
+    stats = svc._seat_rollup_stats()
+    assert (stats["duplicate_atoms_ignored"], stats["duplicate_atoms_cross_bucket"]) == (1, 1)
+
+
+def test_copy_after_its_first_bucket_was_published_is_a_duplicate_not_counted() -> None:
+    acc2 = _acc()
+    _listen(acc2, T0, T0 + 900)
+    acc2.observe_atom(site_index=4, level=0.5, emitted_epoch=T0 + 299, now_epoch=T0 + 299, event_id="q")
+    acc2.flush_closed(T0 + 330, grace_sec=30)
+    assert acc2.observe_atom(site_index=4, level=0.5, emitted_epoch=T0 + 340, now_epoch=T0 + 340, event_id="q") == "duplicate"
+    rows = _by_seat(acc2.flush_closed(T0 + 900))
+    assert rows[(T0 + 300, "orion-harness-governor")].atom_count == 0
+
+
+def test_a_late_first_copy_still_blocks_its_later_copy() -> None:
+    """The ledger keeps the late copy in its old bucket; the rollup dropped it as late. The next
+    copy must not be counted in a new bucket either."""
+    acc = _acc()
+    _listen(acc, T0 + 1, T0 + 331)
+    acc.flush_closed(T0 + 331, grace_sec=30)
+    assert acc.observe_atom(site_index=4, level=0.5, emitted_epoch=T0 + 10, now_epoch=T0 + 331, event_id="r") == "late"
+    assert acc.observe_atom(site_index=4, level=0.5, emitted_epoch=T0 + 331, now_epoch=T0 + 331, event_id="r") == "duplicate"
+    assert acc.late_by_seat[4] == 1
+
+
+# The conftest re-imports ``app`` per test, so read the constants from the module this file's
+# SeatRollupAccumulator really runs in.
+_ROLLUP_GLOBALS = SeatRollupAccumulator.__init__.__globals__
+
+
+def test_event_ids_are_forgotten_after_the_retention() -> None:
+    retention = _ROLLUP_GLOBALS["DEDUP_RETENTION_SEC"]
+    acc = _acc()
+    _listen(acc, T0, T0 + 300 + retention + 700, step=30)
+    acc.observe_atom(site_index=0, level=0.5, emitted_epoch=T0 + 1, now_epoch=T0 + 1, event_id="old")
+    acc.flush_closed(T0 + 330, grace_sec=30)
+    assert "old" in acc._seen
+    acc.flush_closed(T0 + 300 + retention + 630, grace_sec=30)
+    assert "old" not in acc._seen
+
+
+def test_dedup_memory_is_capped(monkeypatch) -> None:
+    monkeypatch.setitem(_ROLLUP_GLOBALS, "DEDUP_MAX_IDS", 3)
+    acc = _acc()
+    for i in range(5):
+        acc.observe_atom(site_index=0, level=0.5, emitted_epoch=T0 + 1, now_epoch=T0 + 1, event_id=f"e{i}")
+    assert list(acc._seen) == ["e2", "e3", "e4"]
+
+
+# --- #3901: arrival lag and late_count -----------------------------------------------------------
+
+
+def test_arrival_lag_per_seat_and_late_count_per_row(svc) -> None:
+    for i, lag in enumerate([0.5, 1.0, 2.0, 40.0]):
+        svc._clock["now"] = float(T0 + 280 + lag)
+        asyncio.run(svc._handle_grammar_message(
+            _payload("orion-harness-governor", "exec_step_started", T0 + 280, f"lag{i}")))
+    # A missing emitted_at falls back to receive time: lag is not measured for it.
+    bad = _payload("orion-harness-governor", "exec_step_started", T0 + 280, "nostamp")
+    bad["emitted_at"] = None
+    asyncio.run(svc._handle_grammar_message(bad))
+    lag = svc._seat_rollup_stats()["arrival_lag_by_seat"]
+    assert lag["orion-harness-governor"] == {"n": 4, "p50_sec": 1.0, "p95_sec": 40.0, "max_sec": 40.0}
+    assert lag["orion-hub"] == {"n": 0, "p50_sec": None, "p95_sec": None, "max_sec": None}
+    rows = _by_seat(svc.seat_rollup.flush_closed(T0 + 2000, grace_sec=120))
+    row = rows[(T0, "orion-harness-governor")]
+    # Only the 40 s one arrived after bucket_end (T0 + 300); it is still in the row.
+    assert (row.atom_count, row.late_count) == (4, 1)
+    assert rows[(T0, "orion-hub")].late_count == 0
+    assert svc._seat_rollup_stats()["late_atoms_dropped_by_seat"]["orion-harness-governor"] == 0

@@ -32,6 +32,7 @@ from app.worker import INSERT_ONLY_MODELS, MODEL_MAP  # noqa: E402
 from app.settings import DEFAULT_ROUTE_MAP, Settings  # noqa: E402
 
 MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_heartbeat_seat_rollup_5m_v1.sql"
+MIGRATION_V2 = REPO_ROOT / "services/orion-sql-db/manual_migration_heartbeat_seat_rollup_5m_v2_late_count.sql"
 START = datetime(2026, 11, 25, 2, 15, tzinfo=timezone.utc)
 END = datetime(2026, 11, 25, 2, 20, tzinfo=timezone.utc)
 
@@ -90,10 +91,22 @@ def test_migration_declares_the_same_columns_header_and_additive_ddl_only() -> N
     assert text.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
     body = re.search(r"CREATE TABLE IF NOT EXISTS heartbeat_seat_rollup_5m \((.*?)\);", text, re.S).group(1)
     cols = {ln.split()[0] for ln in body.strip().splitlines() if ln.strip()}
-    assert cols == set(HEARTBEAT_SEAT_ROLLUP_SQL_COLUMNS)
     statements = [s.strip() for s in re.sub(r"--[^\n]*", "", text).split(";") if s.strip()]
     assert all(s.upper().startswith(("CREATE TABLE IF NOT EXISTS", "CREATE INDEX IF NOT EXISTS")) for s in statements)
     assert "DO $$" not in text and "GRANT" not in text.upper()
+
+    # v2 (#3901) adds late_count, nullable, with ALTER TABLE ... ADD COLUMN IF NOT EXISTS only.
+    text2 = MIGRATION_V2.read_text()
+    assert text2.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
+    statements2 = [s.strip() for s in re.sub(r"--[^\n]*", "", text2).split(";") if s.strip()]
+    added = set()
+    for stmt in statements2:
+        m = re.fullmatch(r"ALTER TABLE heartbeat_seat_rollup_5m ADD COLUMN IF NOT EXISTS (\w+) integer", stmt)
+        assert m, stmt
+        added.add(m.group(1))
+    assert "DO $$" not in text2 and "GRANT" not in text2.upper() and "NOT NULL" not in text2.upper()
+    assert cols | added == set(HEARTBEAT_SEAT_ROLLUP_SQL_COLUMNS)
+    assert added == {"late_count"}
 
 
 def test_real_write_row_path_from_a_bus_json_payload(monkeypatch) -> None:
@@ -123,6 +136,31 @@ def test_real_write_row_path_from_a_bus_json_payload(monkeypatch) -> None:
         assert row.partial is True
         assert row.seat == "orion-bus" and row.site_index == 3
         assert row.routing_version == "95931cd5f497"
+        assert row.late_count is None  # not measured by this producer
         assert row.bucket_start.replace(tzinfo=timezone.utc) == START
+    finally:
+        sess.close()
+
+
+def test_late_count_round_trips_and_old_payload_without_it_still_validates(monkeypatch) -> None:
+    """Consumer-first: a payload from a heartbeat that predates late_count still validates (None),
+    and a measured late_count lands in its column."""
+    import app.worker as worker
+
+    old_wire = _rollup().model_dump(mode="json")
+    old_wire.pop("late_count")
+    assert HeartbeatSeatRollupV1.model_validate(old_wire).late_count is None
+
+    engine = create_engine("sqlite://")
+    HeartbeatSeatRollupSQL.__table__.create(bind=engine)
+    Session = sessionmaker(bind=engine)
+    monkeypatch.setattr(worker, "get_session", lambda: Session())
+    monkeypatch.setattr(worker, "remove_session", lambda: None, raising=False)
+    wire = _rollup(late_count=3).model_dump(mode="json")
+    worker._write_row(HeartbeatSeatRollupSQL, HeartbeatSeatRollupV1.model_validate(wire).model_dump())
+    sess = Session()
+    try:
+        [row] = sess.query(HeartbeatSeatRollupSQL).all()
+        assert row.late_count == 3
     finally:
         sess.close()

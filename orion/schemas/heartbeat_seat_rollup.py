@@ -16,7 +16,7 @@ Channel `orion:heartbeat:seat:rollup`, kind `heartbeat.seat.rollup.v1`.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -52,6 +52,10 @@ class HeartbeatSeatRollupV1(BaseModel):
     atom_count: int = Field(ge=0)
     # Atoms from this seat's services that the input rule skipped (clockwork, duplicate, floor, ...).
     skipped_count: int = Field(default=0, ge=0)
+    # Of atom_count: atoms that arrived after bucket_end, inside the heartbeat's flush grace
+    # (issue #3901). None from a heartbeat that did not measure it (rows before this field).
+    # Atoms later than the grace are not in the row; /health counts them (late_atoms_dropped).
+    late_count: Optional[int] = Field(default=None, ge=0)
     # True when the heartbeat was not listening for part of the bucket (process start, a
     # resubscribe after a bus drop, or a silence on orion:grammar:event longer than its gap
     # threshold). The sums are an undercount, not a quiet seat: readers treat the bucket as missing.
@@ -80,6 +84,7 @@ HEARTBEAT_SEAT_ROLLUP_SQL_COLUMNS: tuple[str, ...] = (
     "level_sum",
     "atom_count",
     "skipped_count",
+    "late_count",
     "partial",
     "routing_version",
 )

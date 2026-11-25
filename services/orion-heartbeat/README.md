@@ -165,8 +165,22 @@ heartbeat also keeps a running sum per seat per 5-minute bucket
   replay treats partial buckets as missing. A seat with no atoms in a
   complete bucket gets a real 0 row.
 - An atom stamped in an already-published bucket is dropped and counted
-  (`seat_rollup.late_atoms_dropped` and `late_by_bucket` on `/health`), as
-  are atoms stamped more than one bucket ahead and repeated event ids.
+  (`seat_rollup.late_atoms_dropped`, `late_by_bucket` and
+  `late_atoms_dropped_by_seat` on `/health`), as are atoms stamped more than
+  one bucket ahead.
+- A repeated event id is counted once, in the bucket of its first copy, also
+  when the copies fall in different buckets (#3900). The ledger keeps the
+  first copy too (`orion/grammar/ledger.py`, `on_conflict_do_nothing`).
+  orion-harness-governor sends `exec_result_assembled` twice: at motor close
+  and again at finalize, with the finalize time as `emitted_at`. Event ids
+  are kept for 1 h after their bucket closes. `/health` shows
+  `duplicate_atoms_ignored` and `duplicate_atoms_cross_bucket`.
+- Arrival lag (#3901): `/health` `seat_rollup.arrival_lag_by_seat` gives
+  p50/p95/max of receive time minus `emitted_at` per seat, over the last 4096
+  first copies (null when a seat has none). Each row's `late_count` is the
+  number of its atoms that arrived after `bucket_end`, inside the flush grace
+  (null on rows from before this field;
+  `manual_migration_heartbeat_seat_rollup_5m_v2_late_count.sql`).
 - Every row carries `routing_version`, a hash of the routing rules and level
   code (`routing.routing_version()`). The replay does not mix sums made under
   other rules with today's recompute.
@@ -174,7 +188,9 @@ heartbeat also keeps a running sum per seat per 5-minute bucket
   with no rollup rows; it labels each bucket's source in `results.json`.
 - Exact-match check: `evals/seat_rollup_match.py --mode replay` (any time)
   pushes a window of ledger atoms through the real service path and compares
-  every bucket x seat with the replay recompute using `==`.
+  every bucket x seat with the replay recompute using `==`. It also feeds the
+  harness finalize copy of `exec_result_assembled` the bus really carries
+  (`--no-bus-copies` turns that off).
   `--mode table` does the same against the stored rows after deploy.
 
 Telemetry, not experience: the channel is in `exempt_channels` in

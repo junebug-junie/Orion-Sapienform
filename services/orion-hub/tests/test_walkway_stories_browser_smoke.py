@@ -298,8 +298,12 @@ def test_walkway_story_one_person_at_a_time_browser_smoke():
         assert first.locator("[data-person-action='yes']").count() == 0          # nothing to say yes to
         assert first.locator("[data-person-action='cant_see']").text_content() == "Can't see them"
         _fits(page)
-        # "It's ..." opens the list: the names Orion knows, most seen first.
-        first.locator("[data-person-action='no']").click()
+        # An unnamed person shows the names at once (no hidden "It's ..."): Orion's known names,
+        # most seen first, and a box to type one.
+        assert first.locator("[data-person-action='no']").count() == 0
+        assert first.locator("[data-person-picker]").is_visible()
+        assert "Who is it? Pick a name, or type one:" in first.locator("[data-person-picker]").text_content()
+        assert first.locator("[data-person-name-input]").is_visible()
         assert [b.text_content() for b in first.locator("[data-person-pick]").all()] == ["Theo", "Alex", "Sasha"]
         _fits(page)
         # A name picked from the list: no request yet, "Named Theo" with Undo.
@@ -310,7 +314,6 @@ def test_walkway_story_one_person_at_a_time_browser_smoke():
         page.wait_for_function("() => !document.querySelector('[data-person-pending]')")
         assert posts == [] and "Undone" in page.locator("#walkwayStoriesStatus").text_content()
         first = items.nth(0)
-        first.locator("[data-person-action='no']").click()
         first.locator("[data-person-pick='Theo']").click()
         page.wait_for_selector("[data-person-pending='Theo']")
         # Next person sends it.
@@ -541,7 +544,6 @@ def test_walkway_story_linked_groups_are_one_person_asked_once_browser_smoke():
         # The one unnamed person next: "It's ..." and "I don't know who" (an "unsure" that says why).
         page.locator("[data-story-nav='next']").click()
         page.wait_for_function("() => document.querySelector('[data-person-question]').textContent === 'Who is this?'")
-        page.locator("[data-person-action='no']").click()
         page.locator("[data-person-action='dont_know']").click()
         page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes(\"don't know\")")
         assert posts[-1] == (f"/api/vision/motion-stories/{sid}/people/ind-anon",
@@ -590,9 +592,7 @@ def test_walkway_story_held_pick_is_never_lost_nor_doubled_browser_smoke():
     with sync_playwright() as p:
         browser, page = _page(p, html, handle)
         item = page.locator("#walkwayStoriesList [data-story-id]").nth(0)
-        assert item.locator("[data-person-action='no']").get_attribute("aria-expanded") == "false"
-        item.locator("[data-person-action='no']").click()
-        assert item.locator("[data-person-action='no']").get_attribute("aria-expanded") == "true"
+        assert item.locator("[data-person-picker]").is_visible()          # unnamed: the names show at once
         item.locator("[data-person-pick='Theo']").click()
         page.wait_for_selector("[data-person-pending='Theo']")
         # Next fails (503): the held pick comes back, the card stays on this person.
@@ -667,8 +667,11 @@ def test_walkway_story_sentence_graded_in_parts_browser_smoke():
         first = items.nth(0)
         assert [r.get_attribute("data-story-part") for r in first.locator("[data-story-part]").all()] == [
             "people", "direction"]
-        assert "Right people?" in first.text_content() and "Right place?" not in first.text_content()
-        assert [b.get_attribute("data-story-verdict") for b in first.locator("[data-story-verdict]").all()] == ["cant_tell"]
+        assert "Right number of people?" in first.text_content() and "Right place?" not in first.text_content()
+        # Parts only: no lone whole-story "Can't tell" under them (it read as an answer she never gave).
+        assert first.locator("[data-story-verdict]").count() == 0
+        assert first.locator("[data-story-parts-sentence]").text_content().startswith('Orion wrote: "A person walked')
+        assert "Right number of people?" in first.text_content()
         assert items.nth(1).locator("[data-story-part]").count() == 0
         assert items.nth(1).locator("[data-story-verdict]").count() == 5          # no record: the old buttons
         assert "from parts 1, from the old buttons 2" in page.locator("#walkwayStoriesTally").text_content()

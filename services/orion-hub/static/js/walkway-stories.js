@@ -505,8 +505,10 @@
       yes.addEventListener("click", () => send(answerSpec(p, "yes")));
       buttons.appendChild(yes);
     }
-    const no = btnEl(doc, p.label ? "No, it's ..." : "It's ...", "data-person-action", "no", !p.label);
-    buttons.appendChild(no);
+    // A named person: "No, it's someone else" opens the names. An unnamed person shows them at once
+    // (2026-11-25: a hidden "It's ..." read as no way to say who it is).
+    const no = p.label ? btnEl(doc, "No, it's someone else", "data-person-action", "no", false) : null;
+    if (no) buttons.appendChild(no);
     const cant = btnEl(doc, "Can't see them", "data-person-action", "cant_see", false);
     cant.setAttribute("title", "Too small, too dark or turned away. Orion won't ask about these pictures again.");
     cant.addEventListener("click", () => send(answerSpec(p, "cant_see")));
@@ -514,8 +516,10 @@
     box.appendChild(buttons);
 
     // "No, it's ...": the names Orion knows, someone not listed, I don't know who.
-    const picker = el(doc, "div", "hidden space-y-2 rounded border border-gray-700 p-2");
+    const picker = el(doc, "div", (no ? "hidden " : "") + "space-y-2 rounded border border-gray-700 p-2");
     picker.setAttribute("data-person-picker", "1");
+    picker.appendChild(el(doc, "div", "text-[11px] text-gray-300",
+      p.label ? `Who is it, if not ${p.label}?` : "Who is it? Pick a name, or type one:"));
     const known = el(doc, "div", "flex flex-wrap gap-2");
     nameChoices(p, ctx.names).forEach((name) => {
       const b = btnEl(doc, name, "data-person-pick", name, false);
@@ -546,14 +550,18 @@
     picker.appendChild(dunno);
     const pickerId = `walkway-picker-${String(story.story_id).slice(0, 12)}-${entry.letter}`;
     picker.setAttribute("id", pickerId);
-    no.setAttribute("aria-controls", pickerId);
-    no.setAttribute("aria-expanded", "false");
-    no.addEventListener("click", () => {
-      const open = picker.classList.contains("hidden");
-      picker.classList.toggle("hidden");
-      no.setAttribute("aria-expanded", open ? "true" : "false");
-    });
-    box.appendChild(picker);
+    if (no) {
+      no.setAttribute("aria-controls", pickerId);
+      no.setAttribute("aria-expanded", "false");
+      no.addEventListener("click", () => {
+        const open = picker.classList.contains("hidden");
+        picker.classList.toggle("hidden");
+        no.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+      box.insertBefore(picker, buttons.nextSibling);
+    } else {
+      box.insertBefore(picker, buttons);
+    }
     box.appendChild(whyInput);
     if (seenAs) box.appendChild(renderNotSame(doc, story, p, ctx.onNotSame));
     if (p.same_name_other && typeof ctx.onSameName === "function") box.appendChild(renderSameName(doc, story, p, pics, ctx));
@@ -824,8 +832,17 @@
     const row = el(doc, "div", "flex flex-wrap gap-2");
     // "Can't tell" on every story: an unclear daylight picture must not be forced into "wrong".
     // With the parts recorded, it is the only whole-story button; without, the old four stay.
-    const buttons = (parts && parts.length && ctx && typeof ctx.onPart === "function" ? [] : VERDICTS)
-      .concat([CANT_TELL]);
+    const graded = parts && parts.length && ctx && typeof ctx.onPart === "function";
+    if (graded) {
+      const line = resultLine(story, parts);
+      if (line) {
+        const r = el(doc, "div", "text-[11px] text-gray-300", line);
+        r.setAttribute("data-story-result", story.verdict || "");
+        item.appendChild(r);
+      }
+      return item;
+    }
+    const buttons = VERDICTS.concat([CANT_TELL]);
     buttons.forEach((v) => {
       const btn = el(doc, "button", "", v.label);
       btn.setAttribute("type", "button");
@@ -842,13 +859,22 @@
   function renderParts(doc, story, parts, ctx) {
     const box = el(doc, "div", "space-y-1 rounded border border-gray-700 p-2");
     box.setAttribute("data-story-parts", parts.join(","));
-    box.appendChild(el(doc, "div", "text-[11px] font-semibold text-gray-300", "Is the sentence right? One part at a time:"));
+    // Orion's own sentence is graded, not the one her answers renamed (2026-11-25).
+    const head = el(doc, "div", "text-[11px] font-semibold text-gray-300",
+      `Orion wrote: "${story.sentence}" Is that right? One part at a time:`);
+    head.setAttribute("data-story-parts-sentence", "1");
+    box.appendChild(head);
     const answers = (story.parts && story.parts.answers) || {};
+    const corrected = correctedName(story, ctx && ctx.pending);
     parts.forEach((part) => {
       const row = el(doc, "div", "flex flex-wrap items-center gap-2");
       row.setAttribute("data-story-part", part);
-      row.appendChild(el(doc, "span", "min-w-[7.5rem] text-xs text-gray-200", PART_QUESTIONS[part]));
-      const said = answers[part] || null;
+      row.appendChild(el(doc, "span", "min-w-[7.5rem] text-xs text-gray-200", partQuestion(story, part)));
+      let said = answers[part] || null;
+      if (part === "people" && corrected && (!said || said.source === "name_correction")) {
+        // Her "it isn't X" already says no; the server writes it when the answer is sent.
+        said = { verdict: "no", source: "name_correction" };
+      }
       PART_ANSWERS.forEach((a) => {
         const btn = el(doc, "button", "", a.label);
         btn.setAttribute("type", "button");
@@ -858,13 +884,55 @@
         row.appendChild(btn);
       });
       if (said && said.source === "name_correction") {
-        const note = el(doc, "span", "text-[10px] text-amber-300", "(from your name correction)");
+        const note = el(doc, "span", "text-[10px] text-amber-300",
+          corrected ? `(you said it isn't ${corrected})` : "(from your name correction)");
         note.setAttribute("data-part-auto", "1");
         row.appendChild(note);
       }
       box.appendChild(row);
     });
     return box;
+  }
+
+  // "Right people?" says what Orion claimed: a name, or only how many.
+  function partQuestion(story, part) {
+    if (part === "people") {
+      return story && story.name_label ? `Right person? (Orion said ${story.name_label})` : "Right number of people?";
+    }
+    return PART_QUESTIONS[part];
+  }
+
+  // The name Orion's sentence used, when her answer (sent or held) on the walker says it is someone
+  // else: the same rule the server uses for the automatic "people = no" (wrong_name_correction).
+  function correctedName(story, pending) {
+    const told = story && story.name_label ? String(story.name_label).trim() : "";
+    if (!told) return null;
+    const key = told.toLowerCase();
+    const corrects = (role, act, label) => {
+      if (!act || role === "companion") return false;
+      if (act.action === "someone_else") return true;
+      const typed = String(act.name || "").trim().toLowerCase();
+      return act.action === "name" && !!typed && typed !== key && typed !== String(label || "").trim().toLowerCase();
+    };
+    const held = pending && pending.story_id === story.story_id ? pending : null;
+    const people = Array.isArray(story.persons) && story.persons.length ? story.persons : (story.people || []);
+    for (const p of people) {
+      const act = held && held.person_key === (p.person_key || p.individual_id) ? held.spec : p.story_action;
+      if (corrects(p.role, act, p.label)) return told;
+    }
+    return null;
+  }
+
+  // What the graded parts add up to, in words.
+  function resultLine(story, parts) {
+    const answers = (story.parts && story.parts.answers) || {};
+    const left = parts.filter((p) => !answers[p]);
+    if (left.length) return null;
+    if (!story.verdict) return null;
+    const unsure = parts.filter((p) => answers[p] && answers[p].verdict === "cant_tell");
+    const why = story.verdict === "cant_tell" && unsure.length
+      ? ` (you said can't tell for: ${unsure.map((p) => partQuestion(story, p)).join(", ")})` : "";
+    return `This story counts as ${VERDICT_WORDS[story.verdict] || story.verdict}${why}.`;
   }
 
   function setPressed(btn, on) {
@@ -1226,7 +1294,7 @@
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
                 personTitle, actionLine, whyLine, handoffText, renderStory, mount,
                 storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices,
-                questionText, nameChoices, answerSpec, pendingText, cursorIndex, sourceText, storyParts, linkState };
+                questionText, nameChoices, answerSpec, partQuestion, correctedName, resultLine, pendingText, cursorIndex, sourceText, storyParts, linkState };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

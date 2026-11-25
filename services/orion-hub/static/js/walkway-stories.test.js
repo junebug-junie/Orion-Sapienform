@@ -185,3 +185,38 @@ test('a link this card made says where it stands', () => {
   assert.equal(ws.linkState({ undo_refused: 'still joined' }), 'Undo refused: still joined');
   assert.equal(ws.linkState({ undone_at: 't', undo_refused: 'x' }), 'Link undone.');
 });
+
+// 2026-11-25 card fixes: what "Right people?" asks, the automatic no after a name correction,
+// and the result line under graded parts.
+test('people part says what Orion claimed', () => {
+  assert.equal(ws.partQuestion({ name_label: 'Addy' }, 'people'), 'Right person? (Orion said Addy)');
+  assert.equal(ws.partQuestion({ name_label: null }, 'people'), 'Right number of people?');
+  assert.equal(ws.partQuestion({}, 'direction'), 'Right direction?');
+});
+
+test('a name correction on the walker pre-marks people as no; sent or held', () => {
+  const story = { story_id: 's1', name_label: 'Addy',
+    persons: [{ person_key: 'k1', role: 'walker', label: 'Addy', story_action: null }] };
+  assert.equal(ws.correctedName(story, null), null);
+  const held = { story_id: 's1', person_key: 'k1', spec: { action: 'someone_else', name: 'Juniper' } };
+  assert.equal(ws.correctedName(story, held), 'Addy');
+  const sent = Object.assign({}, story, { persons: [Object.assign({}, story.persons[0],
+    { story_action: { action: 'name', name: 'Juniper' } })] });
+  assert.equal(ws.correctedName(sent, null), 'Addy');
+  // A yes, a companion, or a sentence that named nobody is not a correction.
+  const yes = Object.assign({}, story, { persons: [Object.assign({}, story.persons[0],
+    { story_action: { action: 'confirm', name: 'Addy' } })] });
+  assert.equal(ws.correctedName(yes, null), null);
+  const comp = Object.assign({}, story, { persons: [Object.assign({}, story.persons[0],
+    { role: 'companion', story_action: { action: 'someone_else', name: 'X' } })] });
+  assert.equal(ws.correctedName(comp, null), null);
+  assert.equal(ws.correctedName(Object.assign({}, sent, { name_label: null }), null), null);
+});
+
+test('result line says why a story is can\'t tell', () => {
+  const story = { verdict: 'cant_tell', name_label: null, parts: { answers: {
+    people: { verdict: 'cant_tell' }, direction: { verdict: 'yes' }, place: { verdict: 'yes' } } } };
+  assert.equal(ws.resultLine(story, ['people', 'direction', 'place']),
+    "This story counts as can't tell (you said can't tell for: Right number of people?).");
+  assert.equal(ws.resultLine({ verdict: null, parts: { answers: {} } }, ['people']), null);
+});

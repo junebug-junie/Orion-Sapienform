@@ -191,6 +191,18 @@ stub day cannot swing a day mean. Coefficients at 2026-11-25 06:00Z: hub < 15 mi
 +1.29, hub 15-60 min +0.68, hub_unknown -0.34. Juniper's direction holds; the data put the 15-60 min
 rule a bit above her +0.5.
 
+## Caveats raised by Orion on #3927 (2026-11-25)
+
+Checked against live data on 2026-11-25:
+
+- **Hub downtime does not explain the lift.** orion-hub restarted 5 times in the 14 sensor days, 93 s in total. Of 108 messages since 11-11, 107 had an attended Hub minute in the 60 min before them: she messages through the Hub.
+- **Composing spill.** In warm hours with Hub attention, 8 of 29 message hours have their first message in the first 5 min of the hour. Typing that starts before the hour can count as "looking". Cold hours with Hub attention: 0 of 3, so the cold lift is not spill, but n = 3. Tracked in #3945.
+- **The "last 7 days" split was post hoc.** It was chosen after the 14-day means were seen. The live test of the Hub inputs, with its bar stated in advance, is #3945.
+- **hub_unknown is an era marker.** It is 1 for every pre-11-11 hour and 0 for every live origin, so it acts as an era intercept: it absorbs the base-rate gap between the summer and November. The other coefficients are still pooled across both eras; the 60-day half-life limits how much the summer counts.
+- **The sensor measures "the Hub is in focus and touched in the last 2 min".** It does not measure reading. A Hub on a second monitor, or reading without input, reads as "not looking".
+- **The table holds one row per (minute, client).** The primary key is (minute, client). On 11-25: 1,489 rows = 1,489 distinct minutes (desktop 1,483, mobile 6, no minute on both); 5 rows had 2 beats (two tabs). The service reads DISTINCT minute.
+- **Outreach feedback loop.** A reply to Orion's outreach is a positive label. Before outreach timing consumes this forecast, the loop must be broken: #3944.
+
 ## Files
 
 - `services/orion-prediction/app/reachable.py` (models, verdict, `Reachable` loop)
@@ -209,5 +221,5 @@ No consumer, no bus event, no outreach change, no household-arrival or turn-lane
 ## Acceptance checks
 
 - Live: one row per hour in `prediction_reachable_forecast`, settled ~70 min after its origin.
-- `GET :8132/reachable` returns the current p and verdict.
+- `GET :8132/reachable` returns the current p and the grade (gap, SE, prob_better; no pass/fail bar).
 - Re-read the grade at 20 live days (~2026-12-01): cold `prob_better`, calibration.

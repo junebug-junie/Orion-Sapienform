@@ -9,7 +9,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
-from orion.curiosity.self_question_pool import UPSERT_SEED_SQL
+from orion.curiosity.self_question_pool import INSERT_HELD_SQL
 from orion.self_monitor.view import SELF_MONITOR_REDIS_KEY
 from scripts.self_monitor_questions import SEEN_KEY, SelfMonitorQuestionMinter
 
@@ -78,9 +78,11 @@ def test_broken_faculty_mints_once_as_orion():
     out = asyncio.run(_minter(redis, pool).tick())
     assert out["minted"] == 1
     sql, args = pool.rows[0]
-    assert sql == UPSERT_SEED_SQL and "DO NOTHING" in sql
-    qid, text, family, pinned, minted_by = args
-    assert minted_by == "orion" and family == "lived" and pinned is False
+    assert sql == INSERT_HELD_SQL and "DO NOTHING" in sql
+    # Through the door: written as Orion's, held until the judge admits or routes it.
+    assert "'orion'" in sql and "'held'" in sql and "false" in sql
+    qid, text, family = args
+    assert family == "lived"
     assert text == (f"My walkway-grade journal runs ({WALKWAY}) didn't run 22 of their last 28 tries in the "
                     "last 7 days. Why?")
     assert qid == f"lived.self_monitor.{WALKWAY}.broken.20261102T1200Z"  # identity unchanged by the names

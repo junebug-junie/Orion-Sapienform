@@ -57,3 +57,31 @@ def test_zip_with_only_lookalikes_raises(tmp_path):
     _write_zip(export, {"sectioned_conversations.json": [], "shared_conversations.json": []})
     with pytest.raises(FileNotFoundError):
         resolve_export_path(export)
+
+
+def test_shards_sort_by_number_not_text(tmp_path):
+    for i in (9, 10):
+        (tmp_path / f"conversations-{i}.json").write_text(json.dumps([_conv(str(i))]))
+    ids = [c["id"] for c in load_conversations(resolve_export_path(tmp_path))]
+    assert ids == ["9", "10"]
+
+
+def test_single_file_wins_over_shards(tmp_path):
+    (tmp_path / "conversations.json").write_text(json.dumps([_conv("single")]))
+    (tmp_path / "conversations-000.json").write_text(json.dumps([_conv("shard")]))
+    ids = [c["id"] for c in load_conversations(resolve_export_path(tmp_path))]
+    assert ids == ["single"]
+
+
+def test_zip_in_top_folder_uses_one_shard_set(tmp_path):
+    export = tmp_path / "export.zip"
+    _write_zip(
+        export,
+        {
+            "export/conversations-000.json": [_conv("a")],
+            "export/conversations-001.json": [_conv("b")],
+            "export/old/conversations-000.json": [_conv("stale")],
+        },
+    )
+    ids = [c["id"] for c in load_conversations(resolve_export_path(export))]
+    assert ids == ["a", "b"]

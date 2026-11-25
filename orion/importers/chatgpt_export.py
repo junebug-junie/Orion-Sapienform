@@ -132,7 +132,7 @@ def _service_ref(node_name: Optional[str] = None) -> ServiceRef:
     return ServiceRef(name=CHATGPT_IMPORTER_NAME, version=CHATGPT_IMPORTER_VERSION, node=node)
 
 
-_SHARD_RE = re.compile(r"^conversations-\d+\.json$")
+_SHARD_RE = re.compile(r"^conversations-(\d+)\.json$")
 
 
 def _conversation_members(names: Iterable[str]) -> List[str]:
@@ -147,7 +147,13 @@ def _conversation_members(names: Iterable[str]) -> List[str]:
     single = [n for n in names if Path(n).name == "conversations.json"]
     if single:
         return [sorted(single, key=len)[0]]
-    return sorted(n for n in names if _SHARD_RE.match(Path(n).name))
+    shards = [n for n in names if _SHARD_RE.match(Path(n).name)]
+    if not shards:
+        return []
+    # One shard set only: the shallowest folder that holds shards.
+    top = min((str(Path(n).parent) for n in shards), key=lambda d: (d.count("/"), d))
+    shards = [n for n in shards if str(Path(n).parent) == top]
+    return sorted(shards, key=lambda n: int(_SHARD_RE.match(Path(n).name).group(1)))
 
 
 def _merge_shards(shards: List[Path], out_dir: Path) -> Path:
@@ -163,7 +169,7 @@ def _merge_shards(shards: List[Path], out_dir: Path) -> Path:
 
 
 def resolve_export_path(export_path: str | Path) -> Path:
-    """Return a single ``conversations.json`` for a zip, dir, or file export.
+    """Return a single ``conversations.json`` for a zip, a dir, or a ``conversations.json`` file.
 
     Sharded exports are merged (in shard order) into a temp ``conversations.json``.
     """

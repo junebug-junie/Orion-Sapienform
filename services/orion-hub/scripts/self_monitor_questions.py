@@ -7,8 +7,11 @@ Hub restart remembers), and inserts one ``curiosity_self_questions`` row per new
 (``minted_by='orion'``). The pure decision is ``orion.self_monitor.questions.self_questions_for``.
 
 * Unknown, stale or absent state: nothing is minted and the memory is not touched.
-* The insert ignores conflicts (``UPSERT_SEED_SQL``: ON CONFLICT DO NOTHING) on a question id that
+* The insert ignores conflicts (``INSERT_HELD_SQL``: ON CONFLICT DO NOTHING) on a question id that
   is deterministic per episode, so a lost memory never asks twice or re-opens an answered question.
+* The row is written ``door = 'held'``: the self-question door (scripts/self_question_door.py) judges it
+  before any sitting may take it. Most of these "Why?" questions read as operational and are routed to the
+  investigate line instead (docs/superpowers/specs/2026-11-25-orion-self-reflection-drift-design.md).
 * A faculty whose insert failed is not remembered, so the next tick retries it.
 
 Never writes a node prediction_error and never touches endogenous curiosity's concept_graph zone.
@@ -22,7 +25,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from orion.curiosity.self_question_pool import UPSERT_SEED_SQL
+from orion.curiosity.self_question_pool import INSERT_HELD_SQL
 from orion.self_monitor.questions import self_questions_for
 from orion.self_monitor.view import SELF_MONITOR_REDIS_KEY, self_monitor_view
 
@@ -106,8 +109,7 @@ class SelfMonitorQuestionMinter:
             async with pool.acquire() as conn:
                 for mint in mints:
                     try:
-                        status = await conn.execute(UPSERT_SEED_SQL, mint.question_id, mint.text, mint.family,
-                                                    False, "orion")
+                        status = await conn.execute(INSERT_HELD_SQL, mint.question_id, mint.text, mint.family)
                     except Exception as exc:  # noqa: BLE001 -- retried next tick
                         failed.add(mint.faculty)
                         logger.warning("self_monitor_question_insert_failed faculty=%s err=%s", mint.faculty, exc)

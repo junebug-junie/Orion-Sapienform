@@ -128,6 +128,7 @@ from .curiosity_finding_register import (
     per_prior_list,
     score_and_record,
 )
+from .self_question_door import demote_after_finding
 from .curiosity_offer_decisions import (
     load_prior_test_history,
     load_turn_snapshot,
@@ -239,6 +240,7 @@ from orion.curiosity.self_question_pool import (
     UPSERT_SEED_SQL,
     load_seed_questions,
     merge_seed_with_rows,
+    passes_door,
     pick_question,
 )
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
@@ -1024,6 +1026,9 @@ class CuriosityInvestigation:
         # Curiosity event wants step 2: label + novelty row per finished turn (curiosity_finding_register).
         finding_register_enabled: bool = True,
         finding_register_embed_url: str = "",
+        # The self-question door (scripts/self_question_door.py): Orion-written questions are picked
+        # only once admitted, and an operational finding demotes the question its sitting answered.
+        self_question_door_enabled: bool = True,
         llm_intake_channel: str = "orion:exec:request:LLMGatewayService",
         llm_gateway_service: str = "LLMGatewayService",
         value_order_enabled: bool = False,
@@ -1259,6 +1264,7 @@ class CuriosityInvestigation:
         self.self_inquiry_outcomes_enabled = bool(self_inquiry_outcomes_enabled)
         self.finding_register_enabled = bool(finding_register_enabled)
         self.finding_register_embed_url = str(finding_register_embed_url or "").strip()
+        self.self_question_door_enabled = bool(self_question_door_enabled)
         self.llm_intake_channel = str(llm_intake_channel)
         self.llm_gateway_service = str(llm_gateway_service)
         self._register_tasks: set[asyncio.Task] = set()
@@ -1649,7 +1655,7 @@ class CuriosityInvestigation:
             )
             route = self.llm_route or "agent"
             async with httpx.AsyncClient() as client:
-                await score_and_record(
+                written = await score_and_record(
                     pool=pool, run_id=run_id, line=line, question=question, question_ref=question_ref, answer=answer,
                     items=items, started_at=started_at, route=route,
                     embed=http_embedder(client, self.finding_register_embed_url),
@@ -1657,6 +1663,10 @@ class CuriosityInvestigation:
                         self._bus, intake_channel=self.llm_intake_channel, gateway_service=self.llm_gateway_service,
                         source_ref=self._source_ref, route=route, question=question, answer=answer),
                 )
+            if written is not None:
+                # The check after the sitting: an operational finding demotes the admitted Orion
+                # question it answered (never a Juniper question; never on a judge error).
+                await demote_after_finding(pool, written, enabled=self.self_question_door_enabled)
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_register_failed run=%s", run_id, exc_info=True)
 
@@ -3543,7 +3553,10 @@ class CuriosityInvestigation:
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_open_lived_questions_pool_failed err=%s", exc)
             return []
-        open_lived = [q for q in pool if q.family == "lived" and q.status == "open"]
+        # A question the door has not admitted is not offered either: offering it would let a sitting
+        # answer it as self-inquiry, which the door exists to prevent.
+        open_lived = [q for q in pool if q.family == "lived" and q.status == "open"
+                      and passes_door(q, door_enabled=self.self_question_door_enabled)]
         # Orion mints question ids; one that cannot be spliced into the shown
         # MERGE is dropped here, loudly, rather than shown with no answer.
         dropped = [q.question_id for q in open_lived if valid_question_id(q.question_id) is None]
@@ -3890,6 +3903,7 @@ class CuriosityInvestigation:
             lived_weight=self.self_lived_weight,
             pinned_floor_days=self.self_pinned_floor_days,
             now=now,
+            door_enabled=self.self_question_door_enabled,
         )
         await self._record_self_question_ask(picked, now=now)
         await self._push_recent_self_family(picked.family)

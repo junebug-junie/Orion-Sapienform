@@ -562,6 +562,16 @@ def is_prime_focus(focus: FocusRow) -> bool:
     return str(focus.chat_correlation_id or "").startswith(PRIME_CORRELATION_PREFIX)
 
 
+# The self-question door (services/orion-hub/scripts/self_question_door.py) stores
+# "self_question_door:<question_id>" when it routes a question Orion wrote for its own self-inquiry,
+# which the judge read as about how a part of Orion works, to this line instead.
+DOOR_CORRELATION_PREFIX = "self_question_door:"
+
+
+def is_door_focus(focus: FocusRow) -> bool:
+    return str(focus.chat_correlation_id or "").startswith(DOOR_CORRELATION_PREFIX)
+
+
 def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
     if focus is None:
         return []
@@ -570,6 +580,9 @@ def format_focus_section(focus: Optional[FocusRow]) -> list[str]:
     elif is_prime_focus(focus):
         who = ("Between conversations, in your own slow thinking (Prime), you chose this as what your "
                "next curiosity run should look at")
+    elif is_door_focus(focus):
+        who = ("You wrote this question for your own self-inquiry. It reads as a question about how a part "
+               "of you works, so it was sent to this line to be dug into, instead of being sat with")
     else:
         who = "In a conversation with Juniper you chose this as what your next curiosity run should look at"
     return [
@@ -611,7 +624,9 @@ def focus_story(focus: FocusRow) -> str:
         return value.strftime("%Y-%m-%d %H:%M UTC") if value is not None else "?"
 
     who = ("Juniper asked" if focus.origin == ORIGIN_JUNIPER
-           else "you chose it between conversations" if is_prime_focus(focus) else "you chose it")
+           else "you chose it between conversations" if is_prime_focus(focus)
+           else "you wrote it for self-inquiry; the door sent it here" if is_door_focus(focus)
+           else "you chose it")
     parts = [f"queued {at(focus.created_at)} ({who})"]
     status = focus.status
     if status == PENDING:

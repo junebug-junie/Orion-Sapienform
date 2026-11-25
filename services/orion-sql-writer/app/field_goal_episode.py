@@ -51,10 +51,17 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
-def fold_goal(sess: Any, goal: Any, *, envelope_id: str | None, now: datetime | None = None) -> str:
+def fold_goal(sess: Any, goal: Any, *, envelope_id: str | None, now: datetime | None = None,
+              replay: bool = False) -> str:
     """Apply one validated FieldGoalProvenanceV1. Caller commits.
 
     Returns "duplicate", "folded", or "opened".
+
+    ``replay=True`` is for re-applying old goals after newer ones were already folded
+    (``scripts/replay_field_goals_from_bus_fallback.py``): "the most recent episode" is then
+    the most recent one opened at or before the goal's own ts, so a replayed run folds into
+    itself instead of opening one episode per goal next to today's newest row. Replay goals
+    in ts order. The live path keeps ``replay=False``.
     """
     now = now or _utcnow()
     if sess.get_bind().dialect.name == "postgresql":
@@ -66,8 +73,11 @@ def fold_goal(sess: Any, goal: Any, *, envelope_id: str | None, now: datetime | 
         return "duplicate"
 
     ts = _aware(goal.ts)
+    query = sess.query(FieldGoalEpisodeSQL)
+    if replay:
+        query = query.filter(FieldGoalEpisodeSQL.first_ts <= ts)
     latest = (
-        sess.query(FieldGoalEpisodeSQL)
+        query
         .order_by(FieldGoalEpisodeSQL.first_ts.desc(), FieldGoalEpisodeSQL.received_at_first.desc())
         .first()
     )

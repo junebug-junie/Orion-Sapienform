@@ -215,10 +215,11 @@ def test_cites_carry_a_stable_id_for_dedupe_and_the_cursor_never_moves_back(monk
     ("critical", "red"), ("broken", "red"), ("degraded", "amber"), ("claim_upheld=false", "amber"),
     ("refused", "amber"), ("no_read_evidence:http_error", "amber"),
     ("no producer close within horizon + 120s grace", "amber"), ("no_read_evidence", "amber"),
-    ("late:717s stage1_completed", "amber"),
+    ("late:717s stage1_completed", "amber"), ("not_produced", "amber"),
     ("confirmed", None), ("disconfirmed", None), ("unscored", None), ("no_lasting_trace", None),
     # a guard that did not fire, a gate doing its job, a choice not to act: never trouble
     ("not_crossed", None), ("claim_upheld=true", None), ("granted", None), ("decayed_unattended", None), (None, None),
+    ("produced", None), ("chose", None), ("declined_all", None),
 ])
 def test_severity_comes_only_from_the_rows_own_verdict(verdict, severity):
     assert isv.severity_of(verdict) == severity

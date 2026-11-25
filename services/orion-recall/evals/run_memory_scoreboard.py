@@ -182,8 +182,7 @@ def build_local_lived(pool: Any, bus: Any, args: argparse.Namespace) -> Any:
         rewriter = BusRewriter(bus, channel=os.getenv("CHANNEL_LLM_INTAKE", "orion:exec:request:LLMGatewayService"),
                                route=os.getenv("RECALL_LIVED_MEMORY_REWRITE_ROUTE", "quick_turn"),
                                timeout_sec=rewrite_timeout,
-                               source=ServiceRef(name="orion-recall", version="scoreboard-local", node="eval"),
-                               tz=os.getenv("RECALL_LIVED_MEMORY_TIMEZONE", "America/Denver"))
+                               source=ServiceRef(name="orion-recall", version="scoreboard-local", node="eval"))
     cfg = LivedMemoryConfig(
         search=SearchConfig(chroma_url=args.lived_chroma_url, embed_url=args.lived_embed_url,
                             collection=os.getenv("RECALL_LIVED_MEMORY_COLLECTION", COLLECTION), min_similarity=0.0),
@@ -337,7 +336,7 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
             # Rewrite outcomes per run (ok/none/timeout/...): the run-to-run noise source (#3674).
             "rewrite": dict(sorted(rewrites.items())),
             # Per item: rewrite outcome, the time window read, pool size. Ids and dates only.
-            "traces": {q: {k: v for k, v in t.items() if k in ("rewrite", "window", "rewrite_window", "gate")}
+            "traces": {q: {k: v for k, v in t.items() if k in ("rewrite", "window", "gate")}
                        | {"candidates": len(t.get("candidate_ids") or [])} for q, t in sorted(local_traces.items())},
             "total_ms": pcts([m for vals in local_ms.values() for m in vals]),
             "total_ms_by_gate": {g: pcts(v) for g, v in sorted(local_ms.items())},

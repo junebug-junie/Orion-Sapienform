@@ -89,8 +89,8 @@ from orion.memory.lived_memory import (
 
 from .lived_entities import EntityIndex, load_entities
 from .lived_links import SEED_DOCS, ReferentGraph, load_graph
-from .lived_rewrite import RewriteResult, Rewriter, as_result, fetch_context
-from .lived_time import DEFAULT_TZ, WINDOW_PAD, TimeWindow, ends_before_today, local_zone, parse_time_window
+from .lived_rewrite import Rewriter, fetch_context
+from .lived_time import DEFAULT_TZ, WINDOW_PAD, TimeWindow, local_zone, parse_time_window
 
 logger = logging.getLogger("orion-recall.lived_memory")
 
@@ -524,14 +524,13 @@ class LivedMemoryRecall:
         return await nearest(client, self.cfg.search, vec, k if not replay else k * 4, where=where)
 
     async def _rewrite(self, query: str, *, session_id: str | None, exclude_ids: Sequence[str],
-                       as_of: datetime | None, now: datetime | None = None, short: bool = False) -> RewriteResult:
+                       as_of: datetime | None, short: bool = False) -> List[str]:
         context = await fetch_context(self.pool, session_id, before=as_of or self._clock(), exclude_text=query,
                                       exclude_ids=exclude_ids)
         assert self._rewriter is not None
-        kw: Dict[str, Any] = {"short": True} if short else {}
-        if getattr(self._rewriter, "wants_now", False):
-            kw["now"] = now
-        return as_result(await self._rewriter(query, context, **kw))
+        if short:
+            return list(await self._rewriter(query, context, short=True))
+        return list(await self._rewriter(query, context))
 
     def entity_mentions(self, text: str) -> set[str]:
         """Known entities named in ``text`` (empty when the entity index is not loaded)."""
@@ -615,8 +614,9 @@ class LivedMemoryRecall:
                 out.debug["gate"] = gate
             short_rewrite = gate == GATE_SHORT_REWRITE
             ref_now = now or as_of or self._clock()
-            # Issue #3674: time words become a window, read by the parser so it never waits on the
-            # model. The rewrite's WHEN line is used only when the parser found nothing.
+            # Issue #3674: time words become a window, read by a deterministic parser, so the window
+            # never waits on (or times out with) the model. Asking the fast-lane rewrite for a time
+            # line was measured and dropped: it stopped searching or ignored the line (PR report).
             window: TimeWindow | None = (parse_time_window(query, ref_now, self.cfg.timezone)
                                          if self.cfg.time_window else None)
             # The rewrite starts first: it does not need the snapshot, and it is the slow part.
@@ -626,17 +626,15 @@ class LivedMemoryRecall:
                 pass  # rewrite_info stays "off"
             elif short_rewrite:
                 rewrite_task = asyncio.ensure_future(
-                    self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of, now=ref_now,
-                                  short=True))
+                    self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of, short=True))
                 pending.append(rewrite_task)
             elif self._rewriter is not None and not long_message:
                 rewrite_task = asyncio.ensure_future(
-                    self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of, now=ref_now))
+                    self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of))
                 pending.append(rewrite_task)
             elif self._rewriter is not None:
                 rewrite_info["outcome"] = "skipped_long_message"
             rewrite_result: List[List[str]] = []
-            model_said: List[RewriteResult] = []
 
             async def rewrites() -> List[str]:
                 if rewrite_result:
@@ -646,9 +644,7 @@ class LivedMemoryRecall:
                     budget = min(float(self.cfg.rewrite_timeout_sec),
                                  deadline - time.perf_counter() - RERANK_RESERVE_SEC)
                     try:
-                        res = as_result(await asyncio.wait_for(asyncio.shield(rewrite_task), timeout=max(0.001, budget)))
-                        qs = list(res.queries)
-                        model_said.append(res)
+                        qs = list(await asyncio.wait_for(asyncio.shield(rewrite_task), timeout=max(0.001, budget)))
                         rewrite_info["outcome"] = "ok" if qs else "none"
                     except asyncio.TimeoutError:
                         rewrite_task.cancel()
@@ -685,22 +681,11 @@ class LivedMemoryRecall:
             raw_dense = asyncio.ensure_future(self._dense_vec(client, raw_vec, DENSE_TOP_K, replay=replay))
             pending.append(raw_dense)
             window_dense: asyncio.Future | None = None
-            if window is not None:  # the parser's window: search it alongside the plain search
+            if window is not None:  # search the window alongside the plain search
                 window_dense = asyncio.ensure_future(self._dense_vec(client, raw_vec, WINDOW_DENSE_TOP_K,
                                                                      replay=replay, where=window_where(window)))
                 pending.append(window_dense)
             queries = await rewrites()
-            said = model_said[0] if model_said else None
-            if said is not None and said.window is not None:
-                rewrite_info["window"] = said.window.trace(self.cfg.timezone)
-            if window is None and said is not None and said.window is not None and self.cfg.time_window:
-                window = said.window
-                window_dense = asyncio.ensure_future(self._dense_vec(client, raw_vec, WINDOW_DENSE_TOP_K,
-                                                                     replay=replay, where=window_where(window)))
-                pending.append(window_dense)
-            elif (window is not None and said is not None and said.past_state and not window.past_state
-                  and ends_before_today(window, ref_now, self.cfg.timezone)):
-                window = window.with_past_state(True)  # the parser's window, the model's tense
             as_of_task: asyncio.Future | None = None
             if window is not None and window.past_state:  # runs alongside the meaning searches
                 as_of_task = asyncio.ensure_future(self._as_of_read(window))
@@ -1221,10 +1206,8 @@ def trace_of(debug: Dict[str, Any] | None) -> Dict[str, Any]:
         out["rerank_partial"] = dict(d["rerank_partial"])
     if d.get("window"):  # #3674: the time window recall read (local dates and shape, no message words)
         out["window"] = {k: v for k, v in dict(d["window"]).items()
-                         if k in ("start", "end", "kind", "source", "past_state", "in_window", "as_of_rows",
+                         if k in ("start", "end", "kind", "past_state", "in_window", "as_of_rows",
                                   "out_of_window_kept", "empty", "dense_error", "as_of_error")}
-    if rewrite.get("window"):  # the rewrite's own WHEN line, used only when the parser found none
-        out["rewrite_window"] = dict(rewrite["window"])
     for key in ("degraded", "skipped", "outer", "error", "know_recheck_error"):
         if d.get(key):
             out[key] = d[key] if key == "degraded" else str(d[key])[:200]

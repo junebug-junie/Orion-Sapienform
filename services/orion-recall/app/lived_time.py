@@ -32,7 +32,12 @@ more than one, the phrase that comes first wins:
 **Past state.** ``past_state`` is True when the window ends before today and the message asks
 in the past tense with a state verb ("Where *was* I in early October?"). Recall then also reads
 the as-of rows (``orion.memory.lived_memory.EPISODE_VALID_DURING_SQL``): facts true in the
-window that an update has since retired. The query rewrite may also say so (``PAST: yes``).
+window that an update has since retired.
+
+**Why no model.** Asking the fast-lane query rewrite for a ``WHEN:`` line was measured on the 57
+scoreboard questions (2026-11-25): every wording tried either stopped it writing searches (0-3
+of 57, against 11 with the plain prompt) or was ignored (0 time lines). The window comes from
+this grammar alone, so it never waits on, or times out with, the model.
 
 Pure: the same text and ``now`` always give the same window. No model, no I/O.
 """
@@ -49,13 +54,7 @@ DEFAULT_TZ = "America/Denver"
 # Memories are distilled after the conversation, and a "date" in a question is the day in the
 # user's head: a record on the day before or after still counts as in the window.
 WINDOW_PAD = timedelta(days=1)
-# A model-written window wider than this, or older than MAX_AGE, is not a time the message
-# named: it is dropped (the parser's own windows are never this wide except "last year").
-MODEL_MAX_SPAN = timedelta(days=400)
-MAX_AGE = timedelta(days=3 * 366)
 
-SOURCE_PARSER = "parser"
-SOURCE_MODEL = "model"
 
 _MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6, "july": 7,
@@ -123,12 +122,11 @@ _SINCE_BEFORE = re.compile(r"\bsince\s+(?:the\s+)?$", re.I)
 
 @dataclass(frozen=True)
 class TimeWindow:
-    """``[start, end)`` in UTC. ``kind`` names the grammar shape that matched (or ``model``)."""
+    """``[start, end)`` in UTC. ``kind`` names the grammar shape that matched."""
 
     start: datetime
     end: datetime
     kind: str
-    source: str = SOURCE_PARSER
     past_state: bool = False
 
     def contains(self, at: datetime | None, *, pad: timedelta = WINDOW_PAD) -> bool:
@@ -145,7 +143,7 @@ class TimeWindow:
         z = local_zone(tz)
         last = (self.end - timedelta(microseconds=1)).astimezone(z).date()
         return {"start": self.start.astimezone(z).date().isoformat(), "end": last.isoformat(),
-                "kind": self.kind, "source": self.source, "past_state": self.past_state}
+                "kind": self.kind, "past_state": self.past_state}
 
 
 def local_zone(tz: str) -> ZoneInfo:
@@ -444,21 +442,4 @@ def ends_before_today(window: TimeWindow, now: datetime, tz: str = DEFAULT_TZ) -
     return window.end <= _midnight(now.astimezone(z).date(), z).astimezone(timezone.utc)
 
 
-def window_from_dates(start: date, end_inclusive: date, now: datetime, tz: str = DEFAULT_TZ,
-                      *, past_state: bool = False) -> Optional[TimeWindow]:
-    """A model-written window (``WHEN: <first day> to <last day>``), or None when it is not a
-    plausible time the message named: reversed, in the future, too old or too wide."""
-    z = local_zone(tz)
-    now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    if end_inclusive < start:
-        return None
-    w = _days(start, end_inclusive, z, "model")
-    if w.start > now + timedelta(days=1) or w.end < now - MAX_AGE or w.end - w.start > MODEL_MAX_SPAN:
-        return None
-    end = min(w.end, now.astimezone(timezone.utc) + timedelta(days=1))
-    out = TimeWindow(w.start, end, "model", SOURCE_MODEL)
-    return out.with_past_state(bool(past_state) and ends_before_today(out, now, tz))
-
-
-__all__ = ["DEFAULT_TZ", "SOURCE_MODEL", "SOURCE_PARSER", "TimeWindow", "WINDOW_PAD", "ends_before_today",
-           "local_zone", "parse_time_window", "window_from_dates"]
+__all__ = ["DEFAULT_TZ", "TimeWindow", "WINDOW_PAD", "ends_before_today", "local_zone", "parse_time_window"]

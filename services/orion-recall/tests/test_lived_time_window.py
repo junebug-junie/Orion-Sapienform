@@ -1,12 +1,12 @@
-"""Time-aware lived recall (issue #3674): the date grammar, the rewrite's WHEN/PAST lines, window
-filtering before the pool cut, and the "true then, not now" label for facts an update retired.
+"""Time-aware lived recall (issue #3674): the date grammar, window filtering before the pool cut,
+and the "true then, not now" label for facts an update retired.
 
 Made-up records only; no DB, bus or model (fakes only).
 """
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import pytest
@@ -14,8 +14,8 @@ import pytest
 import app.lived_memory as lm
 from app.lived_memory import (AS_OF_LABEL, OUT_OF_WINDOW_LINES, OUT_OF_WINDOW_MAX, LivedMemoryConfig,
                               LivedMemoryRecall, rank, render_line, tokenize, trace_of, window_where)
-from app.lived_rewrite import RewriteResult, build_prompt, parse_rewrite
-from app.lived_time import parse_time_window, window_from_dates
+from app.lived_rewrite import PROMPT
+from app.lived_time import parse_time_window
 from orion.introspect.semantic_index import SearchConfig
 from orion.memory.lived_memory import LivedRecord
 
@@ -128,30 +128,12 @@ def test_the_window_pads_a_day_each_side():
     assert not w.contains(None)
 
 
-# --- the rewrite's WHEN / PAST lines --------------------------------------------------------
+# --- the rewrite prompt is unchanged ------------------------------------------------------
 
-def test_prompt_says_what_day_it_is_in_denver():
-    p = build_prompt("what happened last week?", [], now=NOW)
-    assert "Today is Wednesday, 2026-11-25" in p and "WHEN:" in p and "PAST: yes" in p
-    assert "Today is" not in build_prompt("hm?", [], short=True, now=NOW)
-
-
-def test_parse_rewrite_reads_when_and_past_and_keeps_them_out_of_the_queries():
-    res = parse_rewrite("Chicago work trip hotel\nJuniper travel October\nWHEN: 2026-10-01 to 2026-10-10\nPAST: yes",
-                        now=NOW)
-    assert res.queries == ["Chicago work trip hotel", "Juniper travel October"]
-    assert res.window is not None and res.window.trace()["start"] == "2026-10-01"
-    assert res.window.trace()["end"] == "2026-10-10" and res.window.source == "model"
-    assert res.past_state and res.window.past_state
-
-
-def test_parse_rewrite_drops_an_implausible_or_malformed_window():
-    assert parse_rewrite("game crash fix\nWHEN: 2027-03-01 to 2027-03-02", now=NOW).window is None   # future
-    assert parse_rewrite("game crash fix\nWHEN: 2026-10-10 to 2026-10-01", now=NOW).window is None   # reversed
-    assert parse_rewrite("game crash fix\nWHEN: last week", now=NOW).window is None                 # not dates
-    assert parse_rewrite("game crash fix\nWHEN: last week", now=NOW).queries == ["game crash fix"]
-    none = parse_rewrite("NONE\nWHEN: 2026-10-01 to 2026-10-10", now=NOW)
-    assert none.queries == [] and none.window is None   # small talk carries no window
+def test_the_rewrite_prompt_asks_for_no_time_line():
+    """Measured 2026-11-25: any WHEN/PAST instruction made the fast-lane model stop searching or
+    was ignored. The window comes from the parser alone."""
+    assert "WHEN" not in PROMPT and "Today is" not in PROMPT
 
 
 # --- window filtering in recall -------------------------------------------------------------
@@ -248,7 +230,7 @@ def test_the_window_brings_in_window_records_into_the_pool_before_the_cut(no_den
     outside = [s for s in out.chosen if s.rec.record_id.startswith("aug")]
     assert len(outside) <= OUT_OF_WINDOW_LINES                    # the cap on lines outside the window
     w = out.debug["window"]
-    assert (w["kind"], w["source"], w["in_window"]) == ("rolling", "parser", 1)
+    assert (w["kind"], w["in_window"]) == ("rolling", 1)
     # The meaning search is asked once more, filtered to the padded window in Chroma.
     assert any(isinstance(x, dict) and "$and" in x for x in no_dense)
 
@@ -260,19 +242,6 @@ def test_a_window_with_nothing_in_it_changes_nothing(no_dense):
     assert [s.rec.doc_id for s in windowed.chosen] == [s.rec.doc_id for s in plain.chosen]
     assert windowed.chosen                                         # never emptied by a time word
     assert windowed.debug["window"]["empty"] is True
-
-
-def test_the_model_window_is_used_only_when_the_parser_found_none(no_dense):
-    async def rw(message, context, short=False):
-        return RewriteResult(queries=["Amanda leg surgery"],
-                             window=window_from_dates(date(2026, 10, 20), date(2026, 11, 5), NOW))
-
-    q = "Tell me again how Amanda's health has been going lately with everything"
-    out = asyncio.run(LivedMemoryRecall(Pool(CROWD + [TARGET]), _cfg(), reranker=overlap_reranker, rewriter=rw,
-                                        clock=lambda: NOW).recall(q))
-    assert out.debug["window"]["source"] == "model"
-    assert out.debug["candidate_ids"][0] == "episode_memory:oct1"
-    assert trace_of(out.debug)["rewrite_window"]["start"] == "2026-10-20"
 
 
 def test_now_moves_the_window_for_a_question_written_on_another_day(no_dense):
@@ -377,7 +346,7 @@ def test_render_line_marks_only_retired_rows():
 def test_the_trace_keeps_dates_and_shape_never_the_message_words(no_dense):
     out = asyncio.run(_reader(Pool(CROWD + [TARGET])).recall(QUESTION))
     w = trace_of(out.debug)["window"]
-    assert set(w) <= {"start", "end", "kind", "source", "past_state", "in_window", "as_of_rows",
+    assert set(w) <= {"start", "end", "kind", "past_state", "in_window", "as_of_rows",
                       "out_of_window_kept", "empty", "dense_error", "as_of_error"}
     assert "month" not in " ".join(str(v) for v in w.values())
 

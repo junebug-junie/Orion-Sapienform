@@ -1107,7 +1107,7 @@ Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.p
 
 ### 17a2) Time windows and past-state recall (issue #3674)
 
-Code: `app/lived_time.py` (the date grammar), wired in `app/lived_memory.py` and `app/lived_rewrite.py`.
+Code: `app/lived_time.py` (the date grammar), wired in `app/lived_memory.py`.
 
 - **Parser first.** Time words in the message become one window, resolved against "now" in
   `RECALL_LIVED_MEMORY_TIMEZONE` (default `America/Denver`): a date range, one date, yesterday /
@@ -1115,9 +1115,10 @@ Code: `app/lived_time.py` (the date grammar), wired in `app/lived_memory.py` and
   weekday or weekend, or a named month or year after a preposition ("in October", "early
   September", "since August"). A small grammar, not a word list; "May I ask" is not May. The
   parser never waits on the model.
-- **Rewrite fallback.** The general rewrite prompt says what day it is and may add a
-  `WHEN: <first day> to <last day>` line and `PAST: yes`. Recall uses the model's window only when
-  the parser found none; an implausible line (reversed, in the future, years old) is dropped.
+- **No model in the window.** Asking the fast-lane rewrite for a `WHEN:` line was measured on the
+  57 scoreboard questions (2026-11-25): every wording tried either stopped it writing searches
+  (0-3 of 57, against 11 with the plain prompt) or was ignored (0 time lines). The rewrite prompt
+  is unchanged; the window never waits on, or times out with, the model.
 - **Before the pool is cut.** With a window, one more meaning search runs filtered to the window
   in Chroma (`occurred_ts`), and one more exact-word search runs over in-window records. In-window
   candidates fill the rerank pool first; at most 4 from outside the window stay, and the best 2 of
@@ -1129,15 +1130,14 @@ Code: `app/lived_time.py` (the date grammar), wired in `app/lived_memory.py` and
   the present); a bare `8/10` or `1/2` is a rating or a fraction, not a date; a month still ahead
   this year is a plan unless the message is in the past tense.
 - **Past state.** When the window is wholly past and the message asks in the past tense with a
-  state verb ("Where was I in early October?"), or the rewrite says `PAST: yes`, recall also reads
+  state verb ("Where was I in early October?"), recall also reads
   facts an update has retired since (`orion.memory.lived_memory.fetch_valid_during`, the as-of
   reader over the window, run alongside the meaning search, at most 0.8 s and 500 rows). At most 4
   join the rerank. They render as
   `(... · <date> · true then, not now: changed <date>)` and are re-checked through the same
   reader before render. A correction's old row is never served: it was never true.
 - **Trace.** `recall_telemetry.lived_trace.window` keeps the window's local dates, its shape,
-  source (`parser` or `model`), `past_state`, and counts (`in_window`, `as_of_rows`); never the
-  message's words. `rewrite_window` keeps the model's own line when it wrote one.
+  `past_state`, and counts (`in_window`, `as_of_rows`); never the message's words.
 
 Kill switch: `RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED=false` (recall ignores time words, as before).
 

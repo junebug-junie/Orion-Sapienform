@@ -166,7 +166,6 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
             route=settings.RECALL_LIVED_MEMORY_REWRITE_ROUTE,
             timeout_sec=settings.RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC,
             source=source,
-            tz=settings.RECALL_LIVED_MEMORY_TIMEZONE,
         )
     set_lived_memory(
         LivedMemoryRecall(

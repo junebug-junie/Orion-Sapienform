@@ -3,7 +3,7 @@
 - Claude in Hub chat can now open consults, arcs/acts, dreams, curiosity runs, reading results and Orion's Day letters. Before, it had only `prime_now` and `body_economy`.
 - Every new tool goes through the same broker: Orion's grant or consent ask, the per-turn caps, redaction, a 4,000-character cap and an audit row. Nothing new writes anything.
 - Claude's system prompt now lists every tool in the table, so it can't drift from the code again. It tells Claude to open anything Juniper names by id instead of guessing.
-- Fixes #3948.
+- Refs #3948 (stays open: 15 designed tools remain).
 
 ## Outcome moved
 
@@ -91,10 +91,10 @@ scripts/safe_docker_build.sh orion-harness-governor up -d --build && scripts/saf
 
 - Severity: medium. Concern: dreams now reach Claude (Anthropic) in full whenever Orion says yes. Nothing tags intimate dreams yet. Mitigation: category `memory` starts at "ask", and Orion sees Claude's reason before answering.
 - Severity: low. Concern: `dig body` and `dig portrait` are left out. They take ~55 s live, which with consent passes the 62 s MCP limit. Mitigation: still tracked on #3948.
-- Issues opened: #3948 (this gap; closes here, apart from the remaining tools noted on it), #3977 (curiosity recent mode is slow). Issues closed: #3948.
+- Issues opened: #3948 (this gap; 6 of the remaining 21 built here), #3977 (curiosity recent mode is slow). Issues closed: none.
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3978
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

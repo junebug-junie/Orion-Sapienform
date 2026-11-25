@@ -133,6 +133,9 @@ def scratch(tmp_path, pg):
         "ORION_APPLIED_MIGRATIONS_LOG": str(tmp_path / "applied.log"),
         "ORION_REBUILD_LOG": str(tmp_path / "post_pull_rebuild.log"),
         "REBUILD_TEST_CAPTURE": str(tmp_path / "capture.txt"),
+        # orion-hub is a stand-in stack here; the chat drain (build, wait, up --no-build) is
+        # covered in tests/scripts/test_rebuild_services_from_git_diff.py.
+        "ORION_REBUILD_CHAT_DRAIN": "0",
     })
 
     class S:

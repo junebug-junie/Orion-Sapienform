@@ -108,11 +108,6 @@ def judge_messages(question: str, answer: str) -> list[dict[str, str]]:
             {"role": "user", "content": judge_input(question, answer)}]
 
 
-def question_judge_messages(question_text: str) -> list[dict[str, str]]:
-    """The door's judge call: prompt v2, ``QUESTION_LINE`` as the question, the question text as the item."""
-    return judge_messages(QUESTION_LINE, question_text)
-
-
 def parse_judge_reply(text: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """(register, reason, error). Exactly one JSON object with a known label, else (None, None, error).
 
@@ -256,4 +251,4 @@ def run_question_and_answer(
 __all__ = ["ANSWER_CHARS", "CORPUS_CYPHER", "CORPUS_VERSION", "EMBED_CHARS", "JUDGE_PROMPT_SHA256", "JUDGE_PROMPT_V2",
            "PASSED_JUDGE_MODELS", "PHILOSOPHICAL", "PROMPT_VERSION", "QUESTION_LINE", "REGISTERS", "clean", "corpus_before",
            "corpus_items", "judge_input", "judge_messages", "judge_model_passed", "novelty", "parse_judge_reply",
-           "prompt_sha256", "question_judge_messages", "run_question_and_answer", "text_sha256"]
+           "prompt_sha256", "run_question_and_answer", "text_sha256"]

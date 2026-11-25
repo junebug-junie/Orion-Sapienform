@@ -72,7 +72,10 @@ OUTCOMES_SQL = (
 SELF_QUESTIONS_SQL = (
     "SELECT question_id, text, family, pinned, ask_count, last_asked_at, created_at, "
     "count(*) OVER () AS total FROM curiosity_self_questions "
-    "WHERE status = 'open' AND ($1::timestamptz IS NULL OR created_at >= $1) "
+    # The self-question door: an Orion question not admitted (held, routed, demoted, unjudged) is not an open
+    # self-question a sitting may answer (scripts/self_question_door.py); a pre-door row (door NULL) still is.
+    "WHERE status = 'open' AND (minted_by <> 'orion' OR door IS NULL OR door = 'admitted') "
+    "AND ($1::timestamptz IS NULL OR created_at >= $1) "
     "ORDER BY created_at DESC, question_id DESC LIMIT $2"
 )
 # One write-up per run (the newest journal, the one the run story shows), with

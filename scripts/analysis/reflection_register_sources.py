@@ -47,7 +47,9 @@ from orion.curiosity.register import (  # noqa: E402
     run_question_and_answer,
 )
 
-PSQL = ["docker", "exec", "orion-athena-sql-db", "psql", "-U", "postgres", "-d", "conjourney", "-Atc"]
+# Read-only by the server, not only by convention: every session this opens is a read-only transaction.
+PSQL = ["docker", "exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "orion-athena-sql-db", "psql",
+        "-U", "postgres", "-d", "conjourney", "-Atc"]
 GRAPH_HOST, GRAPH_PORT, GRAPH_NAME = "localhost", 6380, "orion_worldview"
 JUDGE_MAX_TOKENS = 400  # the live register's value (scripts/curiosity_finding_register.py)
 LETTER_PARAGRAPH_MIN = 200

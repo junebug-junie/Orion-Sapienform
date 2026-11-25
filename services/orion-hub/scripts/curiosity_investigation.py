@@ -4229,7 +4229,8 @@ class CuriosityInvestigation:
             return None
         reason: Optional[str] = None
         packet: Optional[DispositionNamingPacketV1] = None
-        if pinned_floor_overdue(pool, pinned_floor_days=self.self_pinned_floor_days, now=now):
+        if pinned_floor_overdue(pool, pinned_floor_days=self.self_pinned_floor_days, now=now,
+                                door_enabled=self.self_question_door_enabled):
             reason = "pinned_floor_due"
         elif self.self_naming_daily_cap >= 0 and (
             await self._naming_runs_today(now)

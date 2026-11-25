@@ -13,16 +13,19 @@ Each tick this loop:
 
    * ``philosophical`` -> ``admitted`` (enters the self-inquiry pool as before);
    * ``operational`` -> ``routed`` (never asked as self-inquiry);
-   * ``no_finding`` or a model's judge error (not one JSON object, unknown label, a model that was not
-     evaluated) -> stays ``held``, ``door_attempts + 1``; at ``max_attempts`` -> ``unjudged``, never
-     admitted or routed by default;
-   * a gateway refusal or dead transport (``call:`` errors) is not a judgement: stays ``held``, the attempt
-     is not counted, the next tick tries again.
+   * ``no_finding`` or a model's judge error (not one JSON object, unknown label) -> stays ``held``,
+     ``door_attempts + 1``; at ``max_attempts`` -> ``unjudged``, never admitted or routed by default;
+   * a gateway refusal or dead transport (``call:`` errors), or a reply from a model that never passed the
+     eval (``model_not_evaluated``), is not a judgement: stays ``held``, the attempt is not counted, a later
+     tick tries again (least recently tried first).
 
-2. **Routes** at most one routed or demoted question that was never offered: a self focus request
-   (``orion.curiosity.focus.queue_focus``, ``origin='self'``, ``keep_pending=True``, correlation
-   ``self_question_door:<question_id>``) when no focus is pending; otherwise it stays recorded (the door
-   column) and the next tick tries again. Offered once: the focus row itself is the "already offered" mark.
+2. **Routes** at most one routed or demoted question: a self focus request (``orion.curiosity.focus.queue_focus``,
+   ``origin='self'``, ``keep_pending=True``, correlation ``self_question_door:<question_id>``) when no focus is
+   pending and no door offer was made in the last ``OFFER_SPACING_SEC``; otherwise it stays recorded (the door
+   column) and a later tick tries again. A pending door focus never blocks Prime: Prime's own focus replaces
+   it. A door focus replaced or expired before any run took it is offered again (``#2``, ``#3``), at most
+   ``MAX_OFFERS`` offers; one a run took is never offered again. Re-judged new text keeps the question's
+   offer count (a question whose earlier words a run already dug is not offered again).
 
 The check after the sitting (``demote_after_finding``, called by the finding register): a self-inquiry
 finding labelled ``operational`` demotes the admitted Orion question that sitting answered
@@ -61,38 +64,56 @@ from .curiosity_finding_register import JudgeResult
 logger = logging.getLogger("orion-hub.self_question_door")
 
 BATCH = 8  # held rows judged per tick, one call at a time (the backfill's 88 rows clear in ~11 ticks)
+# At most one door offer per this many seconds, so routed questions never fill the one focus slot run after
+# run. Prime's own between-conversations focus also replaces a pending door focus (focus.queue_focus).
+OFFER_SPACING_SEC = 6 * 3600.0
+# A routed question whose offer was replaced or expired before any run took it is offered again, this many
+# offers at most. One a run took (or that is pending) is never offered again.
+MAX_OFFERS = 3
 
+# Least recently tried first (door_judged_at is stamped on every try), so a row that keeps getting a
+# gateway refusal cannot hold the head of the batch.
 HELD_SQL = (
     "SELECT question_id, text, door_attempts FROM curiosity_self_questions "
-    "WHERE minted_by = 'orion' AND door = 'held' ORDER BY created_at, question_id LIMIT $1"
+    "WHERE minted_by = 'orion' AND door = 'held' "
+    "ORDER BY door_judged_at NULLS FIRST, created_at, question_id LIMIT $1"
 )
-# Guarded on door = 'held': a re-mint or a hand edit between the read and the write wins.
+# Guarded on door = 'held' AND the text that was judged: a re-mint with new words between the read and the
+# write keeps its new words held for their own judgement.
 SET_DOOR_SQL = (
     "UPDATE curiosity_self_questions SET door = $2, door_reason = $3, door_judged_at = $4, "
     "door_judge_model = $5, door_prompt_sha256 = $6, door_attempts = $7 "
-    "WHERE question_id = $1 AND minted_by = 'orion' AND door = 'held'"
+    "WHERE question_id = $1 AND minted_by = 'orion' AND door = 'held' AND text = $8"
 )
-# Routed or demoted, and never offered: no focus row carries this question's correlation.
+# One door question's offers: correlation "self_question_door:<question_id>" or "...#<n>" for a re-offer.
+_OFFERS_OF_Q = ("FROM curiosity_focus_request f WHERE split_part(f.chat_correlation_id, '#', 1) = $1 || q.question_id")
+# Routed or demoted, no offer pending or seen by a run, and under MAX_OFFERS offers so far.
 UNOFFERED_SQL = (
-    "SELECT q.question_id, q.text, q.door FROM curiosity_self_questions q "
+    f"SELECT q.question_id, q.text, q.door, (SELECT count(*) {_OFFERS_OF_Q}) AS offers "
+    "FROM curiosity_self_questions q "
     "WHERE q.minted_by = 'orion' AND q.door IN ('routed', 'demoted') AND q.status <> 'parked' "
-    "AND NOT EXISTS (SELECT 1 FROM curiosity_focus_request f "
-    "WHERE f.chat_correlation_id = $1 || q.question_id) "
+    f"AND NOT EXISTS (SELECT 1 {_OFFERS_OF_Q} AND (f.status = 'pending' OR f.offered_run_id IS NOT NULL)) "
+    f"AND (SELECT count(*) {_OFFERS_OF_Q}) < $2 "
     "ORDER BY q.door_judged_at NULLS LAST, q.question_id LIMIT 1"
 )
 PENDING_FOCUS_SQL = (
     "SELECT 1 FROM curiosity_focus_request WHERE status = 'pending' AND expires_at > now() LIMIT 1"
+)
+RECENT_OFFER_SQL = (
+    "SELECT 1 FROM curiosity_focus_request WHERE left(chat_correlation_id, length($1)) = $1 "
+    "AND created_at > now() - make_interval(secs => $2::double precision) LIMIT 1"
 )
 DEMOTE_SQL = (
     "UPDATE curiosity_self_questions SET door = 'demoted', door_demoted_by_run = $2, door_reason = $3 "
     "WHERE question_id = $1 AND minted_by = 'orion' AND door = 'admitted' RETURNING question_id"
 )
 
+# Hub's words, shown to Orion as Hub's (focus.format_focus_section), never as Orion's own.
 ROUTE_WHY = {
-    DOOR_ROUTED: ("I wrote this for my own self-inquiry, but it asks how a part of me works, so it belongs "
-                  "here, where I can dig into it."),
-    DOOR_DEMOTED: ("I sat with this in self-inquiry and my answer turned out to be about how a part of me works, "
-                   "so it belongs here, where I can dig into it."),
+    DOOR_ROUTED: ("The judge read this question as being about how a part of Orion works, so it was sent to the "
+                  "investigate line to be dug into instead of sat with in self-inquiry."),
+    DOOR_DEMOTED: ("Orion sat with this question once in self-inquiry, and the judge read that sitting's answer as "
+                   "being about how a part of Orion works, so the question was sent to the investigate line."),
 }
 
 Judge = Callable[[str, str], Awaitable[JudgeResult]]
@@ -114,7 +135,9 @@ def door_verdict(result: JudgeResult, *, attempts: int, max_attempts: int) -> Do
         return DoorVerdict(DOOR_ADMITTED, result.reason, attempts)
     if result.register == "operational":
         return DoorVerdict(DOOR_ROUTED, result.reason, attempts)
-    if result.transient:
+    if result.transient or str(result.error or "").startswith("model_not_evaluated"):
+        # Not a judgement: a gateway refusal, or a reply from a model that never passed the eval (a short
+        # fallback must not turn every held question unjudged). Held, not counted, tried again.
         return DoorVerdict(DOOR_HELD, result.error, attempts)
     tried = attempts + 1
     reason = result.error or f"no_finding: {result.reason or ''}".strip()
@@ -175,6 +198,8 @@ class SelfQuestionDoor:
         tick_interval_sec: float = 300.0,
         max_attempts: int = 3,
         batch: int = BATCH,
+        offer_spacing_sec: float = OFFER_SPACING_SEC,
+        max_offers: int = MAX_OFFERS,
         clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self.enabled = bool(enabled)
@@ -183,6 +208,8 @@ class SelfQuestionDoor:
         self.tick_interval_sec = max(30.0, float(tick_interval_sec))
         self.max_attempts = max(1, int(max_attempts))
         self.batch = max(1, int(batch))
+        self.offer_spacing_sec = max(0.0, float(offer_spacing_sec))
+        self.max_offers = max(1, int(max_offers))
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._task: Optional[asyncio.Task] = None
         self.last_tick: dict[str, Any] = {}
@@ -235,9 +262,12 @@ class SelfQuestionDoor:
             result = JudgeResult(None, None, f"call: {type(exc).__name__}: {exc}"[:200], None)
         verdict = door_verdict(result, attempts=attempts, max_attempts=self.max_attempts)
         async with pool.acquire() as conn:
-            await conn.execute(
+            status = await conn.execute(
                 SET_DOOR_SQL, qid, verdict.door, (verdict.reason or None) and verdict.reason[:REASON_CHARS],
-                self._clock(), result.model, JUDGE_PROMPT_SHA256, verdict.attempts)
+                self._clock(), result.model, JUDGE_PROMPT_SHA256, verdict.attempts, str(row.get("text") or ""))
+        if not str(status or "").endswith(" 1"):
+            logger.info("self_question_door skipped_changed question_id=%s (re-minted or edited meanwhile)", qid)
+            return "skipped_changed"
         logger.info("self_question_door %s question_id=%s model=%s attempts=%s reason=%r",
                     verdict.door, qid, result.model, verdict.attempts, (verdict.reason or "")[:120])
         return verdict.door
@@ -247,14 +277,17 @@ class SelfQuestionDoor:
         async with pool.acquire() as conn:
             if await conn.fetchval(PENDING_FOCUS_SQL):
                 return None
-            row = await conn.fetchrow(UNOFFERED_SQL, DOOR_CORRELATION_PREFIX)
+            if await conn.fetchval(RECENT_OFFER_SQL, DOOR_CORRELATION_PREFIX, self.offer_spacing_sec):
+                return None
+            row = await conn.fetchrow(UNOFFERED_SQL, DOOR_CORRELATION_PREFIX, self.max_offers)
         if row is None:
             return None
-        qid, door = str(row["question_id"]), str(row["door"])
+        qid, door, n = str(row["question_id"]), str(row["door"]), int(row["offers"] or 0)
+        corr = f"{DOOR_CORRELATION_PREFIX}{qid}" + (f"#{n + 1}" if n else "")
         try:
             result = await queue_focus(
                 pool, question=" ".join(str(row["text"] or "").split()), why=ROUTE_WHY.get(door, ROUTE_WHY[DOOR_ROUTED]),
-                origin=ORIGIN_SELF, chat_correlation_id=f"{DOOR_CORRELATION_PREFIX}{qid}", keep_pending=True)
+                origin=ORIGIN_SELF, chat_correlation_id=corr, keep_pending=True)
         except FocusRefused as exc:  # a focus arrived between the check and the queue: next tick
             logger.info("self_question_door offer_waiting question_id=%s why=%s", qid, str(exc)[:120])
             return None

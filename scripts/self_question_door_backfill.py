@@ -28,8 +28,8 @@ stops at ``--max-wait-h`` and the report says incomplete.
     python3 scripts/self_question_door_backfill.py --monitor    # resume monitoring an applied pass
     tail -f /tmp/self-question-door-backfill/progress.log
 
-Rollback (puts the rows back exactly as before the pass; Hub's own later writes to them are lost):
-``--rollback`` sets ``door`` and ``door_*`` back to their snapshotted values for the snapshotted ids.
+Rollback (puts the rows back as before the pass: door NULL, door columns at their defaults; Hub's own later door
+writes to them are lost, focus rows already queued stay): ``--rollback``, one transaction for every snapshotted id.
 """
 from __future__ import annotations
 
@@ -47,8 +47,6 @@ JOB = Path("/tmp/self-question-door-backfill")
 PSQL = ["docker", "exec", "-i", "orion-athena-sql-db", "psql", "-U", "postgres", "-d", "conjourney",
         "-v", "ON_ERROR_STOP=1", "-At"]
 ROW_LIMIT = 100_000
-DOOR_COLS = ("door", "door_reason", "door_judged_at", "door_judge_model", "door_prompt_sha256", "door_attempts",
-             "door_demoted_by_run")
 TARGET_SQL = ("SELECT row_to_json(q) FROM curiosity_self_questions q "
               "WHERE minted_by = 'orion' AND door IS NULL ORDER BY created_at, question_id")
 STATE_SQL = ("SELECT json_build_object('question_id', question_id, 'door', door, 'door_reason', door_reason, "
@@ -88,7 +86,7 @@ def progress_line(states: list[dict], total: int, started: float, now: float) ->
     """One progress line and the number still held. Pure apart from its inputs."""
     doors = Counter(s.get("door") or "null" for s in states)
     held = doors.get("held", 0)
-    done = total - held - doors.get("null", 0)
+    done = len(states) - held - doors.get("null", 0)  # a row that vanished is an anomaly, not done
     errors = sum(1 for s in states if s.get("door") == "held" and int(s.get("door_attempts") or 0) > 0)
     elapsed = max(1.0, now - started)
     rate = done / elapsed * 3600.0
@@ -171,34 +169,43 @@ def main(argv: list[str] | None = None) -> int:
         monitor(load_snapshot(), poll_sec=args.poll_sec, max_wait_h=args.max_wait_h)
         return 0
     if args.rollback:
+        # One transaction (psql -1 with ON_ERROR_STOP): all rows restored, or none. Every snapshotted row had
+        # door NULL and the door columns at their defaults, so the restore is a constant. Focus rows the door
+        # already queued for routed questions are left alone (they are Orion's record of what was offered).
         snap = load_snapshot()
-        for r in snap:
-            sets = ", ".join(f"{c} = :'{c}'" if r.get(c) is not None else f"{c} = DEFAULT" if c == "door_attempts"
-                             else f"{c} = NULL" for c in DOOR_COLS)
-            vals = {c: str(r[c]) for c in DOOR_COLS if r.get(c) is not None}
-            psql(f"UPDATE curiosity_self_questions SET {sets} WHERE question_id = :'qid' AND minted_by = 'orion'",
-                 qid=r["question_id"], **vals)
-        log(f"rollback: restored door columns on {len(snap)} rows from the snapshot")
+        if any(r.get("door") is not None for r in snap):
+            print("refused: the snapshot holds rows that already had a door; restore by hand", file=sys.stderr)
+            return 2
+        ids = pg_array([r["question_id"] for r in snap])
+        out = subprocess.run(PSQL + ["-1", "-v", f"ids={ids}"], input=(
+            "UPDATE curiosity_self_questions SET door = NULL, door_reason = NULL, door_judged_at = NULL, "
+            "door_judge_model = NULL, door_prompt_sha256 = NULL, door_attempts = 0, door_demoted_by_run = NULL "
+            "WHERE minted_by = 'orion' AND question_id = ANY(:'ids'::text[]);\n"), check=True, capture_output=True,
+            text=True)
+        log(f"rollback: restored the door columns of {len(snap)} snapshotted rows in one transaction ({out.stdout.strip()})")
         return 0
 
     target = rows_json(TARGET_SQL)
     if len(target) > ROW_LIMIT:
         print(f"refused: {len(target)} rows is over the {ROW_LIMIT} backfill limit; ask Juniper", file=sys.stderr)
         return 2
-    snap_path = JOB / "snapshot.jsonl"
-    if args.apply and snap_path.exists():
-        print(f"refused: {snap_path} exists from an earlier pass; use --monitor, or move it aside", file=sys.stderr)
-        return 2
-    snap_path.write_text("".join(json.dumps(r, default=str) + "\n" for r in target), encoding="utf-8")
-    log(f"snapshot: {len(target)} target rows (minted_by='orion', door NULL) -> {snap_path}")
     if not args.apply:
-        print("dry run: nothing written. Re-run with --apply to hold these rows for the door loop.")
-        if not target:
-            snap_path.unlink()
+        # A dry run never touches the apply's snapshot (the rollback reads that one).
+        dry = JOB / "snapshot.dryrun.jsonl"
+        dry.write_text("".join(json.dumps(r, default=str) + "\n" for r in target), encoding="utf-8")
+        print(f"dry run: {len(target)} target rows (minted_by='orion', door NULL) listed in {dry}; nothing written "
+              "to the database. Re-run with --apply to snapshot them and hold them for the door loop.")
         return 0
+    snap_path = JOB / "snapshot.jsonl"
+    if snap_path.exists():
+        print(f"refused: {snap_path} exists from an earlier applied pass; use --monitor or --rollback, "
+              "or move it aside", file=sys.stderr)
+        return 2
     if not target:
         log("nothing to do: no Orion row has door NULL")
         return 0
+    snap_path.write_text("".join(json.dumps(r, default=str) + "\n" for r in target), encoding="utf-8")
+    log(f"snapshot: {len(target)} target rows (minted_by='orion', door NULL) -> {snap_path}")
     ids = pg_array([r["question_id"] for r in target])
     held = psql("UPDATE curiosity_self_questions SET door = 'held', door_attempts = 0 "
                 "WHERE minted_by = 'orion' AND door IS NULL AND question_id = ANY(:'ids'::text[]) "

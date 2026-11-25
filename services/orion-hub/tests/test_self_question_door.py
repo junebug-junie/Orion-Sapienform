@@ -36,8 +36,7 @@ def test_philosophical_is_admitted_and_operational_is_routed():
     assert door.door_verdict(_r("operational"), attempts=2, max_attempts=3).door == "routed"
 
 
-@pytest.mark.parametrize("result", [_r("no_finding"), _r(error="not_json: x"), _r(error="unknown_register: maybe"),
-                                    _r(error="model_not_evaluated: qwen3-8b", model="qwen3-8b")])
+@pytest.mark.parametrize("result", [_r("no_finding"), _r(error="not_json: x"), _r(error="unknown_register: maybe")])
 def test_a_judge_error_stays_held_then_becomes_unjudged_after_three(result):
     first = door.door_verdict(result, attempts=0, max_attempts=3)
     second = door.door_verdict(result, attempts=first.attempts, max_attempts=3)
@@ -48,8 +47,11 @@ def test_a_judge_error_stays_held_then_becomes_unjudged_after_three(result):
     assert third.reason  # the last error is kept as the trace
 
 
-def test_a_gateway_refusal_is_not_a_judgement_and_is_never_counted():
-    v = door.door_verdict(_r(error="call: gpu_pool_unavailable", model=None), attempts=2, max_attempts=3)
+@pytest.mark.parametrize("result", [_r(error="call: gpu_pool_unavailable", model=None),
+                                    _r(error="model_not_evaluated: qwen3-8b", model="qwen3-8b")])
+def test_a_gateway_refusal_or_an_unevaluated_model_is_not_a_judgement_and_is_never_counted(result):
+    # A short fallback to another model must not turn every held question unjudged for good.
+    v = door.door_verdict(result, attempts=2, max_attempts=3)
     assert (v.door, v.attempts) == ("held", 2)
 
 
@@ -89,6 +91,9 @@ class _Conn:
     async def fetchval(self, sql, *args):
         if sql == door.PENDING_FOCUS_SQL:
             return 1 if self.db.pending else None
+        if sql == door.RECENT_OFFER_SQL:
+            assert args[0] == focus.DOOR_CORRELATION_PREFIX
+            return 1 if self.db.recent_offer else None
         if sql == door.DEMOTE_SQL:
             r = self.db.rows.get(args[0])
             if r and r["minted_by"] == "orion" and r["door"] == "admitted":
@@ -99,10 +104,12 @@ class _Conn:
 
     async def fetchrow(self, sql, *args):
         if sql == door.UNOFFERED_SQL:
+            prefix, max_offers = args
             for r in sorted(self.db.rows.values(), key=lambda r: r["question_id"]):
+                mine = [f for c, f in self.db.offered.items() if c.split("#")[0] == f"{prefix}{r['question_id']}"]
                 if (r["minted_by"] == "orion" and r["door"] in ("routed", "demoted") and r["status"] != "parked"
-                        and f"{args[0]}{r['question_id']}" not in self.db.offered):
-                    return r
+                        and not any(f["status"] == "pending" or f["run"] for f in mine) and len(mine) < max_offers):
+                    return {**r, "offers": len(mine)}
             return None
         if sql == focus.BY_ID_SQL:
             return None
@@ -110,7 +117,7 @@ class _Conn:
             return {"focus_id": "p", "origin": "self", "question": "q"} if self.db.pending else None
         if sql == focus.INSERT_SQL:
             focus_id, question, why, origin, corr = args[:5]
-            self.db.offered[corr] = (question, why, origin)
+            self.db.offered[corr] = {"question": question, "why": why, "origin": origin, "status": "pending", "run": None}
             self.db.pending = True
             return {"focus_id": str(focus_id), "question": question, "why": why, "origin": origin, "status": "pending",
                     "effective_status": "pending", "created_at": NOW, "expires_at": NOW, "status_at": NOW,
@@ -121,9 +128,10 @@ class _Conn:
 
     async def execute(self, sql, *args):
         if sql == door.SET_DOOR_SQL:
-            qid, d, reason, at, model, sha, attempts = args
+            qid, d, reason, at, model, sha, attempts, judged_text = args
             r = self.db.rows[qid]
-            assert r["minted_by"] == "orion" and r["door"] == "held"  # the SQL's own guard
+            if not (r["minted_by"] == "orion" and r["door"] == "held" and r["text"] == judged_text):
+                return "UPDATE 0"  # the SQL's own guard
             r.update(door=d, door_reason=reason, door_judged_at=at, door_judge_model=model, door_prompt_sha256=sha,
                      door_attempts=attempts)
             self.db.writes.append(args)
@@ -136,7 +144,7 @@ class _Conn:
 class _Db:
     def __init__(self, rows, pending=False):
         self.rows = {r["question_id"]: {"status": "open", "door_attempts": 0, **r} for r in rows}
-        self.pending, self.offered, self.writes = pending, {}, []
+        self.pending, self.offered, self.writes, self.recent_offer = pending, {}, [], False
 
     def acquire(self):
         return _Conn(self)
@@ -174,11 +182,29 @@ def test_the_routed_question_is_offered_once_to_the_investigate_line_when_the_sl
     db = _Db([{"question_id": "lived.orion.dream", "text": "Why did dream runs fail?", "minted_by": "orion", "door": "held"}])
     asyncio.run(_door(db, _r("operational")).tick())
     corr = f"{focus.DOOR_CORRELATION_PREFIX}lived.orion.dream"
-    question, why, origin = db.offered[corr]
-    assert question == "Why did dream runs fail?" and origin == "self" and why == door.ROUTE_WHY["routed"]
-    # Offered once: the next tick finds the focus row and offers nothing more.
-    db.pending = False
+    f = db.offered[corr]
+    assert f["question"] == "Why did dream runs fail?" and f["origin"] == "self" and f["why"] == door.ROUTE_WHY["routed"]
+    # A run took it: never offered again.
+    db.pending, f["status"], f["run"] = False, "taken", "run7"
     assert asyncio.run(_door(db, _r("operational")).tick())["offered"] is None
+
+
+def test_a_door_offer_replaced_before_any_run_took_it_is_offered_again_up_to_the_cap():
+    db = _Db([{"question_id": "lived.orion.dream", "text": "Why?", "minted_by": "orion", "door": "routed"}])
+    for n in range(1, 5):
+        asyncio.run(_door(db, _r("operational")).tick())
+        for f in db.offered.values():
+            if f["status"] == "pending":
+                f["status"] = "replaced"  # Prime's own focus took the slot
+        db.pending = False
+    prefix = f"{focus.DOOR_CORRELATION_PREFIX}lived.orion.dream"
+    assert sorted(db.offered) == [prefix, prefix + "#2", prefix + "#3"]  # MAX_OFFERS, then it stays recorded
+
+
+def test_door_offers_are_spaced_so_they_never_fill_the_slot_run_after_run():
+    db = _Db([{"question_id": "lived.orion.dream", "text": "Why?", "minted_by": "orion", "door": "routed"}])
+    db.recent_offer = True
+    assert asyncio.run(_door(db, _r("operational")).tick())["offered"] is None and db.offered == {}
 
 
 def test_a_routed_question_waits_while_another_focus_holds_the_slot():
@@ -195,6 +221,17 @@ def test_three_failed_judgements_make_unjudged_and_never_admit():
     r = db.rows["lived.orion.x"]
     assert r["door"] == "unjudged" and r["door_attempts"] == 3 and r["door_reason"].startswith("not_json")
     assert db.offered == {}  # never routed by default
+
+
+def test_a_re_mint_with_new_words_while_judging_keeps_the_new_words_held():
+    db = _Db([{"question_id": "lived.orion.x", "text": "old words", "minted_by": "orion", "door": "held"}])
+
+    async def judge(question, answer):
+        db.rows["lived.orion.x"]["text"] = "new words"  # a sitting re-minted it mid-judgement
+        return _r("philosophical")
+
+    out = asyncio.run(door.SelfQuestionDoor(enabled=True, pool_provider=lambda: db, judge=judge, clock=lambda: NOW).tick())
+    assert out["doors"] == {"skipped_changed": 1} and db.rows["lived.orion.x"]["door"] == "held"
 
 
 def test_a_judge_that_raises_leaves_the_row_held_uncounted():
@@ -226,7 +263,7 @@ def test_the_model_gate_a_reply_from_an_unevaluated_model_never_admits():
     asyncio.run(door.SelfQuestionDoor(enabled=True, pool_provider=lambda: db, judge=judge_src(other),
                                       clock=lambda: NOW).tick())
     r = db.rows["lived.orion.x"]
-    assert r["door"] == "held" and r["door_attempts"] == 1 and r["door_reason"].startswith("model_not_evaluated")
+    assert r["door"] == "held" and r["door_attempts"] == 0 and r["door_reason"].startswith("model_not_evaluated")
     passed = _RpcBus('{"register": "philosophical", "reason": "about who Orion is"}', model=FLASH)
     asyncio.run(door.SelfQuestionDoor(enabled=True, pool_provider=lambda: db, judge=judge_src(passed),
                                       clock=lambda: NOW).tick())
@@ -253,7 +290,7 @@ def test_an_operational_finding_demotes_its_admitted_orion_question_and_it_is_th
     r = db.rows["lived.orion.act"]
     assert r["door"] == "demoted" and r["door_demoted_by_run"] == "run9" and "ledger" in r["door_reason"]
     asyncio.run(_door(db, _r("operational")).tick())
-    assert db.offered[f"{focus.DOOR_CORRELATION_PREFIX}lived.orion.act"][1] == door.ROUTE_WHY["demoted"]
+    assert db.offered[f"{focus.DOOR_CORRELATION_PREFIX}lived.orion.act"]["why"] == door.ROUTE_WHY["demoted"]
 
 
 def test_demotion_never_touches_juniper_or_a_question_the_door_did_not_admit():
@@ -294,6 +331,8 @@ def test_a_routed_focus_says_where_it_came_from_not_a_chat_with_juniper():
                          chat_correlation_id=f"{focus.DOOR_CORRELATION_PREFIX}lived.orion.dream")
     text = "\n".join(focus.format_focus_section(row))
     assert "for your own self-inquiry" in text and "conversation with Juniper" not in text
+    # Hub wrote the why: it is never shown as Orion's own words.
+    assert "Hub's words, not yours" in text and "in your words then" not in text
     assert "the door sent it here" in focus.focus_story(row)
     assert focus.organ_refusal_blocker(row) is not None  # not Prime's: the organ cannot refuse it
 
@@ -346,3 +385,65 @@ def test_the_migration_is_additive_names_hub_and_fits_the_post_pull_allowlist():
     # Every door column the code writes or reads exists in the migration.
     code = " ".join([door.SET_DOOR_SQL, door.DEMOTE_SQL, door.HELD_SQL, UPSERT_MINT_SQL, SELECT_ALL_SQL])
     assert set(re.findall(r"\bdoor\w*", code)) <= cols
+
+
+def test_prime_replaces_a_pending_door_focus_but_not_a_chat_or_juniper_focus():
+    """focus.queue_focus with keep_pending (Prime): a door focus never holds Prime out of the slot."""
+    class _FConn:
+        def __init__(self, pending):
+            self.pending, self.replaced, self.inserted = pending, [], []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def transaction(self):
+            return self
+
+        async def execute(self, sql, *args):
+            if sql == focus.REPLACE_SQL:
+                self.replaced.append(args[0])
+            return "OK"
+
+        async def fetchrow(self, sql, *args):
+            if sql == focus.BY_ID_SQL:
+                return None
+            if sql == focus.PENDING_FOR_UPDATE_SQL:
+                return self.pending
+            if sql == focus.INSERT_SQL:
+                self.inserted.append(args[4])
+                return {"focus_id": str(args[0]), "question": args[1], "why": args[2], "origin": args[3],
+                        "status": "pending", "effective_status": "pending", "created_at": NOW, "expires_at": NOW,
+                        "status_at": NOW, "chat_correlation_id": args[4], "replaced_by": None, "offered_at": None,
+                        "offered_run_id": None, "outcome_stamped_at": None, "turn_ok": None, "disposition": None,
+                        "disposition_raw": None, "refs": None, "refused_by": None, "refused_reason": None,
+                        "refused_act_id": None}
+            raise AssertionError(sql)
+
+    class _FPool:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def acquire(self):
+            return self.conn
+
+    def prime(pending):
+        conn = _FConn(pending)
+        return conn, asyncio.run(focus.queue_focus(_FPool(conn), question="What do I want?", why="w", origin="self",
+                                                   chat_correlation_id="prime:t1", keep_pending=True))
+
+    def pend(corr, origin="self"):
+        return {"focus_id": "p", "origin": origin, "question": "q", "why": "w", "status": "pending",
+                "effective_status": "pending", "created_at": NOW, "expires_at": NOW, "status_at": NOW,
+                "chat_correlation_id": corr, "replaced_by": None, "offered_at": None, "offered_run_id": None,
+                "outcome_stamped_at": None, "turn_ok": None, "disposition": None, "disposition_raw": None, "refs": None,
+                "refused_by": None, "refused_reason": None, "refused_act_id": None}
+
+    conn, res = prime(pend(f"{focus.DOOR_CORRELATION_PREFIX}lived.orion.dream"))
+    assert conn.replaced == ["p"] and conn.inserted == ["prime:t1"] and res.replaced is not None
+    with pytest.raises(focus.FocusRefused):
+        prime(pend("chat-corr-1"))
+    with pytest.raises(focus.FocusRefused):
+        prime(pend(None, origin="juniper"))

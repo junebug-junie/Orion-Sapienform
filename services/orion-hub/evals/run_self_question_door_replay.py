@@ -79,7 +79,7 @@ def fixture() -> dict:
               JudgeResult(None, None, "call: timeout", None),
               JudgeResult("no_finding", "plans only", None, "qwen3.8-flash-next-iq3_s")]
     error_doors = {door_verdict(e, attempts=a, max_attempts=3).door for e in errors for a in range(3)}
-    third = [door_verdict(e, attempts=2, max_attempts=3).door for e in errors if not e.transient]
+    third = [door_verdict(e, attempts=2, max_attempts=3).door for e in (errors[0], errors[3])]
     demotions = [demotion_for(r) for r in (
         {"line": "self_inquiry", "register": "operational", "question_ref": "self_question:lived.orion.x"},
         {"line": "self_inquiry", "register": "philosophical", "question_ref": "self_question:lived.orion.x"},
@@ -92,7 +92,10 @@ def fixture() -> dict:
         "door_off_every_orion_question_pickable": len(off) == len(DOORS) - 1,
         "no_error_admits_or_routes": error_doors <= {"held", "unjudged"},
         "third_failure_is_unjudged": set(third) == {"unjudged"},
-        "transient_never_counts": door_verdict(errors[2], attempts=2, max_attempts=3).door == "held",
+        # A gateway refusal, or a reply from a model that never passed the eval, is not a judgement.
+        "refusal_or_unevaluated_model_never_counts": all(door_verdict(e, attempts=2, max_attempts=3).door == "held"
+                                      and door_verdict(e, attempts=2, max_attempts=3).attempts == 2
+                                      for e in (errors[1], errors[2])),
         "only_operational_self_inquiry_demotes": demotions == ["lived.orion.x", None, None, None],
     }
     return {"picks": dict(picks.most_common()), "blocked_picked": blocked, "gates": gates}

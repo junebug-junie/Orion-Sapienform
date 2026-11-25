@@ -4031,19 +4031,24 @@ take it.
 Spec: `docs/superpowers/specs/2026-11-25-orion-self-reflection-drift-design.md`. Every question Orion
 writes for its own self-inquiry (a sitting's `:SelfQuestionMint`, copied at finish; the self-monitor's
 "Why?" question above) is stored in `curiosity_self_questions` with `door='held'`, and the self-inquiry
-pick (and the "open lived questions" list a sitting is shown) never takes a held row.
+pick (and the "open lived questions" list a sitting is shown, and the curiosity introspect tool's open
+self-questions) never takes a held row.
 `scripts/self_question_door.py` judges held rows every `CURIOSITY_SELF_QUESTION_DOOR_TICK_SEC` (300), up
 to 8 per tick, one call at a time, with the finding-register judge (prompt v2, temperature 0, thinking
 off, on `HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE`; a label counts only when the served model is in
 `PASSED_JUDGE_MODELS`). The question text is the item; `register.QUESTION_LINE` says it is a question.
 
 - `philosophical` -> `admitted`: pickable as before.
-- `operational` -> `routed`: never asked as self-inquiry. Offered once to the investigate line as a self
+- `operational` -> `routed`: never asked as self-inquiry. Offered to the investigate line as a self
   focus request (`origin='self'`, correlation `self_question_door:<question_id>`) when no focus is
-  pending; otherwise it waits, visible in the `door` column.
-- `no_finding` or a model's judge error -> stays `held`, `door_attempts + 1`; at
+  pending and no door offer was made in the last 6 h; otherwise it waits, visible in the `door` column.
+  Prime's own focus replaces a pending door focus (the door never holds Prime out of the slot); an offer
+  replaced or expired before a run took it is offered again, at most 3 offers. The focus prompt shows the
+  door's reason as Hub's words, not Orion's.
+- `no_finding` or a judge reply that is not one clean label -> stays `held`, `door_attempts + 1`; at
   `CURIOSITY_SELF_QUESTION_DOOR_MAX_ATTEMPTS` (3) -> `unjudged`, never admitted or routed by default. A
-  gateway refusal is not counted.
+  gateway refusal, or a reply from a model not in `PASSED_JUDGE_MODELS`, is not counted (held, retried,
+  least recently tried first).
 - After the sitting: when the finding register labels a self-inquiry finding `operational`, the admitted
   Orion question it answered becomes `demoted` (`door_demoted_by_run` = that run) and is routed.
 - Juniper's questions never pass the door. Rows written before the door (`door IS NULL`) stay pickable

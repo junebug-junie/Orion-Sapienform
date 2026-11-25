@@ -1,0 +1,70 @@
+name: Self-question door (curiosity self-reflection drift, patch 1)
+
+on:
+  pull_request:
+    paths:
+      - "orion/curiosity/self_question_pool.py"
+      - "orion/curiosity/register.py"
+      - "orion/curiosity/focus.py"
+      - "orion/curiosity/self_inquiry.py"
+      - "orion/curiosity/tests/test_self_question_pool.py"
+      - "services/orion-hub/scripts/self_question_door.py"
+      - "services/orion-hub/scripts/self_monitor_questions.py"
+      - "services/orion-hub/scripts/curiosity_finding_register.py"
+      - "services/orion-hub/scripts/curiosity_introspect_listener.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-hub/tests/test_self_question_door*.py"
+      - "services/orion-hub/evals/run_self_question_door_replay.py"
+      - "services/orion-sql-db/manual_migration_curiosity_self_question_door_v1.sql"
+      - "scripts/self_question_door_backfill.py"
+      - "tests/test_self_question_door_backfill.py"
+      - ".github/workflows/self-question-door-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/curiosity/self_question_pool.py"
+      - "services/orion-hub/scripts/self_question_door.py"
+      - "services/orion-sql-db/manual_migration_curiosity_self_question_door_v1.sql"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-question-door:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install hub test dependencies and local PostgreSQL
+        run: |
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+      - name: Start a throwaway PostgreSQL
+        run: |
+          sudo systemctl start postgresql
+          sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'door-test';"
+          sudo -u postgres createdb door_test
+      - name: Pool, door loop, real SQL, backfill
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_TEST_PG_URI: postgresql://postgres:door-test@127.0.0.1:5432/door_test
+        run: |
+          python -m pytest -q -p no:cacheprovider orion/curiosity/tests/test_self_question_pool.py \
+            orion/curiosity/tests/test_register.py tests/test_self_question_door_backfill.py
+          cd services/orion-hub
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_self_question_door.py \
+            tests/test_self_question_door_pg.py \
+            tests/test_self_monitor_questions.py \
+            tests/test_curiosity_self_question_persistence.py \
+            tests/test_curiosity_finding_register.py \
+            tests/test_curiosity_introspect_listener.py
+      - name: Door replay eval (fixture)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -P services/orion-hub/evals/run_self_question_door_replay.py

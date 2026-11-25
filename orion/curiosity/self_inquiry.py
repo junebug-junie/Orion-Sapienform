@@ -1080,12 +1080,12 @@ def read_disposition_naming(reader: WorldviewReader, run_id: str) -> Optional[di
 
 
 def pinned_floor_overdue(
-    pool: Any, *, pinned_floor_days: float, now: Any
+    pool: Any, *, pinned_floor_days: float, now: Any, door_enabled: bool = True
 ) -> bool:
     """True when a pinned lived question is overdue -- the same test `pick_question` uses for
     Juniper's floor. The naming branch yields to it: the floor is never displaced."""
     from orion.curiosity.self_question_pool import _eligible, _needs_pinned_floor
 
     return any(
-        _needs_pinned_floor(q, pinned_floor_days=pinned_floor_days, now=now) for q in _eligible(pool)
+        _needs_pinned_floor(q, pinned_floor_days=pinned_floor_days, now=now) for q in _eligible(pool, door_enabled=door_enabled)
     )

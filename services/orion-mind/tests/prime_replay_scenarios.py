@@ -276,6 +276,23 @@ def scenarios() -> dict:
         out["now_section_and_one_cite"] = {**_dump(rt, cap), "now_use_posts": posts.calls}
     finally:
         root.removeHandler(cap)
+    # Choice-as-EFE Step 2a (recorded LAST, so every older scenario's ids are unchanged): the attention schema line.
+    # The first thought reads a fresh row, the second a row past the 10-minute limit (absent).
+    import test_prime_attention_schema_loop as tas
+
+    cap = _Capture()
+    root.addHandler(cap)
+    try:
+        rows = iter([{"generated_at": tpl.T0 - timedelta(minutes=2), "self_model_json": tas.LIVE_MODEL},
+                     {"generated_at": tpl.T0 - timedelta(minutes=2), "self_model_json": tas.LIVE_MODEL}])
+        rt = _instrument(tas._rt(read=lambda: next(rows)))
+        rt.llm.answer = {"reading": "watching", "concerns": {}, "move": None}
+        _ticks(rt, [0])
+        rt.state = rt.state.model_copy(update={"pending_changes": ["something changed"]})
+        _ticks(rt, [10])
+        out["attention_schema_fresh_then_stale"] = _dump(rt, cap)
+    finally:
+        root.removeHandler(cap)
     return out
 
 

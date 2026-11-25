@@ -19,6 +19,8 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter, Rabbit
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
+from orion.core.bus.work_queue import RedisStreamWorkQueue
+from redis import asyncio as aioredis
 from orion.gpu_pool.value_order import ValueOrderConfig
 from orion.gpu_pool.config import SWAP_GUARDS, PoolConfig, load_pool_config, ready_body_ok
 from orion.gpu_pool.discovery import Probe, load_profiles
@@ -54,6 +56,7 @@ _bus: OrionBusAsync | None = None
 _tasks: list[asyncio.Task] = []
 _chassis: list[Any] = []
 _publisher: RpcHealthPublisher | None = None
+_event_stream: RedisStreamWorkQueue | None = None
 _pool: Any = None
 _store: PostgresStore | None = None
 _stop = asyncio.Event()
@@ -276,7 +279,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global runtime, _bus, _publisher, _pool, _store
+    global runtime, _bus, _publisher, _pool, _store, _event_stream
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from psycopg_pool import AsyncConnectionPool
 
@@ -323,6 +326,28 @@ async def lifespan(app: FastAPI):
 
     prober = make_prober(client, cfg)
 
+    # #3920: the durable copy of every pool event (see app/runtime.py _stream_event). Its own quiet
+    # logger: RedisStreamWorkQueue logs every enqueue at INFO, ~33k lines a day here.
+    event_sink = None
+    if _settings.orion_bus_enabled and _settings.event_stream_enabled:
+        quiet = logging.getLogger("orion-gpu-pool.event_stream")
+        quiet.setLevel(logging.WARNING)
+        # The sink runs inside the runtime lock: socket timeouts on the client (the queue's own
+        # from_url has none) and a hard wait_for bound, so a half-open connection cannot hang leasing.
+        timeout = _settings.event_stream_timeout_sec
+        stream_client = aioredis.from_url(_settings.orion_bus_url, decode_responses=False,
+                                          socket_timeout=timeout, socket_connect_timeout=timeout)
+        _event_stream = RedisStreamWorkQueue(_settings.orion_bus_url, client=stream_client,
+                                             default_maxlen=_settings.event_stream_maxlen, logger_=quiet)
+        stream_key = _settings.event_stream_key
+
+        async def event_sink(env: BaseEnvelope) -> None:
+            await asyncio.wait_for(_event_stream.enqueue(stream_key, env), timeout=timeout)
+
+        logger.info("gpu_pool_event_stream ON key=%s maxlen=%s", stream_key, _settings.event_stream_maxlen)
+    else:
+        logger.info("gpu_pool_event_stream OFF (GPU_POOL_EVENT_STREAM_ENABLED=false or bus off)")
+
     runtime = PoolRuntime(
         cfg=cfg, profiles=profiles, store=_store, graph=build_lease_graph(lambda: cfg, saver), bus=_bus,
         prober=prober, mode=_settings.mode,
@@ -348,7 +373,8 @@ async def lifespan(app: FastAPI):
                                             source=_settings.service_name, builder=build_perception_request)
                           if _settings.perception_alert_enabled else None),
         perception_alert_held_sec_per_hour=_settings.perception_alert_held_sec_per_hour,
-        perception_realert_sec=_settings.perception_realert_sec)
+        perception_realert_sec=_settings.perception_realert_sec,
+        event_stream=event_sink)
     # Stage 5.7: every swap seat with a launch block is actuated; pause_actuation is the only stop.
     logger.info("gpu_pool_actuation mode=%s seats=%s", _settings.mode, sorted(runtime.actuated) or "none")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous
@@ -408,6 +434,8 @@ async def lifespan(app: FastAPI):
         await client.aclose()
         if _bus is not None:
             await _bus.close()
+        if _event_stream is not None:
+            await _event_stream.client.aclose()  # passed in, so the queue's close() leaves it open
         if _store is not None:
             await _store.close()
         if _pool is not None:

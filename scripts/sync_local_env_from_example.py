@@ -262,6 +262,8 @@ SYNC_PREFIXES = (
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
+    # gpu_pool_events durable stream intake (orion-sql-writer, #3920). No generic SQL_WRITER_ prefix.
+    "SQL_WRITER_GPU_POOL_EVENT_STREAM_",
     # storage-write organ (2026-10-02): sql-writer emitter, substrate reducer,
     # field-digester gate. None matched an existing prefix.
     "SQL_WRITER_WRITE_HEALTH_",
@@ -418,6 +420,9 @@ SYNC_PREFIXES = (
     # invisible to `should_sync_key()`, missing-key or not, despite this
     # module's own docstring claiming missing keys are "always" auto-added).
     "FIELD_DIGESTER_",
+    # Lived-memory recall (orion-recall, issues #3533/#3613/#3674). Same blind spot: the time-window
+    # keys (RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED, _TIMEZONE) were invisible to default sync.
+    "RECALL_LIVED_MEMORY_",
     # Queue contention EWMA (hire weather, 2026-09-20). Same blind spot:
     # FIELD_QUEUE_CONTENTION_* is outside FIELD_DIGESTER_ / FIELD_CHANNEL_,
     # so without this prefix default sync reports "no changes" and the

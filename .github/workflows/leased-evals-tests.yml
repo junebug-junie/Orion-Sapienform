@@ -19,6 +19,8 @@ on:
       - "services/orion-llamacpp-host/evals/**"
       - "services/orion-llamacpp-host/tests/test_probe_*.py"
       - "services/orion-llamacpp-host/tests/test_*_leased.py"
+      - "services/orion-cortex-exec/evals/eval_json_task_turn_end_after_brace.py"
+      - "scripts/analysis/eval_curiosity_register_judge.py"
       - ".github/workflows/leased-evals-tests.yml"
   push:
     branches: [main]
@@ -35,6 +37,8 @@ on:
       - "services/orion-llamacpp-host/evals/**"
       - "services/orion-llamacpp-host/tests/test_probe_*.py"
       - "services/orion-llamacpp-host/tests/test_*_leased.py"
+      - "services/orion-cortex-exec/evals/eval_json_task_turn_end_after_brace.py"
+      - "scripts/analysis/eval_curiosity_register_judge.py"
       - ".github/workflows/leased-evals-tests.yml"
 
 jobs:
@@ -51,7 +55,7 @@ jobs:
       - name: Helper (operator hold, gateway-only model calls, worker reads, CLI)
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: python -m pytest -q -p no:cacheprovider orion/evals/tests/test_leased_llm.py orion/harness/evals
+        run: python -m pytest -q -p no:cacheprovider orion/evals/tests/test_leased_llm.py orion/evals/tests/test_lane_callers_3921_leased.py orion/harness/evals
       - name: Gateway names an operator call's holder
         env:
           PYTHONPATH: ${{ github.workspace }}

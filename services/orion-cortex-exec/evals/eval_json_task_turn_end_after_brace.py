@@ -15,9 +15,12 @@ reads the probability of "<|im_end|>" as the second token (top_logprobs=20). A r
 ended after "{" prints as "ended" (the end token itself is not listed). It runs each wording
 --repeat times back to back; the first reading after a cache miss can differ, so look at the later ones.
 
-Run under an operator lease (shared GPU), a handful of calls only:
-    python services/orion-cortex-exec/evals/eval_json_task_turn_end_after_brace.py envelope.json \
-        --url http://<strata-agent-host>:8015
+Every call goes through orion/evals/leased_llm.py: one GPU pool operator hold on --lane (default
+``agent``, the Strata agent seat), each call POSTed to orion-llm-gateway under that hold. The gateway
+forwards the body as-is (logprobs and logit_bias included) and puts the hold's lease on the call, so the
+lane door counts it as leased. There is no direct-URL mode (#3921). A handful of calls only:
+    ORION_BUS_URL=redis://<tailnet-ip>:6379/0 \
+    python services/orion-cortex-exec/evals/eval_json_task_turn_end_after_brace.py envelope.json
 """
 
 from __future__ import annotations
@@ -27,7 +30,6 @@ import copy
 import json
 import math
 import sys
-import urllib.request
 from pathlib import Path
 
 import importlib.util
@@ -37,6 +39,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services" / "orion-cortex-exec"))
 
 from app.executor import JSON_TASK_TURN, SYSTEM_TASK_TURN  # noqa: E402
+from orion.evals.leased_llm import EXIT_RECALLED, EXIT_UNAVAILABLE, OPERATOR_LANES, LaneCallError, \
+    LaneRecalled, LaneUnavailable, operator_lane_sync  # noqa: E402
+
+HOLDER = "operator:eval-json-task-turn-end-after-brace"
 
 
 def _gateway_strata_structured():
@@ -74,12 +80,22 @@ def strata_payload(envelope: dict) -> dict:
     return sent
 
 
-def p_end_after_brace(url: str, body: dict) -> float | str:
+def reading(lane, body: dict) -> float | str:
+    """One reading; a failed call or an unreadable reply is a string in the readings, not a crash.
+    A recall (LaneRecalled) propagates so the run stops."""
+    try:
+        return p_end_after_brace(lane, body)
+    except (LaneCallError, RuntimeError) as exc:
+        if isinstance(exc, LaneRecalled):
+            raise
+        return f"error: {exc}"[:160]
+
+
+def p_end_after_brace(lane, body: dict) -> float | str:
+    """``lane`` is an orion.evals.leased_llm.OperatorLane (anything with ``chat(body, timeout_sec)``)."""
     b = copy.deepcopy(body)
     b.update({"max_tokens": 2, "logprobs": True, "top_logprobs": 20, "logit_bias": {OPEN_BRACE_QUOTE_ID: -100}})
-    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(b).encode(),
-                                 headers={"content-type": "application/json"})
-    out = json.load(urllib.request.urlopen(req, timeout=300))
+    out = lane.chat(b, timeout_sec=300)
     lp = ((out["choices"][0].get("logprobs") or {}).get("content")) or []
     if not lp or lp[0]["token"] != "{":
         raise RuntimeError(f"first token was {lp[0]['token'] if lp else None!r}, not '{{': no reading")
@@ -88,22 +104,33 @@ def p_end_after_brace(url: str, body: dict) -> float | str:
     return sum(math.exp(a["logprob"]) for a in lp[1]["top_logprobs"] if a["token"] == END_TOKEN)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("envelope")
-    ap.add_argument("--url", required=True)
+    ap.add_argument("--lane", default="agent", choices=sorted(OPERATOR_LANES),
+                    help="operator lane; OPEN_BRACE_QUOTE_ID is a qwen3.8-flash-next token id, so the lane "
+                         "must serve that vocabulary (the agent seat does)")
     ap.add_argument("--repeat", type=int, default=3)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     body = strata_payload(json.loads(Path(args.envelope).read_text()))
     users = [i for i, m in enumerate(body["messages"]) if m["role"] == "user"]
     if not users or body["messages"][users[-1]]["content"] not in (SYSTEM_TASK_TURN, JSON_TASK_TURN):
         print("the request's last user turn is not a service task turn; nothing to compare")
         return 2
-    for name, text in (("generic", SYSTEM_TASK_TURN), ("json", JSON_TASK_TURN)):
-        variant = copy.deepcopy(body)
-        variant["messages"][users[-1]]["content"] = text
-        readings = [p_end_after_brace(args.url, variant) for _ in range(args.repeat)]
-        print(f"{name:8} {text!r}: P(end after '{{') = {readings}")
+    try:
+        with operator_lane_sync(args.lane, holder=HOLDER) as lane:
+            for name, text in (("generic", SYSTEM_TASK_TURN), ("json", JSON_TASK_TURN)):
+                variant = copy.deepcopy(body)
+                variant["messages"][users[-1]]["content"] = text
+                readings = [reading(lane, variant) for _ in range(args.repeat)]
+                print(f"{name:8} {text!r}: P(end after '{{') = {readings}")
+            print(f"lease {lane.lease_id} ({lane.route}, {lane.role}), {lane.calls} call(s)")
+    except LaneRecalled as exc:
+        print(f"RECALLED: {exc}", file=sys.stderr)
+        return EXIT_RECALLED
+    except LaneUnavailable as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
     return 0
 
 

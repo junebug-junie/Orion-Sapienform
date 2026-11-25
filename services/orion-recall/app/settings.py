@@ -309,6 +309,15 @@ class Settings(BaseSettings):
     RECALL_LIVED_MEMORY_LINK_TOP_K: int = Field(
         default=2, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_LINK_TOP_K")
     )
+    # Issue #3674: read time words ("last week", "in October", a date) into a window and favour
+    # memories from it; past-tense questions also get facts an update retired since (true then).
+    # false = recall ignores time words. The zone resolves "yesterday" and "in October".
+    RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED: bool = Field(
+        default=True, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_TIME_WINDOW_ENABLED")
+    )
+    RECALL_LIVED_MEMORY_TIMEZONE: str = Field(
+        default="America/Denver", validation_alias=AliasChoices("RECALL_LIVED_MEMORY_TIMEZONE")
+    )
     # The LLM gateway's bus intake (the rewrite's RPC). Must match orion-llm-gateway's own.
     CHANNEL_LLM_INTAKE: str = Field(
         default="orion:exec:request:LLMGatewayService", validation_alias=AliasChoices("CHANNEL_LLM_INTAKE")

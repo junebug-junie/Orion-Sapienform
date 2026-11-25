@@ -190,6 +190,7 @@ from orion.prime.acts import (
     thought_act,
     treated_focus_gone,
 )
+from orion.prime import attention_line as al
 from orion.prime import day_dream as dd
 from orion.prime import day_letter as dl
 from orion.prime import hunger as hg
@@ -330,6 +331,28 @@ def _get_json(url: str, timeout: float = HTTP_TIMEOUT_SEC) -> Any:
         return json.loads(resp.read())
 
 
+# The attention schema read (choice-as-EFE Step 2a): read-only, short timeouts, one row.
+_PG_CONNECT_TIMEOUT_SEC = 3
+_PG_STATEMENT_TIMEOUT_MS = 2000
+
+
+def _attention_schema_row(dsn: str) -> Optional[dict[str, Any]]:
+    """The newest substrate_attention_self_model row ({generated_at, self_model_json}) or None; raises on failure."""
+    import psycopg2  # inside: a missing driver degrades to an unread line, not a dead loop
+    import psycopg2.extras
+
+    conn = psycopg2.connect(dsn, connect_timeout=_PG_CONNECT_TIMEOUT_SEC,
+                            options=f"-c statement_timeout={_PG_STATEMENT_TIMEOUT_MS}")
+    try:
+        conn.set_session(readonly=True, autocommit=True)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(al.LATEST_ROW_SQL)
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def _timed_out(exc: BaseException) -> bool:
     """A client timeout (read or connect), as urllib raises it."""
     return isinstance(exc, TimeoutError) or (
@@ -416,6 +439,10 @@ class PrimeRuntime(MindLoopRuntime):
         # hunger read: one failure keeps the last good read, a second drops it (unknown, never flat).
         self._learning: Optional[dict[str, Any]] = None
         self._learning_error: Optional[str] = None
+        # The attention schema read (Step 2a), injectable for tests: () -> the newest row or None; raises on failure.
+        _schema_dsn = str(getattr(settings, "PRIME_ATTENTION_SCHEMA_PG_DSN", "") or "").strip()
+        self.read_attention_schema_row: Callable[[], Optional[dict[str, Any]]] = (
+            lambda: _attention_schema_row(_schema_dsn))
         self._hunger_read_at: Optional[datetime] = None
         self._needs: list[hg.NeedV1] = []
         self._wake_need: Optional[hg.NeedV1] = None
@@ -1264,6 +1291,8 @@ class PrimeRuntime(MindLoopRuntime):
             inputs.no_take_on = it.no_take_on_ids(self.intentions)
         if self._personality_line_on():
             inputs.tending, inputs.tending_error = await self._read_tending(now)
+        if self._attention_schema_on():
+            inputs.attention_schema = await self._read_attention_schema(now)
         inputs.evidence_clock = self._evidence_clock_on()
         if self._contest_on():
             inputs.standings = slots.standing_lines(self.state, now, taken_on=self._taken_on())
@@ -1286,6 +1315,23 @@ class PrimeRuntime(MindLoopRuntime):
                              event_families=event_families(inputs.events) if inputs.event_mode else {},
                              care_promoted_events=care_promoted_events(inputs.events) if inputs.event_mode else set())
         return reply
+
+    # --- the attention schema (choice-as-EFE Step 2a; orion/prime/attention_line.py) -----------
+    def _attention_schema_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_ATTENTION_SCHEMA_LINE_ENABLED", False))
+
+    async def _read_attention_schema(self, now: datetime) -> str:
+        """The schema line, read once per thought (never per tick). Fail-open: a failed read is an absent line that
+        names why, never a failed thought and never a calm reading."""
+        if not str(getattr(self.s, "PRIME_ATTENTION_SCHEMA_PG_DSN", "") or "").strip():
+            return al.attention_schema_line(None, now=now, read_error="PRIME_ATTENTION_SCHEMA_PG_DSN is empty")
+        try:
+            row = await asyncio.to_thread(self.read_attention_schema_row)
+        except Exception as exc:  # noqa: BLE001 -- the schema never fails a thought
+            why = f"{type(exc).__name__}: {str(exc)[:120]}"
+            logger.warning("prime_attention_schema_unread reason=%s", why)
+            return al.attention_schema_line(None, now=now, read_error=why)
+        return al.attention_schema_line(row, now=now)
 
     # --- personality (spec 2026-10-16 rev 4): the tending lines and the choice point ------------
     def _personality_line_on(self) -> bool:

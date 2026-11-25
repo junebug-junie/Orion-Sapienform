@@ -1,6 +1,15 @@
-"""Self-question pool: seed YAML, family draw, pinned floor.
+"""Self-question pool: seed YAML, family draw, pinned floor, and the door.
 
 Pure module — no Hub, no Postgres. Task 3 persists ask records.
+
+The door (docs/superpowers/specs/2026-11-25-orion-self-reflection-drift-design.md): every question
+Orion writes for its own self-inquiry (a sitting's ``:SelfQuestionMint``, or the self-monitor's
+"Why?" question) is stored ``door = 'held'`` and is never picked, nor offered as an open lived
+question, until the local judge (services/orion-hub/scripts/self_question_door.py) admits it.
+``routed`` (operational, sent to the investigate line), ``demoted`` (admitted, but its sitting's
+finding was operational) and ``unjudged`` (no label after the retries) are never picked either.
+``door IS NULL`` is a row written before the door existed: eligible as before, until the one-time
+backfill holds it. Juniper's questions never pass the door: their ``door`` is ignored.
 """
 
 from __future__ import annotations
@@ -16,12 +25,18 @@ import yaml
 Family = Literal["lived", "anatomy"]
 MintedBy = Literal["juniper", "orion"]
 QuestionStatus = Literal["open", "answered", "parked"]
+Door = Literal["held", "admitted", "routed", "demoted", "unjudged"]
+
+DOOR_HELD, DOOR_ADMITTED, DOOR_ROUTED, DOOR_DEMOTED, DOOR_UNJUDGED = (
+    "held", "admitted", "routed", "demoted", "unjudged",
+)
+DOOR_VALUES = (DOOR_HELD, DOOR_ADMITTED, DOOR_ROUTED, DOOR_DEMOTED, DOOR_UNJUDGED)
 
 _DEFAULT_SEED_PATH = Path(__file__).with_name("self_question_seed.yaml")
 _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 SELECT_ALL_SQL = (
-    "SELECT question_id, text, family, pinned, minted_by, status, ask_count, last_asked_at "
+    "SELECT question_id, text, family, pinned, minted_by, status, ask_count, last_asked_at, door "
     "FROM curiosity_self_questions"
 )
 
@@ -34,11 +49,21 @@ UPSERT_ASK_SQL = (
     "last_asked_at = EXCLUDED.last_asked_at"
 )
 
+# A sitting's mint. A new row is held at the door. A re-mint of an existing Orion row is held again
+# when its text changed (new words are unjudged words) or when it predates the door; a demoted row
+# stays demoted (its own sitting already answered it as plumbing).
 UPSERT_MINT_SQL = (
     "INSERT INTO curiosity_self_questions "
-    "(question_id, text, family, pinned, minted_by, status) "
-    "VALUES ($1, $2, $3, $4, 'orion', 'open') "
+    "(question_id, text, family, pinned, minted_by, status, door) "
+    "VALUES ($1, $2, $3, $4, 'orion', 'open', 'held') "
     "ON CONFLICT (question_id) DO UPDATE SET "
+    "door = CASE WHEN curiosity_self_questions.door = 'demoted' THEN 'demoted' "
+    "WHEN curiosity_self_questions.door IS NULL "
+    "OR curiosity_self_questions.text IS DISTINCT FROM EXCLUDED.text THEN 'held' "
+    "ELSE curiosity_self_questions.door END, "
+    "door_attempts = CASE WHEN curiosity_self_questions.door IS DISTINCT FROM 'demoted' "
+    "AND curiosity_self_questions.text IS DISTINCT FROM EXCLUDED.text THEN 0 "
+    "ELSE curiosity_self_questions.door_attempts END, "
     "text = EXCLUDED.text, family = EXCLUDED.family, "
     "status = CASE WHEN curiosity_self_questions.status = 'parked' "
     "THEN 'parked' ELSE 'open' END "
@@ -51,6 +76,15 @@ UPSERT_SEED_SQL = (
     "INSERT INTO curiosity_self_questions "
     "(question_id, text, family, pinned, minted_by, status) "
     "VALUES ($1, $2, $3, $4, $5, 'open') "
+    "ON CONFLICT (question_id) DO NOTHING"
+)
+
+# Another organ's Orion-written question (the self-monitor's "Why?"): held at the door, never
+# rewrites an existing row (its id is deterministic per episode).
+INSERT_HELD_SQL = (
+    "INSERT INTO curiosity_self_questions "
+    "(question_id, text, family, pinned, minted_by, status, door) "
+    "VALUES ($1, $2, $3, false, 'orion', 'open', 'held') "
     "ON CONFLICT (question_id) DO NOTHING"
 )
 
@@ -75,6 +109,7 @@ class SelfQuestion:
     status: QuestionStatus
     ask_count: int
     last_asked_at: Optional[datetime]
+    door: Optional[Door] = None
 
 
 def load_seed_questions(path: Path | None = None) -> list[SelfQuestion]:
@@ -129,6 +164,7 @@ def _row_to_question(row: Mapping[str, Any], *, fallback: SelfQuestion | None = 
         status=row.get("status") or (base.status if base else "open"),
         ask_count=int(row.get("ask_count") or 0),
         last_asked_at=_parse_last_asked_at(row.get("last_asked_at")),
+        door=row.get("door") if "door" in row else (base.door if base else None),
     )
 
 
@@ -148,8 +184,17 @@ def merge_seed_with_rows(
     return list(by_id.values()) + extras
 
 
-def _eligible(pool: Sequence[SelfQuestion]) -> list[SelfQuestion]:
-    return [q for q in pool if q.status != "parked"]
+def passes_door(q: SelfQuestion, *, door_enabled: bool = True) -> bool:
+    """Whether the door lets ``q`` be asked as self-inquiry. Juniper's questions always pass (they
+    never go through the door); an Orion question passes only when admitted, or when it was written
+    before the door (``door`` None). With the door off, every question passes, as before."""
+    if not door_enabled or q.minted_by != "orion":
+        return True
+    return q.door is None or q.door == DOOR_ADMITTED
+
+
+def _eligible(pool: Sequence[SelfQuestion], *, door_enabled: bool = True) -> list[SelfQuestion]:
+    return [q for q in pool if q.status != "parked" and passes_door(q, door_enabled=door_enabled)]
 
 
 def _age_days(last_asked_at: Optional[datetime], now: datetime) -> Optional[float]:
@@ -198,16 +243,18 @@ def pick_question(
     pinned_floor_days: float = 7.0,
     now: datetime | None = None,
     rng: random.Random | None = None,
+    door_enabled: bool = True,
 ) -> SelfQuestion:
-    """Choose the next self-inquiry question from the pool."""
+    """Choose the next self-inquiry question from the pool. A question the door has not admitted is
+    never chosen (``passes_door``)."""
     anchor = now or datetime.now(timezone.utc)
     if anchor.tzinfo is None:
         anchor = anchor.replace(tzinfo=timezone.utc)
     roll = rng or random.Random()
 
-    candidates = _eligible(pool)
+    candidates = _eligible(pool, door_enabled=door_enabled)
     if not candidates:
-        raise ValueError("pool has no eligible (non-parked) questions")
+        raise ValueError("pool has no eligible (non-parked, door-admitted) questions")
 
     floor = [q for q in candidates if _needs_pinned_floor(q, pinned_floor_days=pinned_floor_days, now=anchor)]
     if floor:

@@ -88,6 +88,57 @@ async def fetch_valid_at(conn: Any, as_of: datetime) -> list[LivedRecord]:
     return records_from_rows(KIND_EPISODE, [dict(r) for r in rows])
 
 
+# "What was true at some point in [$1, $2)" (issue #3674): the as-of read over a window instead of
+# one instant, for a past-tense chat question ("where was I in early October?"). Same gate as
+# EPISODE_VALID_AT_SQL: it had happened by the window's end, and an UPDATE retired it, if at all,
+# after the window began. A CORRECTION's old row is still never served.
+EPISODE_VALID_DURING_SQL = """
+SELECT m.memory_id::text AS record_id,
+       m.purpose AS purpose,
+       m.statement AS text,
+       coalesce(m.occurred_at, m.created_at) AS occurred_at,
+       m.strength::float8 AS importance,
+       (m.supersedes_memory_id IS NOT NULL) AS is_correction,
+       (m.confirmation_state = 'confirmed') AS confirmed,
+       NULL::text AS label,
+       m.created_at AS created_at,
+       m.invalid_at AS invalid_at
+FROM episode_memory m
+WHERE m.confirmation_state IS DISTINCT FROM 'rejected'
+  AND length(trim(m.statement)) > 0
+  AND coalesce(m.occurred_at, m.created_at) < $2
+  AND (m.expires_at IS NULL OR m.expires_at > $1)
+  AND (
+      (m.status = 'active'
+       AND NOT EXISTS (SELECT 1 FROM episode_memory c
+                       WHERE c.supersedes_memory_id = m.memory_id AND c.status = 'active'))
+      OR (m.status = 'superseded' AND m.invalid_reason = 'update' AND m.invalid_at > $1)
+  )
+"""
+
+
+async def fetch_valid_during(conn: Any, start: datetime, end: datetime, *,
+                             ids: Iterable[str] | None = None, retired_only: bool = False,
+                             limit: int | None = None) -> list[LivedRecord]:
+    """Episode memories true at some point in ``[start, end)`` (asyncpg connection or pool).
+
+    ``retired_only`` keeps only the rows an update has since retired (``invalid_at`` set): the ones
+    the currently-true reader no longer serves. ``ids`` limits the read to those memory ids (the
+    re-check before render). ``limit`` keeps the most recently retired rows (a wide window on a
+    chat turn must not read the whole history)."""
+    sql = EPISODE_VALID_DURING_SQL
+    args: list[Any] = [start, end]
+    if retired_only:
+        sql += " AND m.invalid_at IS NOT NULL"
+    if ids is not None:
+        sql += f" AND m.memory_id::text = ANY(${len(args) + 1}::text[])"
+        args.append(list(ids))
+    if limit is not None:
+        sql += f" ORDER BY m.invalid_at DESC NULLS LAST, m.memory_id LIMIT {max(1, int(limit))}"
+    rows = await conn.fetch(sql, *args)
+    return records_from_rows(KIND_EPISODE, [dict(r) for r in rows])
+
+
 STANCE_SQL = """
 SELECT c.crystallization_id::text AS record_id,
        'stance' AS purpose,
@@ -162,6 +213,8 @@ class LivedRecord:
     is_correction: bool = False
     confirmed: bool = False
     created_at: datetime | None = None  # when Orion stored it (replay evals filter on this)
+    # Set only by the as-of readers: when an update retired this row (true then, not now).
+    invalid_at: datetime | None = None
 
     @property
     def doc_id(self) -> str:
@@ -216,6 +269,7 @@ def record_from_row(kind: str, row: Mapping[str, Any]) -> LivedRecord | None:
         is_correction=bool(row.get("is_correction")),
         confirmed=bool(row.get("confirmed")),
         created_at=_aware(row.get("created_at")),
+        invalid_at=_aware(row.get("invalid_at")),
     )
 
 

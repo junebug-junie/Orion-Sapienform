@@ -49,6 +49,8 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 
 **Juniper multimodal affect persistence (2026-08-25):** `orion:affectgpt:assessment` (produced by `orion-juniper-affective-state` after wrapping a real `orion-affectgpt-worker` AffectGPT read) is projected into `juniper_multimodal_affect_log` (`JuniperMultimodalAffectSQL`, PK `event_id` derived from the envelope `correlation_id` -- upserts on redelivery). First real persistence consumer of that channel; previously the only reader was the producer's own `scripts/tap_assessments.py` debug tap, and the live cognition path (`orion/situational/juniper_affect_state.py`, PR #1865) reads a separate 1h-TTL Redis SETEX mirror -- once that key expires, nothing durable recorded a capture ever happened. Deliberately does NOT persist `transcript` (Whisper's verbatim transcription of Juniper's spoken words) -- a privacy-boundary decision documented on the model class, mechanically enforced by `_write_row()`'s column-filter rather than bespoke redaction code. `raw_response` (the model's own generated affect read, already surfaced in the Hub UI and on the bus) is kept in full. **2026-08-26:** added `chat_correlation_id` (boot-time `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, same convention as the `chat_*` statements) for Hub's per-chat-turn affect bracket -- the `chat_turn_pre`/`chat_turn_post` pair fired around one Orion-mode turn. It is a *separate join axis* from `correlation_id`: that one joins a single capture's retina/worker/event legs, this one joins a capture to the conversation turn that caused it and joins a turn's pre/post pair to each other. Indexed, NULL for `manual`/`ambient` captures. Without the column, `_write_row`'s column-filter would have silently dropped the key and the join would have existed only on the bus and in the 1h Redis mirror -- never durably.
 
+**Goal proposal log (2026-11-25, #3924):** `memory.field_goals.proposed.v1` on `orion:memory:goals:proposed` (produced by `orion-attention-runtime`'s `_publish_goal`) -> `field_goal_provenance_log` (`FieldGoalProvenanceLogSQL`, insert-only, PK `artifact_id`; scalar columns plus the validated payload in `payload_json`, `received_at` = store time, `envelope_id` = bus envelope id). Migration: `services/orion-sql-db/manual_migration_field_goal_provenance_log_v1.sql` (create_all also makes it at boot). The producer's streak count is not on the schema, so it is not stored.
+
 ### Environment Variables
 Provenance: repo root `.env` (mesh globals: `ORION_BUS_URL`, `PROJECT`, `NET`, …) → service `.env_example` → `docker-compose.yml` → `settings.py`
 
@@ -1406,6 +1408,39 @@ existing databases; the standalone additive migration is
 `services/orion-sql-db/manual_migration_action_outcomes_visual_outcome.sql`.
 Apply that migration before deploying producers/writers that use this field.
 This patch does not run the migration or rewrite historical rows.
+
+
+## GPU pool events from a durable stream (2026-11-25, #3920)
+
+`gpu_pool_events` used to be written from the pub/sub channel `orion:gpu_pool:event`. Pub/sub keeps
+nothing, so every event the pool published while this service was down was lost. On 2026-11-24/25,
+68 of 69 lease grants missing from the table fell inside a sql-writer `up -d --build` window
+(17-24 s each, 14 rebuilds in 30 hours); the 69th fell inside a manual sql-writer redeploy at
+00:55:12Z that is not in `post_pull_rebuild.log` (agent board `deploy:orion-sql-writer`).
+
+Now the pool also XADDs each event to `orion:stream:gpu_pool:event`. `app/durable_stream_intake.py`
+reads it through consumer group `cg:sql-writer` (consumer `sql-writer-<NODE_NAME>`) and hands each
+envelope to the same `handle_envelope` path. The group remembers where it stopped, so the backlog is
+written when the service returns. Delivery is at-least-once; the table is insert-only on `event_id`,
+so a redelivery is a duplicate skip. The group is created at id `0`, so the first boot also writes
+what the pool streamed before it (mostly duplicates of the old pub/sub writes).
+
+A row write that fails goes to `bus_fallback_log` as before and is acked. Only when that fallback
+write also fails (Postgres unreachable) does the entry stay pending. It is retried every 30 s and
+dead-lettered to `orion:stream:gpu_pool:event:dlq` only once it is older than
+`SQL_WRITER_GPU_POOL_EVENT_STREAM_DLQ_AFTER_SEC` (12 h), so a Postgres outage is waited out. At boot
+the intake first takes back whatever the previous process read but never acked. Undecodable entries
+go straight to the DLQ.
+
+With `SQL_WRITER_GPU_POOL_EVENT_STREAM_ENABLED=true` (default) the pub/sub subscription to
+`orion:gpu_pool:event` is removed, even when a stale `SQL_WRITER_SUBSCRIBE_CHANNELS` still lists it:
+one source, no double intake. `false` is the rollback: pub/sub again, and restarts lose events again.
+The two flags are coupled: with this one on, sql-writer reads only the stream, so turning the
+pool's `GPU_POOL_EVENT_STREAM_ENABLED` off (or changing either `..._KEY`) writes nothing. Turn
+sql-writer's off first. Deploy the pool before (or with) sql-writer.
+
+Check it live: `redis-cli XINFO GROUPS orion:stream:gpu_pool:event` (`lag` near 0, `pending` 0), and
+after a sql-writer rebuild, no gap in `gpu_pool_events.generated_at` across the rebuild window.
 
 
 ## GPU state history for offline replay (2026-10-09)

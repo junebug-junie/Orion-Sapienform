@@ -59,7 +59,8 @@ KNOWN_UNSUBSCRIBED = {
 
 
 def test_no_new_declared_consumer_channel_goes_unsubscribed() -> None:
-    subscribed = set(settings.effective_subscribe_channels)
+    # Streams read through a consumer group count as subscribed (#3920: orion:stream:gpu_pool:event).
+    subscribed = set(settings.effective_subscribe_channels) | set(settings.effective_stream_channels)
     declared = _declared_consumer_channels()
 
     assert declared, "channels.yaml names orion-sql-writer as a consumer nowhere -- check the parser"

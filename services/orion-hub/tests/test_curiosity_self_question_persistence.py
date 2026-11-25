@@ -94,10 +94,13 @@ class _SelfQuestionConn(_GrantConn):
                     "last_asked_at": asked_at,
                 }
             return "INSERT 0 1"
-        if "VALUES ($1, $2, $3, $4, 'orion', 'open')" in sql:
+        if "VALUES ($1, $2, $3, $4, 'orion', 'open', 'held')" in sql:
             qid, text, family, pinned = args[:4]
             if qid in self.questions:
                 row = self.questions[qid]
+                # The door (UPSERT_MINT_SQL): demoted stays demoted; new text or a pre-door row is held again.
+                if row.get("door") != "demoted" and (row.get("door") is None or row.get("text") != text):
+                    row["door"] = "held"
                 row["text"] = text
                 row["family"] = family
                 if row.get("status") != "parked":
@@ -112,6 +115,7 @@ class _SelfQuestionConn(_GrantConn):
                     "status": "open",
                     "ask_count": 0,
                     "last_asked_at": None,
+                    "door": "held",
                 }
             return "INSERT 0 1"
         if UPSERT_SEED_SQL.split()[0] in sql and "ON CONFLICT" in sql:
@@ -254,6 +258,7 @@ def test_mint_upsert_is_idempotent_and_preserves_ask_count() -> None:
     row = conn.questions["lived.orion.continuity"]
     assert row["ask_count"] == 2
     assert row["text"] == mint.text
+    assert row["door"] == "held"  # new words wait at the door before any sitting may take them
     assert len(conn.questions) == 1
     assert asyncio.run(loop._upsert_orion_minted_questions("abc123")) == 1
     assert conn.questions["lived.orion.continuity"]["ask_count"] == 2

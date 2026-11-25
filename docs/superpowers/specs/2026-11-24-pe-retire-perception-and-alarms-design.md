@@ -2,6 +2,15 @@
 
 Status: design, docs only. Follows `2026-11-08-prediction-error-suite-rebuild-design.md`.
 Rev 2 (2026-11-24): answers Orion's 12 review questions; see "Rev 2 changes" at the end.
+Rev 3 (2026-11-24): answers Orion's 8 questions on rev 2; see "Rev 3 changes" at the end.
+Rev 4 (2026-11-24): answers Orion's 12 questions on rev 3; see "Rev 4 changes" at the end.
+Rev 4 replaces rev 3's camera value (a 30 s Sidak tick) with a two-stage rank, because the
+history sampler reads the node only every ~4-5 min and missed 86-92% of short changes.
+Patch 2 (alarms) is PR #3829: per-node read rule `HISTORY_READ_MODE_BY_NODE_ID`, alarms
+`read_both`, glossary channel `alarm`, world_first and self_readings look each node up under
+its own channel (`glossary_channel_for`).
+The backfill ran 08:42Z (14,914 rows, 0 missing keys, 0 mismatches), so old-scale camera rows
+are in `substrate_node_signal_history`. #3826 (per-node curiosity seed bars, #3821) is merged.
 State: #3732 (biometrics) merged. Patch 1 (#3800, signal table + dual-write) merged and deployed.
 #3576 (execution) still open.
 
@@ -155,30 +164,39 @@ a naive fold does not; the rhythm forecast is calibrated. Open, for Juniper:
    with a `-- ORION-MIGRATION-REQUIRED-BY: orion-substrate-runtime` header.
 2. **New node metadata keys** `signal_value` and `signal_kind` on the five nodes. The
    `prediction_error` key is no longer written on them.
-3. **Camera score** becomes `scene_change`: per frame, p = rank of the raw `1 - cos` against
-   the same stream's frames from the **last 2 hours** (a time window, so a frame-rate change does
-   not change what "recent" means; 2,000 frames was 1.7 h walkway / 3.6 h room). No EWMA z, no
-   variance floor, no clip except the rank floor.
-   - **Cold start**: no score until the window holds at least 200 frames spanning at least
-     30 min. Until then the tick writes the `prediction_error_missing_reason`-style placeholder
-     (`warming`), never a p = 1 "calm". The window is in memory; a restart re-warms (replay:
-     about 36 min of withheld frames on the walkway, 281 frames on the room camera).
-   - **Per tick, not per frame**: the camera tick (30 s) writes one value: the Sidak-combined p
-     of the frames since its last write, p_tick = 1 - (1 - min p)^k, then excess =
-     max(0, -ln p_tick - 1). A single frame would miss a person crossing between ticks; Sidak
-     keeps the spike. Sidak is exact for independent frames and conservative for dependent ones
-     (frames are dependent, lag-1 r about 0.5), so it never over-alarms. Replay (29 h, 210 s
-     ticks): exact 0 on 82% (walkway) / 75% (room) of ticks, p <= 0.05 on 3.7% / 3.3%. The
-     "last frame" alternative is calibrated (64% / 66% zero, matching 63.2%) but blind between
-     ticks. Calm point is therefore 0, reached more often than 63% by a known, conservative bound.
-   - **Row rate**: unchanged. History rows still come from the attention-broadcast sampler when
-     the node's `observed_at` moves (live: 28 rows per node in 100 min, about one per 3.5 min,
-     ~410 per node per day, ~2,900 per 7-day window). Not per frame. `pe_history_cache`'s
-     uncapped 7-day load stays small. A sampled tick is a random draw of ticks, so the history
-     keeps the tick distribution; live attention reads the node's current value every tick.
-   - **Light changes are real scene changes**: replay hourly mean excess ranged 0.02-1.29
-     (theory 0.37 for single frames), highest around local dawn/dusk and lights-on. 29 h means
-     one sample per hour: UNVERIFIED as a pattern (#3806).
+3. **Camera score** becomes `scene_change`. Two ranks, both against the camera's own past:
+   - **Stage 1, per frame**: p = rank of the frame's raw `1 - cos` against the same stream's
+     frames from the **last 2 hours** (a time window; a frame-rate change does not move it).
+   - **Stage 2, per sampled interval**: every 30 s tick takes the smallest stage-1 p over the
+     **trailing 5 minutes** of frames (m). It ranks m against the camera's own m values from the
+     **last 24 hours**, taken once every 5 min (288 values). p2 = (1 + #{past m <= m}) / (n + 1).
+     Value = excess = max(0, -ln p2 - 1), in nats.
+   - **Why two stages.** The history sampler (attention broadcast) reads the node every ~215-311 s
+     (live: median 215 s, mean 233 s over the last 24 h; Orion measured ~311 s over 7 days), and
+     the contest reads at that same cadence. Rev 3's value covered only the last 30 s. Replayed at
+     a 311 s sampler, the last-30 s value missed **74 of 86** (room) and **55 of 60** (walkway)
+     intervals that held a crossing tick. A change that rises and clears between passes was
+     invisible. Stage 2 covers the whole trailing 5 min, so any sample sees it. Rev 3's other
+     option, Sidak over the 5 min, is calibrated but saturates near 2.2-2.5 nats: with ~100-400
+     frames per 5 min against a 2 h window, the smallest reachable Sidak p is about k/n.
+   - **Calm point by theory**: under exchangeable 5-min intervals p2 is uniform, so excess is 0
+     with probability 1 - 1/e = 0.632 and crosses 2.0 with probability e^-3 = 0.050. The cap is
+     ln(289) - 1 = 4.67 nats.
+   - **Replay at the real sampler** (311 s, 29 h of frames; only 29 h exist, so stage 2 used a
+     12 h rank window, not 24 h; UNVERIFIED at 24 h): room 0.654 exact 0, p90 1.36, p99 2.55,
+     max 3.79, crosses 2.0 on 4.6%; walkway 0.662 exact 0, p90 1.23, p99 3.24, max 3.93,
+     crosses 3.1%. Close to theory.
+   - **Cold start**: stage 1 needs 200 frames over 30 min; stage 2 needs 48 interval values
+     (4 h). Until both hold, the tick writes the `warming` placeholder, never a p = 1 "calm".
+     Rows written while stage 2 holds fewer than 24 h of values carry `scale = 'v2_partial'`
+     (point 5) and are excluded from calm checks and win-share. Both windows are in memory;
+     stage 2's 288 values are also saved to `substrate_perception_embedding_baseline` so a
+     restart does not wait 24 h.
+   - **Row rate**: unchanged, one history row per sampler pass per node (~370-410 a day). Not per
+     frame. `pe_history_cache`'s 7-day load stays small.
+   - **Sustained change** (dusk, lights on) reads high while new and is absorbed by stage 1 within
+     about 2 h. Intended: it is change, not state. Glossary text says so (step 5). Dawn/dusk
+     share is UNVERIFIED (#3806).
 4. **Glossary and the attention contest move together.** The five entries move to
    `channel: alarm` / `channel: scene_change`, `trend_source` names the new table, and
    `node_signal_label()` returns "camera scene change" / alarm labels for them.
@@ -190,9 +208,25 @@ a naive fold does not; the rhythm forecast is calibrated. Open, for Juniper:
    back to the prediction-error default. The contest change:
    - the semantics lookup reads the node's own channel (`signal_kind_for(node_id)` from
      `orion/substrate/signal_history.py`, else `prediction_error`);
-   - camera entries get `value_kind: surprise_excess`-shaped semantics under a new kind name
-     `scene_change_excess`, added to `MEASUREMENT_VALUE_KINDS` with polarity "higher = more
-     change"; alarms keep `trigger`;
+   - camera entries get a new value kind `scene_change_excess`. It joins
+     `MEASUREMENT_VALUE_KINDS` (world_first) and `_PERCENTILE_KINDS` (self_readings), so the
+     module assert `_PERCENTILE_KINDS | _RATE_KINDS == MEASUREMENT_VALUE_KINDS` still holds. It is
+     ranked against its own 7 days, like `surprise_excess`;
+   - `glossary_channel_for()` (`orion/prediction/signal_history_sql.py`, #3829) returns
+     `scene_change` for the two cameras, so world_first and self_readings find their entries;
+   - polarity: `derived_channel_polarity()` keys on the channel name. Add `scene_change` to
+     `PRESSURE_CHANNELS` in `orion/field/pressure.py` (higher = more change = the direction that
+     earns attention). No field node writes that channel (the cameras leave the field), so the
+     field merge is unaffected. The cameras are world sources, and `bad_direction_percentile`
+     uses the raw percentile for external sources anyway; the polarity is for the metric lock;
+   - self-readings: the camera entries declare no self-readings prompt site (world sources are
+     not body readings), so there is no nats line for them there;
+   - alarms: done in #3829 (channel `alarm`, value_kind `trigger`, no polarity).
+     `TRIGGER_MIN_FIRES_7D = 5` is a self-readings rule only: with fewer than 5 fires in 7 days
+     (live: cabinet 0, street 1, strain 14) the alarm's self-reading line says
+     `insufficient_history` instead of "more than usual". That is honest, not starvation. The
+     attention contest ranks a trigger by its percentile over its own ~3,000 rows, so a firing
+     alarm still wins there;
    - `ATTENTION_MIN_BAND_BY_NODE_ID` (`orion/schemas/attention_candidate.py:87`, walkway
      admitted only at p99+) stays live: it keys on node id, not channel. Its comment's "1.0
      saturates on ~1.3%" reason goes away (the new cap is hit on 0.06% of frames), so the p99+
@@ -200,27 +234,32 @@ a naive fold does not; the rhythm forecast is calibrated. Open, for Juniper:
    - A test pins that all five ids still produce contest candidates after the move.
 5. **New forecast surprise** `node:prediction.street_rhythm` (orion-prediction): one
    `prediction.surprise.v1` per scored walkway expectation, value = surprisal minus the binary
-   entropy of the **recalibrated** p, folded like `node:prediction.chat_turn` (sparse settled
-   bets). Window and fold scale are set by its own calm eval, not copied from body/room.
-   - **Recalibrate first**, the chat_turn way (held-out logistic map toward identity). The
-     stated numbers are not calibrated per bucket, and the errors offset in the average:
-     stated 0.5x: 381 outcomes, happened 0.57; 0.6x: 124, 0.56; 0.7x: 71, 0.75; 0.8x: 76, 0.92;
-     0.9x: 10, 1.00; 1.0: 12, 0.92. The learner never states below 0.5.
-   - **Clamp** [0.02, 0.98] stays as a floor so a miss on a stated 1.0 costs 3.9 nats, not
-     infinity. Only 12 outcomes are affected.
-   - **Unscorable** outcomes (21 all-time, 1 in the last 14 days) are not scored and not
-     written; the eval reports them as a refusal rate.
-   - **Identity**: 65 subject keys, 2 label keys (vehicle, mail truck: 129 outcomes) and 63
-     individual keys (545 outcomes, 451 of them vehicles). 44 individual keys lived under 10
-     days. A key's last 3 expectations miss more often (person 0.67 vs 0.54, vehicle 0.46 vs
-     0.37): consistent with a re-key or a real departure; this data cannot tell them apart.
-     All 63 keys still exist in `vision_individual`; 3 are unseen for 7+ days. The calm eval
-     must report excess by key age and drop-out, and street_rhythm does not compete until that
-     is read (#3388).
-   - **Power**: SD of excess is 0.25 nats. 7 days at ~30 outcomes/day gives n about 210, SE about
-     0.017, so the mean-excess check detects a bias of about 0.035 nats or more. Per-bucket
-     reliability above 0.9 (n = 22) cannot detect a miscalibration smaller than about 0.2; it
-     is reported, not gated.
+   entropy of the stated p, folded like `node:prediction.chat_turn` (sparse settled bets).
+   Window and fold scale are set by its own calm eval, not copied from body/room.
+   - **No recalibration (rev 4).** Held-out test: for each outcome, a logistic map (ridge toward
+     identity) fit only on outcomes **scored before that expectation's window opened**, from the
+     14 days before it (first 103 outcomes skipped: fewer than 100 older ones). Same 572 rows:
+     raw stated p mean excess -0.015 (SE 0.011), p90 0.22, p99 0.89, max 1.98; recalibrated
+     +0.008 (SE 0.014), p90 0.26, p99 1.17, max 3.18. Log loss raw 0.6122, recalibrated 0.6190
+     (recalibration worse by 0.0067, SE 0.0050). It does not earn its place, so the node scores
+     the raw stated p: the same number Orion reads. Rule kept for later: recalibrate only when
+     held-out log loss improves by more than 2 SE, and then show both numbers.
+   - **Clamp** [0.02, 0.98]. 12 outcomes were stated at 0.98 or above; 1 missed (3.81 nats).
+   - **Unscorable** outcomes (21 all-time) are not scored; the eval reports them as a refusal rate.
+   - **Stale keys**: an expectation whose subject is unseen for 7+ days (`vision_individual.
+     last_seen_at`) is not scored and cannot seed curiosity. The forecaster already refits on a
+     rolling 28-day window (`VISION_RHYTHM_HISTORY_DAYS`, `vision_rhythm.py:404`); no extra refit.
+   - **Identity**: 63 individual keys (545 outcomes, 451 vehicles), 44 lived under 10 days; a
+     key's last 3 expectations miss more often (person 0.67 vs 0.54, vehicle 0.46 vs 0.37).
+     Re-key vs departure is not separable here (#3388). The eval reports excess by key age.
+   - **Gate (7 days, shadow)**: mean-excess CI covers 0; **p99 <= 1.2 nats** (held-out replay
+     0.89); **max <= 4.0** (one clamp-bound miss); at most 2 misses at stated >= 0.9; refusal
+     rate reported. SD 0.25 nats, n about 210: the mean check detects a bias of about 0.035 nats.
+   - **World, not body**: the node joins `_WORLD_NODE_IDS` (`orion/schemas/attention_candidate.py:108`),
+     so the body-only gates skip it and, as a world winner, it may author a goal under the
+     11-08 rule. Staleness: substrate-runtime writes the node on a 5-min clock from the last
+     6 h fold, and `EXTERNAL_MAX_AGE_SEC_BY_NODE` gets 600 s for it (two clock writes, the
+     room_joint pattern). No outcome in the fold window means no write, so it reads absent.
 6. **Fences**: the five ids join a moved-node check in `scripts/check_pe_alarm_readers.py`:
    CI fails if any producer writes `prediction_error` for them. At writer cutover the five also
    join a "moved" skip set that every generic PE reader already honours the way it honours
@@ -233,29 +272,46 @@ a naive fold does not; the rhythm forecast is calibrated. Open, for Juniper:
    `signal_history.py` as the alarm half of `SIGNAL_KIND_BY_NODE_ID`; `is_alarm_node()` is
    deleted only once that grep is empty.
 7. **Curiosity keeps the cameras** (Juniper's 2026-10-15 walkway decision and #1746 stand).
-   The generic PE seed scan drops them, and a scene-change seed replaces it in the same patch:
-   it reads `signal_value` for the two camera ids with its own threshold, set to keep today's
-   crossing rate (room 2.7%, walkway 1.2% of ticks against `min_error` 0.55), not the 0.55
-   number itself. Its evidence text says "unusual scene change", not "sustained prediction
-   error". A test pins that both camera ids can still seed curiosity; the CI fence alone would
-   not catch the loss.
-
+   No second seed path. The #3826 per-node bar scan (`_prediction_error_candidates`,
+   `orion/substrate/curiosity_seed_bar.py`) reads `metadata["prediction_error"]` and clamps it to
+   0-1, so it would drop both cameras when that key is cleared. Patch 3 extends it: for a
+   `scene_change` node it reads `signal_value` (nats, unclamped).
+   - **Bar** 2.0 nats (calm crossing e^-3 = 5.0% by theory, the #3821 rule).
+   - **Ceiling, per node.** `seed_strength(error, bar)` returns 1.0 whenever `bar >= 1.0`, so as
+     written every 2.0-nat crossing would get strength 1.0. Patch 3 adds
+     `seed_strength(error, bar, ceiling=1.0)` and `CURIOSITY_SEED_CEILING_BY_NODE_ID`; the
+     camera ceiling is the stage-2 cap **ln(289) - 1 = 4.67 nats**, derived from the window
+     size, not from a replay maximum. A test pins strength 0.55 at 2.0 nats and below 1.0 for
+     anything under 4.67.
+   - **Staleness**: the scan's existing age decay (`_prediction_error_staleness_decay`, 1800 s)
+     applies to `signal_value` too.
+   - **Volume (measured, last 7 days)**: 2,853 candidate sets (one per ~3.5 min), mean 0.82
+     candidates, max 5. Camera prediction-error seeds: room 37, walkway 32 (2.4% of sets). At the
+     replayed 4.6% / 3.1% crossing, that becomes about 130 + 90 = 220 a week (+150). Only 208
+     sets (7.3%) held 3 or more candidates (budget 3, `HARD_BUDGET_CEILING` 8), so about 11 extra
+     camera seeds a week land in a full set. A camera seed at its bar has strength 0.55 and
+     displaces only weaker seeds there. Acceptance check below.
 No bus channel changes for steps 1-4. Step 5 reuses `prediction.surprise.v1` on its existing channel.
 
 ### Metric quality gate (§0A) for the two new values
 
-**scene_change (per-frame camera percentile)**
+**scene_change (two-stage camera rank, rev 4)**
 
 1. Provenance: same raw `1 - cos` as today, from `perception_prediction_error()`; only the
    second stage changes (rank instead of EWMA z).
 2. Independence: it is a monotone rescoring of the current camera signal (r 0.66-0.76). It is
    a replacement, not new signal. Walkway vs room were already shown independent (r 0.016, spec 11-08).
-3. Theory: split-conformal rank. Under exchangeability p is uniform, so -ln p ~ Exp(1),
-   mean 1, and excess is 0 with probability 1 - 1/e.
-4. Live: matches theory per frame (table above). Does not rest when summed over 30 min, so it
-   is not folded. Room camera hourly means reach 0.95 at p90: busy hours stay visible.
+3. Theory: split-conformal rank, twice. Stage 2 ranks the 5-min minimum of stage-1 p against
+   the camera's own 5-min minima; under exchangeable intervals p2 is uniform, so -ln p2 ~ Exp(1)
+   and excess is 0 with probability 1 - 1/e, crossing 2.0 with probability e^-3.
+4. Live (replay at the real sampler cadence, item 3): 0.654 / 0.662 exact 0, crossing 4.6% /
+   3.1%. A 30-min sum of per-frame values does not rest, so nothing is summed. Stage 2's window
+   was 12 h in replay (only 29 h of logs); 24 h is UNVERIFIED.
 5. Existing mechanism: same rank-to-surprisal shape as family A and street handoffs.
-6. Reversible: a flag picks old or new second stage; the raw magnitude is unchanged.
+6. Reversible: until the cleanup patch, `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER`
+   (`rank_v2` default, `legacy_z` fallback) picks the second stage; the raw magnitude is
+   unchanged. The cleanup patch (step 5b) deletes the legacy code **and this key** after the
+   7-day eval passes and #3806 is read. After that, rollback is a `git revert` of 5b.
 
 **street_rhythm (walkway rhythm forecast surprise)**
 
@@ -318,40 +374,85 @@ No bus channel changes for steps 1-4. Step 5 reuses `prediction.surprise.v1` on 
 Alarms (cabinet, strain, street):
 
 1. Additive: create the signal table; dual-write both tables. **Done: #3800**, deployed
-   2026-11-24 05:22Z, rows since 05:27Z for all five ids. The backfill script was not run.
-   It is optional: the read-both SQL (`READ_BOTH_*` in `signal_history.py`) unions both tables
-   with `DISTINCT ON (node_id, observed_at)`, so nothing is counted twice and a reader sees the
-   full 7 days from the PE side. The backfill copies every row, including value > 0, so strain
-   event times survive if it is run.
+   2026-11-24 05:22Z. **The backfill ran 08:42Z** (`scripts/backfill_signal_history_from_pe.py
+   --apply`): 14,914 rows, 0 missing keys, 0 value mismatches. Checked live 2026-11-24: the
+   alarm rows match the PE table exactly (cabinet 3,016 rows, 0 non-zero; strain 3,010 rows,
+   14 non-zero; street 3,016 rows, 1 non-zero; strain event times differ in 0 rows). So the
+   strain restart seed's precondition holds: >= 200 rows and every event time present.
 2. Readers switch, consumer first, to the read-both helpers: `pe_history_cache`, the strain
    restart seed (event times and the warm-up count), the node-history tool, self-readings. The
-   contest semantics change in item 4 ships here too. Labels say "alarm".
+   contest semantics change in item 4 ships here too. Labels say "alarm". **In PR #3829.**
 3. Writers stop: no `prediction_error` key, no PE-table row for the three ids. Clear the old key
    on the FalkorDB nodes. Add the CI fence and the "moved" skip set (item 6). Tell Orion (below).
 4. After 7 days: old rows aged out of the PE table by the normal prune. Drop the union read.
 
 Cameras (perception, perception_walkway):
 
-5. Same steps 1-4 with kind `scene_change`, plus: the new per-frame percentile replaces the EWMA
-   z; the camera receipt stops feeding the field `prediction_error` channel; remove both ids
-   from `decay.py` horizons and from the curiosity PE seed scan; glossary and labels say
-   "camera scene change". The old second stage (`_domain_zscore` path, variance floor, 3-sigma
-   saturation constants) is deleted, not left behind a flag, once the eval passes.
+5. Cameras (Patch 3). One patch, in this order inside it:
+   - **migration first, in the same patch as the reader switch**: `ALTER TABLE
+     substrate_node_signal_history ADD COLUMN scale text NOT NULL DEFAULT 'v1'` (additive
+     allowlist; Postgres fills every existing row with 'v1', so the 3,016 old-scale rows per
+     camera are marked by the ALTER itself). REQUIRED-BY lists every service whose reader adds
+     the scale predicate. The readers must not ship before the column: the migration gate
+     refuses `up` until it is applied;
+   - new writer: stage-1/stage-2 value (item 3) behind `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER`
+     (`rank_v2` default, `legacy_z` fallback), writing `scale = 'v2'` or `'v2_partial'`;
+   - read rule: the two cameras move to `SIGNAL_ONLY` in `HISTORY_READ_MODE_BY_NODE_ID`, and the
+     `signal_only` branch of `history_with_moved_source_sql()` gains
+     `AND scale IN ('v2','v2_partial')`. Every history reader already goes through that one
+     builder (#3829), so a unit test on its output pins the predicate. A CI check
+     (`check_pe_alarm_readers.py` extension) fails any other SQL text that names
+     `substrate_node_signal_history` with a camera id and no `scale` predicate. Calm-check evals
+     filter `scale = 'v2'`;
+   - the contest has `insufficient_history` for each camera until 200 v2 rows exist (about 12 h);
+     accepted;
+   - field: the camera receipt stops feeding the field `prediction_error` channel, and both
+     `(node, "prediction_error"): 180.0` entries leave `decay.py`'s expiry map **in the same
+     patch**, so no field value is left to hold. A dead camera on the graph side: the tick
+     writes the `stale` missing-input placeholder after its staleness horizon (existing rule),
+     world_first marks the node absent after `PERCEPTION_MAX_AGE_SEC` 180 s, and curiosity's
+     1800 s age decay drops it. Test: a camera with no frames for 10 min is absent in the
+     contest and cannot seed;
+   - glossary: channel `scene_change`, value kind `scene_change_excess`, meaning "how unusual
+     the change in this camera's picture over the last 5 minutes is, **relative to the last two
+     hours of the same camera**, ranked against its own last 24 hours";
+   - curiosity per item 7.
+   5b. Cleanup, **after** the 7-day eval passes **and** #3806 is read (a dawn/dusk finding may
+   change the window sizes, and the legacy path stays the rollback until then): delete the
+   camera `_domain_zscore` path, the variance floor, the 3-sigma constants, the
+   `legacy_z` branch and the `SUBSTRATE_PERCEPTION_SCENE_CHANGE_SCORER` key (`.env_example`,
+   settings, compose, README, local `.env` sync). After 5b, rollback is a git revert.
 
 Perception forecast:
 
 6. `node:prediction.street_rhythm` in orion-prediction, shadow first. Joins contests only after
-   a 7-day calm check (mean excess CI covers 0, hours at rest near theory, r vs
-   `perception_walkway` and street reported).
+   the 7-day gate in item 5 (tail, stale keys, world staleness), with r vs `perception_walkway`
+   and street reported.
+
+## Prediction-error nodes after cutover
+
+After Patch 3, the prediction-error lane holds only forecast misses:
+- `node:prediction.room`, `node:prediction.body` (temperature forecasts),
+- `node:prediction.room_joint`, `node:prediction.body_joint` (family A joint surprise, #3732),
+- `node:prediction.chat_turn` (settled chat-turn self-bets),
+- later `node:prediction.street_rhythm` (after its gate).
+Not prediction errors: cabinet, strain, street (alarms, channel `alarm`) and the two cameras
+(channel `scene_change`). Retired: bus_synaptic, route, chat, codebase, harness_closure,
+biometrics, execution. A test pins this list against the glossary.
+
+**Dated marker for Orion.** For 14 days after each cutover, the self-readings block (the
+aggregate Orion reads every turn) carries one line: "Since <date>, my prediction-error lane holds
+only forecast misses (room, body, room_joint, body_joint, chat_turn). Camera change and alarms
+are separate signals now." It is generated from the glossary list above, so it cannot drift, and
+a test pins it. After 14 days it drops; the glossary keeps the "until <date>" note.
 
 ## Order
 
-- Done: #3732 (biometrics) merged 03:54Z; Patch 1 (#3800) merged 05:08Z and deployed.
-- #3576 (execution) is open. It touches the same files (worker.py, glossary, self-readings words,
-  `prediction_error_freshness.py`, the readers registry). Alarms step 2 (reader switch) may start
-  now in a worktree but merges after #3576, or rebases on it.
-- Then alarms 3-4, then cameras, then street rhythm. Alarms first: no successor is needed, and
-  they are the "hot cabinet" complaint.
+- Done: #3732 (biometrics), #3800 (Patch 1, deployed; backfill ran 08:42Z), #3576 (execution) closed.
+- Patch 2 (alarms) is PR #3829, CI green, not merged. Patch 3 (cameras) starts after #3829 merges:
+  it edits the same builder (`signal_history_sql.py`), `glossary_channel_for`, world_first and
+  self_readings.
+- Then 5b cleanup, then street_rhythm (shadow, 7-day gate).
 
 ## Orion's old beliefs about the old mechanism
 
@@ -379,7 +480,15 @@ read-both SQL and names the new table in its output.
 - `substrate_node_signal_history` has rows for all five ids, with the right kind.
 - Strain news fires after a substrate-runtime restart (seed reads the new table).
 - Contest win share per node, 7 days before vs after: alarms and cameras within noise.
-- Camera excess exact-0 share within 0.60-0.67 over 7 days; mean -ln p within 0.9-1.1.
+- Camera history rows (`scale = 'v2'` only; `v2_partial` excluded from calm checks and
+  win-share): exact-0 share 0.58-0.72 (theory 0.632), crossing 2.0 nats on 2.5-6.5% (theory
+  5.0%), max <= 4.67. Replay at the real ~311 s sampler: room 0.654 / 4.6%, walkway 0.662 / 3.1%.
+  Rev 3's band was for the 30 s Sidak tick, which the sampler does not see.
+- Curiosity, over 7 days of `substrate_endogenous_curiosity_candidates`: each camera seeds in
+  2.5-6.5% of candidate sets (replay 4.6% room, 3.1% walkway; theory 5.0%); camera seeds total
+  <= 250 a week (today 69); in sets holding 3 or more candidates, no other node's seed count
+  falls by more than 20% against the 7 days before. A test pins both camera ids through the
+  extended scan and strength 0.55 at the 2.0-nat bar.
 - Every Orion-facing render site (self-readings, node-history tool, attention labels, glossary)
   greps clean of "prediction error" for the five ids. Test in CI.
 - `check_pe_alarm_readers.py` fails a fixture that writes `prediction_error` for an alarm id.
@@ -391,6 +500,73 @@ Alarms step 2: readers switch to the read-both SQL (pe_history_cache, strain see
 tool, self-readings) and the contest semantics lookup reads the node's own channel (item 4), in
 one patch, with tests that all five ids still make contest candidates and strain news still
 warms after a restart. Merge after #3576.
+
+## Orion's re-test data (#3807)
+
+`orion_readonly` can read the signal table. Since the 08:42Z backfill it holds the old-scale rows
+of all five ids from 2026-11-17 13:05Z on (the PE table's oldest row; everything older is already
+pruned). After the scale column lands they read `scale = 'v1'`; new camera rows read `v2`. The
+contest never mixes them. But the table prunes at 7 days, and Orion cannot read the PE table.
+
+**Snapshot (needs Juniper, #3832):** one frozen table,
+`substrate_pe_history_snapshot_20261124`, copying the five ids' rows from the PE table (about
+15,074 rows, 2026-11-17 13:05Z onward), never pruned. The postgres role's default privileges
+already give `orion_readonly` SELECT on a new table, so no GRANT is needed, but creating it is a
+production write. Each day of delay loses about a seventh of the rows. Evidence older than
+11-17 (the 10-17, 10-26 and 10-31 priors) is gone from the live tables already; only DB backups
+could hold it (UNVERIFIED).
+
+**Priors whose evidence spans the cutover** (from `orion_worldview`, claims naming the five
+nodes or the old score, not refuted):
+- `self:substrate_pe_is_zero_inflated_pulse_20261031`
+- `self:pe_reverie_high_vs_zero_inflated_20261123`
+- `self:pe_ceiling_rate_0p42pct_crowding_unsupported_20261121`
+- `self:perception_pe_level_is_my_variance_baseline_not_the_room_20261121`
+- `self:perception_pe_node_is_room_cameras_only_20261118`
+- `self:pe_history_excludes_placeholder_writes_20261118`
+- `self:pe_recorded_cadence_is_publish_cadence_20261118`
+- `self:pe_recorded_count_is_a_fresh_score_tick_count_20261119`
+- `self:cabinet_offered_every_frame_outranked_by_its_own_calm_20261119`
+- `self:pool_backlog_aborted_cabinet_pred_error_20261017`
+- `self:strain_pe_is_heat_or_queue_pulse_20261108`
+- `self:walkway_pe_spikes_track_unbound_presence_20261027`
+- `self:lens_prediction_error_fuses_with_juniper_in_reverie_20261026`
+The 11-16 "hot cabinet is a clipping artifact" finding is a curiosity finding, not a prior; it
+rests on cabinet rows from before 11-17, which are already gone. The field note for each
+cutover names these ids (step 3).
+
+## Rev 4 changes (Orion's review of rev 3)
+
+1. The scale ALTER ships in the same patch as the camera reader switch, migration first; the
+   one SQL builder carries the predicate, pinned by a unit test and a CI check.
+2. Backfill text fixed (it ran); strain seed precondition checked live.
+3. Camera value is now a two-stage rank over the trailing 5 min, because the ~4-5 min sampler
+   missed 86-92% of short changes under rev 3; band re-replayed at the sampler cadence.
+4. Per-node seed ceiling (4.67 nats, derived), with a test.
+5. `scene_change_excess` joins both kind sets; `scene_change` joins PRESSURE_CHANNELS;
+   `glossary_channel_for` covers cameras; trigger min-fires is self-readings only.
+6. Field expiry entries leave with the field receipt; graph-side absence rules named.
+7. Seed volume measured; tighter band plus a displacement check.
+8. Recalibration tested held-out and dropped (it was worse); Orion and the node use the same p.
+9. street_rhythm gate is on the tail, stale keys are not scored, the forecaster already refits.
+10. street_rhythm is a world node with a 600 s staleness horizon.
+11. Snapshot proposed (#3832, needs Juniper) and the affected priors listed.
+12. Post-cutover PE list stated; dated marker line in self-readings.
+
+## Rev 3 changes (Orion's review of rev 2)
+
+1. Camera acceptance band is now tick-level, from the replay's tick numbers.
+2. Scale column (`v1` / `v2` / `v2_partial`); cameras read new-table v2 rows only, never the union.
+3. Score from 30 min (attention needs it), mark rows `v2_partial` until the 2 h window is full,
+   exclude them from calm checks and win-share.
+4. Absorbing a sustained change is intended; glossary says "relative to the last two hours";
+   #3806 is read before the legacy path is deleted.
+5. The flag is removed by cleanup step 5b, after the eval and #3806.
+6. No second seed path: the #3826 scan reads the node's own channel; bar 2.0 nats; replayed
+   crossing 5.0% / 2.8% is an acceptance check.
+7. Re-test data source stated; the scale column lets Orion read old rows without the contest mixing them.
+8. street_rhythm shows stated and calibrated p side by side; the calm eval reports the tail.
+   Only 1 clamp-bound miss exists, not 12.
 
 ## Rev 2 changes (Orion's review, 2026-11-24)
 

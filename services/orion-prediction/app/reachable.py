@@ -28,6 +28,15 @@ are the past hours; weight = 0.5 ** (age / 60 days).
                                Juniper typed to Claude Code in the last hour / 1-3 h ago / not for
                                6 h: juniper_affective_state_log.message_count, her own typed words
                                only (orion-cocreation-signals). 4x lift overall, 3x in cold hours.
+        hub_lt15m / hub_15_60m Juniper had the Hub open and in view in the 15 min before the origin /
+                               15-60 min before and not in the last 15 (hub_attention_minute, orion-hub
+                               #3179, live 2026-11-11). Her rule: looking at the Hub means reachable.
+                               The first sign of cold-hour skill (#3578, 2026-11-25; 14 days, P 0.87).
+        hub_unknown            the hour's 60 min window starts before the sensor's first minute: hub
+                               features are 0 there and this flag soaks it up, so the months before the
+                               sensor still train every other rule without reading as "not looking". It
+                               is an era flag, so it also absorbs base-rate drift between then and now;
+                               harmless, since a live origin is always after the sensor started.
     Office camera and walkway/doorbell presence were tested and dropped (1.2-1.4x, no replay gain).
 
 Grade: log loss per hour. The unit of the test is the local DAY (its mean log loss), because hours
@@ -37,7 +46,7 @@ better -- no alpha, no pass/fail. Two subsets:
 
     all     every hour
     cold    hours with no message in the 3 h before the origin: the question outreach timing needs
-            ("will she come back?"). No skill yet (see below).
+            ("will she come back?"). The Hub attention inputs are the first sign of skill here.
 
 A Wilcoxon / sign test on daily differences is the wrong test here: most days have no message, the
 model wins each of them by a hair, and the sign test calls that significant even where the mean loss
@@ -46,8 +55,7 @@ is worse (seen in the replay). The paired test is on the mean.
 Served: always the model with Juniper's rules. State and base are graded beside it, never instead of
 it. More data moves each rule; nothing waits for a significance line.
 Next inputs, not yet in the DB this service reads: git pulls (~/.orion/post_pull_rebuild.log), PR
-merges, the Claude limit reset time (orion:substrate:claude_limit, bus only), and the Hub attention
-minutes (hub_attention_minute, live 2026-11-11, needs ~2 weeks first).
+merges and the Claude limit reset time (orion:substrate:claude_limit, bus only).
 """
 from __future__ import annotations
 
@@ -80,7 +88,7 @@ COLD_BUCKET = 2                              # bucket >= 2: no message in the 3 
 P_CLIP = 1e-4
 MIN_DAYS = 20                                # settled local days before a verdict is read
 FEATURES = ("state_lt1h", "state_1_3h", "state_3_12h", "state_12_48h", "asleep", "weekend_morning", "evening",
-            "monday", "pickup", "claude_1h", "claude_1_3h", "no_claude_6h")
+            "monday", "pickup", "claude_1h", "claude_1_3h", "no_claude_6h", "hub_lt15m", "hub_15_60m", "hub_unknown")
 # Juniper's own rules (2026-11-10) as STARTING BELIEFS, not features the data may veto: each coefficient
 # is pulled toward its prior mean (log-odds) with the given strength (ridge precision 2 x strength; at a
 # ~2 % rate, strength 1 is worth ~50 hours of data, strength 4 ~200). Data moves a rule only as far as
@@ -93,14 +101,19 @@ FEATURES = ("state_lt1h", "state_1_3h", "state_3_12h", "state_12_48h", "asleep",
 #                   origins (the 16:00 hour is half pickup). The replay saw 4 messages there in 144 h;
 #                   the prior holds her word, the data will move it if that keeps happening.
 #   claude_*        "correlate my Claude tokens ... and me reaching out"
+#   hub_*           "looking at the Hub means reachable" (2026-11-25, #3578)
+#   hub_unknown     no prior belief: it only soaks up the hours before the Hub attention sensor existed
 # The state buckets start neutral: there is plenty of data on them.
 PRIORS = {
     "state_lt1h": (0.0, 1.0), "state_1_3h": (0.0, 1.0), "state_3_12h": (0.0, 1.0), "state_12_48h": (0.0, 1.0),
     "asleep": (-3.0, 4.0), "weekend_morning": (-3.0, 4.0), "evening": (1.0, 4.0), "monday": (-1.0, 4.0),
     "pickup": (-1.5, 4.0), "claude_1h": (1.0, 1.0), "claude_1_3h": (0.5, 1.0), "no_claude_6h": (-0.5, 1.0),
+    "hub_lt15m": (1.0, 1.0), "hub_15_60m": (0.5, 1.0), "hub_unknown": (0.0, 1.0),
 }
 _PRIOR_MEAN = np.array([PRIORS[f][0] for f in FEATURES])
 _PRIOR_STRENGTH = np.array([PRIORS[f][1] for f in FEATURES])
+HUB_RECENT = timedelta(minutes=15)           # hub_lt15m: an attended minute in [h - 15 min, h)
+HUB_BACK = timedelta(minutes=60)             # hub_15_60m: in [h - 60 min, h - 15 min) and not in the last 15
 COVERED_FRAC = 0.9                           # share of the prior 6 h the typing log must cover
 CALIBRATION_BINS = (0.0, 0.02, 0.05, 0.15, 0.4, 1.0)
 _HOUR_NS = 3_600_000_000_000
@@ -108,6 +121,10 @@ _HOUR_NS = 3_600_000_000_000
 
 def _ns(ts: datetime) -> int:
     return int(ts.astimezone(timezone.utc).timestamp() * 1e9)
+
+
+def _ns_td(td: timedelta) -> int:
+    return td // timedelta(microseconds=1) * 1000
 
 
 def hour_floor(ts: datetime) -> datetime:
@@ -133,9 +150,16 @@ def _count_before(ev_ns: np.ndarray, ev_w: np.ndarray, at: np.ndarray, back_h: f
 
 
 def features(hours: np.ndarray, msg_ns: np.ndarray, typed_ns: np.ndarray,
-             typed_n: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+             typed_n: np.ndarray, hub_ns: np.ndarray | None = None,
+             hub_since_ns: int | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(feature matrix len(hours) x len(FEATURES), state bucket per hour), from events strictly
-    before each hour."""
+    before each hour.
+
+    ``hub_ns``: start times of minutes Juniper had the Hub open and in view (sorted). A minute row is
+    stamped at its start, so the minute [m, m + 1 min) counts for hour h only when m < h: the hub
+    windows are [h - 15 min, h) and [h - 60 min, h - 15 min). ``hub_since_ns``: the sensor's first
+    minute. Hours whose 60 min window starts before it (or every hour, when None) read hub_unknown = 1
+    with both hub features 0, so the months before the sensor do not teach "not looking"."""
     if len(msg_ns):
         i_last = np.searchsorted(msg_ns, hours, side="left") - 1
         since = np.where(i_last >= 0, (hours - msg_ns[np.maximum(i_last, 0)]) / _HOUR_NS, np.inf)
@@ -146,8 +170,18 @@ def features(hours: np.ndarray, msg_ns: np.ndarray, typed_ns: np.ndarray,
     c1 = _count_before(typed_ns, typed_n, hours, 1.0) > 0
     c13 = _count_before(typed_ns, typed_n, hours, 3.0, 1.0) > 0
     c6 = _count_before(typed_ns, typed_n, hours, 6.0) > 0
+    if hub_since_ns is None:
+        hub_known = np.zeros(len(hours), bool)
+    else:
+        hub_known = hours - _ns_td(HUB_BACK) >= hub_since_ns
+    hub = np.zeros(0, dtype=np.int64) if hub_ns is None else hub_ns
+    ones = np.ones(len(hub))
+    h15 = hub_known & (_count_before(hub, ones, hours, HUB_RECENT / timedelta(hours=1)) > 0)
+    h60 = hub_known & ~h15 & (_count_before(hub, ones, hours, HUB_BACK / timedelta(hours=1),
+                                            HUB_RECENT / timedelta(hours=1)) > 0)
     cols = [b == 0, b == 1, b == 2, b == 3, (hr >= 3) & (hr < 8), (wd >= 5) & (hr < 12),
-            (hr >= 18) | (hr < 3), wd == 0, (wd < 5) & ((hr == 15) | (hr == 16)), c1, c13 & ~c1, ~c6]
+            (hr >= 18) | (hr < 3), wd == 0, (wd < 5) & ((hr == 15) | (hr == 16)), c1, c13 & ~c1, ~c6,
+            h15, h60, ~hub_known]
     return np.column_stack(cols).astype(float), b
 
 
@@ -206,7 +240,8 @@ def _ns_sorted(ts: Iterable[datetime], before_ns: int) -> np.ndarray:
 
 def forecast(messages: Sequence[datetime], origin: datetime,
              typed: Sequence[tuple[datetime, int]] = (),
-             coverage: Sequence[tuple[datetime, datetime]] | None = None) -> dict:
+             coverage: Sequence[tuple[datetime, datetime]] | None = None,
+             hub: Sequence[datetime] = (), hub_since: datetime | None = None) -> dict:
     """p of a message in ``[origin, origin + 1 h)`` from data strictly before ``origin``.
 
     ``typed``: (window_until, message_count) rows of Juniper's typed Claude Code messages; each count
@@ -217,14 +252,21 @@ def forecast(messages: Sequence[datetime], origin: datetime,
     ``coverage``: (window_since, window_until) of EVERY typing-log row, zero counts included. An hour
     whose prior 6 h the log covers < 90 % (before the producer existed, 2026-08-14, or an outage) does
     not know whether she typed: it is left out of training, and when the origin itself is uncovered the
-    served p is the state model's. None = treat everything as covered (tests)."""
+    served p is the state model's. None = treat everything as covered (tests).
+
+    ``hub``: start times of attended Hub minutes (hub_attention_minute, any client); ``hub_since``: the
+    sensor's first minute, None = no sensor (every hour hub_unknown). A Hub that is down reads as "not
+    looking", which is true: she cannot look at a Hub that is down. Unlike the typing log, hours before
+    the sensor are NOT dropped from training (that would drop ~3 months): hub_unknown marks them."""
     origin = hour_floor(origin)
     o_ns = _ns(origin)
     ts = _ns_sorted(messages, o_ns)
     tw = sorted((_ns(t), int(n)) for t, n in typed if _ns(t) < o_ns and int(n) > 0)
     typed_ns = np.array([t for t, _ in tw], dtype=np.int64)
     typed_n = np.array([n for _, n in tw], dtype=float)
-    x0 = features(np.array([o_ns], dtype=np.int64), ts, typed_ns, typed_n)[0][0]
+    hub_ns = _ns_sorted(hub, o_ns)
+    hub_since_ns = None if hub_since is None else _ns(hub_since)
+    x0 = features(np.array([o_ns], dtype=np.int64), ts, typed_ns, typed_n, hub_ns, hub_since_ns)[0][0]
     last = ts[-1] if len(ts) else None
     hours_since = None if last is None else (o_ns - last) / _HOUR_NS
     bucket = state_bucket(hours_since)
@@ -241,7 +283,7 @@ def forecast(messages: Sequence[datetime], origin: datetime,
     hours = np.arange(start, o_ns, _HOUR_NS, dtype=np.int64)
     # outcome per past hour: any message in [h, h + 1 h); every hour here ends at or before the origin
     y = (np.searchsorted(ts, hours + _HOUR_NS, side="left") > np.searchsorted(ts, hours, side="left")).astype(float)
-    X, b = features(hours, ts, typed_ns, typed_n)
+    X, b = features(hours, ts, typed_ns, typed_n, hub_ns, hub_since_ns)
     w = 0.5 ** (((o_ns - hours) / (24 * _HOUR_NS)) / HALF_LIFE_DAYS)
     base = float((w @ y + PRIOR_POS) / (w.sum() + PRIOR_HOURS))
     m = b == bucket
@@ -367,7 +409,8 @@ class Reachable:
             msgs = self.store.juniper_messages(origin - LOOKBACK, origin)
             typed = self.store.juniper_claude_typed(origin - LOOKBACK, origin)
             coverage = self.store.juniper_typing_coverage(origin - LOOKBACK - timedelta(hours=6), origin)
-            f = forecast(msgs, origin, typed, coverage)
+            hub = self.store.juniper_hub_minutes(origin - LOOKBACK - HUB_BACK, origin)
+            f = forecast(msgs, origin, typed, coverage, hub, self.store.juniper_hub_since())
             served = self._verdict(now)["served"]
             row = {**f, "forecast_id": f"reachable:{origin.strftime('%Y-%m-%dT%H')}", "issued_at": now,
                    "model": MODEL, "served": served, "settled_at": None, "happened": None, "n_in_window": None}

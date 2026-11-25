@@ -19,6 +19,7 @@ Read-only: SELECT through ``docker exec orion-athena-sql-db psql``, ``GRAPH.RO_Q
 
 The judge runs under one operator lease on ``--lane`` (default ``agent``, Orion's Flash-Next agent seat) through
 the gateway (``orion.evals.leased_llm``); a recall stops the run with a partial report (exit 3).
+Needs ``ORION_BUS_URL`` (the GPU pool) and the gateway (``ORION_LLM_GATEWAY_URL``, default 127.0.0.1:8210).
 
 Writes ``/tmp/reflection-register-share/<end date>/report.md`` and ``items.jsonl``.
 """
@@ -89,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = args.out or OUT_ROOT / end[:10]
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, operator_lane_sync
+    from orion.evals.leased_llm import EXIT_RECALLED, EXIT_UNAVAILABLE, LaneRecalled, LaneUnavailable, operator_lane_sync
 
     results: list[dict] = []
     summaries: list[dict] = []
@@ -114,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
                 summaries.append(summarize(organ, labelled))
                 for sub in sorted({x["sub"] for x in labelled if x["sub"]}):
                     summaries.append(summarize(f"{organ} / {sub}", [x for x in labelled if x["sub"] == sub]))
+    except LaneUnavailable as exc:
+        print(f"REFUSED: no seat on {args.lane}: {exc}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
     except LaneRecalled as exc:
         print(f"RECALLED after {len(results)} items: {exc}; partial items written", file=sys.stderr)
         (out_dir / "items.partial.jsonl").write_text("".join(json.dumps(r, default=str) + "\n" for r in results))

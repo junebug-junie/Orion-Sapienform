@@ -139,7 +139,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def cmd_score(args: argparse.Namespace) -> int:
-    from orion.evals.leased_llm import EXIT_RECALLED, LaneRecalled, operator_lane_sync
+    from orion.evals.leased_llm import EXIT_RECALLED, EXIT_UNAVAILABLE, LaneRecalled, LaneUnavailable, operator_lane_sync
 
     rows = [r for r in read_tsv(args.path) if parse_label(r["label"])]
     if not rows:
@@ -152,6 +152,9 @@ def cmd_score(args: argparse.Namespace) -> int:
                 it = Item(r["organ"], r["ref"], r["question"], r["text"])
                 label, _reason, err, model = judge_one(lane, it)
                 results.append({**r, "juniper": parse_label(r["label"]), "judge": label, "error": err, "model": model})
+    except LaneUnavailable as exc:
+        print(f"REFUSED: no seat on {args.lane}: {exc}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
     except LaneRecalled as exc:
         print(f"RECALLED after {len(results)} of {len(rows)} rows: {exc}; nothing scored", file=sys.stderr)
         return EXIT_RECALLED

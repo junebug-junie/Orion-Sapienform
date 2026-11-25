@@ -1553,3 +1553,33 @@ def test_settings_ship_the_clue_veto_on() -> None:
     assert person_model_config(Settings()).clue_veto_enabled is True
     assert person_model_config(Settings(VISION_PERSON_CLUE_VETO_ENABLED=False)).clue_veto_enabled is False
     assert "\nVISION_PERSON_CLUE_VETO_ENABLED=true\n" in (SERVICE / ".env_example").read_text()
+
+
+@needs_pg
+def test_load_crop_clues_counts_a_kind_only_on_cameras_that_box_it(pg) -> None:
+    """A camera that has not boxed strollers yet (the office; the doorbell before
+    2026-11-24) must not count its passages as "no stroller"."""
+    from sqlalchemy import text
+
+    t0 = datetime(2026, 11, 20, 18, 0, tzinfo=timezone.utc)
+    rows = [  # crop_id, stream, label, minutes after t0, box
+        ("w-old", "walkway", "person", -60, [100, 100, 140, 200]),   # before the walkway's first stroller
+        ("w-p", "walkway", "person", 0, [100, 100, 140, 200]),
+        ("w-s", "walkway", "stroller", 0, [130, 150, 180, 200]),      # next to w-p, same frame
+        ("w-far", "walkway", "person", 5, [100, 100, 140, 200]),
+        ("w-s2", "walkway", "stroller", 5, [600, 150, 650, 200]),     # same frame, far away
+        ("d-p", "doorbell", "person", 10, [100, 100, 140, 200]),      # doorbell never boxed a stroller
+        ("d-dog", "doorbell", "dog", 10, [110, 160, 150, 200]),
+    ]
+    with pg.begin() as conn:
+        for cid, stream, label, mins, box in rows:
+            conn.execute(text(
+                "INSERT INTO vision_crop_observation (crop_id, observation_id, stream_id, observed_at, label, box_xyxy, score) "
+                "VALUES (:c, :c, :s, :t, :l, :b, 0.5)"),
+                {"c": cid, "s": stream, "t": t0 + timedelta(minutes=mins), "l": label, "b": box})
+    with pg.connect() as conn:
+        got = pm.load_crop_clues(conn, ["w-old", "w-p", "w-far", "d-p"], ("stroller", "dog"))
+    assert got["w-old"][1] == frozenset() and got["w-old"][2] == frozenset()
+    assert got["w-p"][1] == {"stroller"} and got["w-p"][2] == {"stroller"}
+    assert got["w-far"][1] == frozenset() and got["w-far"][2] == {"stroller"}
+    assert got["d-p"][1] == {"dog"} and got["d-p"][2] == {"dog"}          # dog yes; stroller not eligible

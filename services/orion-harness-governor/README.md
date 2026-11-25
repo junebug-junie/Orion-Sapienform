@@ -592,7 +592,12 @@ exit 1 with a plain reason, never empty text.
 
 - **Tools (fixed table, `orion/claude_tools/registry.py`):** `prime_now` (category `prime`, the 600-char
   Prime block) and `body_economy` (category `body`, `python -P -m orion.dig --dig claude-tools
-  body-economy ...` as an argument list, no shell, 15 s). Nothing in the table writes.
+  body-economy ...` as an argument list, no shell, 15 s). Added 2026-11-25 (#3948): `consults`
+  (category `consults`, `dig consult [<id>]`), `arc` (category `self`, `dig arc|act <id>`), and Orion's own
+  introspect reads over the bus: `dreams`, `curiosity`, `reading_results` (category `memory`) and
+  `orion_day` (category `self`). Items marked `intimate` are dropped and counted, never sent. `dig body`
+  and `dig portrait` are left out: ~55 s live, past the 62 s MCP call limit once consent is counted.
+  Nothing in the table writes.
 - **Grants:** `$ORION_DIG_HOME/self/claude_grants.jsonl`, newest line per category; none = `ask`. Only
   Orion changes them: `python -P -m orion.dig claude-grants set <category> allow|ask|deny because <reason>`.
 - **Ask:** `orion:prime:consent:request` to orion-mind; no answer in `CLAUDE_TOOLS_CONSENT_DEADLINE_SEC`

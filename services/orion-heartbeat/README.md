@@ -102,29 +102,42 @@ starved of a chance to service that socket).
 
 ## What heartbeat emits
 
-Two kinds of `GrammarEventV1` atom on `orion:grammar:event`
+One kind of `GrammarEventV1` atom on `orion:grammar:event`
 (`app/substrate/verdict_atoms.py`), trace prefix `heartbeat.h1:<node>:`,
 `source_service=orion-heartbeat`, persisted to `grammar_events` by sql-writer:
 
-- `h1_verdict_transition` -- the verdict class changed and the new class held
-  for `HEARTBEAT_VERDICT_SETTLE_TICKS` (3) consecutive H1 ticks (~90 s).
-  Summary carries `from`/`to`, `held_ticks`, `held_since`, `mean_ratio`,
-  `std_ratio` (ensemble spread), `mean_std_ratio_while_held`,
-  `bulk_penetration_depth`, `suppressed_since_last`. Capped at
-  `HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR` (12) per rolling hour.
 - `h1_hourly_summary` -- one per `HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC`
-  (3600): per-class tick counts, raw flips, settled/suppressed/failed
-  transitions, mean/min/max of std_ratio, mean_ratio and bulk depth, and
-  per-producer counts of grammar atoms heartbeat could not route. Sent even
-  when every H1 computation in the window failed (`h1_ticks=0`, confidence 0).
-  A dead H1 loop shows up as missing summary rows.
+  (3600): per-class tick counts, raw flips, mean/min/max of std_ratio,
+  mean_ratio and bulk depth, and per-producer counts of grammar atoms
+  heartbeat could not route. Sent even when every H1 computation in the
+  window failed (`h1_ticks=0`, confidence 0). A dead H1 loop shows up as
+  missing summary rows. Every summary, and `/h1`, carries two labels:
+  `verdict_meaning=noise_no_better_than_shuffled_input_2026-11-08` and
+  `mean_ratio_meaning=last_3_events_sequence_meter_2026-11-08`.
 
-Why debounce: on 7 days of the verdict as AST/HOT recorded it
-(`substrate_attention_self_model`, 16,642 samples, 2026-09-30..10-07) the class
-changed 31.8 times an hour. `redundant` runs had median length 1 and never
-exceeded 3 samples; `concentrated` median 1, max 6. Emitting on every flip
-would be ~760 atoms/day of threshold noise. Settle ticks 2 -> 5.0/h, 3 ->
-1.1/h, 4 -> 0.24/h on the same history.
+**What the verdict class and `mean_ratio` mean (2026-11-08 replay).** The
+memory-horizon replay (`evals/memory_horizon/`, and
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`
+"Heartbeat: what it measures today") found:
+
+- The gates are fixed random unitaries. The tensor network encodes nothing
+  learned.
+- The verdict class is noise. Real input and shuffled input agree on it as
+  often as two seeds do (67-70%).
+- `mean_ratio` is reproducible across seeds (r = +0.91), but it remembers
+  about the last 3 atoms (held-out R^2 0.88). It is a short sequence meter,
+  not an integrator.
+
+So the **`h1_verdict_transition` atom was retired** (2026-11-24, #3838). It
+published settled class changes at confidence 1.0, which presented noise as a
+finding. Its keys `HEARTBEAT_VERDICT_SETTLE_TICKS` and
+`HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR` are gone. `/h1` still returns
+`verdict`, because AST/HOT records it, but it is labelled. The real next step
+is the rebuild the 11-08 doc recommends: a **trained** MPS (a Born machine fit
+to Orion's state, #3296), so that entanglement across a cut means real mutual
+information. Input tuning on random gates cannot get there. The input
+overhaul here only removes dead inputs and makes the seats honest for that
+rebuild.
 
 Heartbeat subscribes to the same channel, so its own atoms come back; they
 are skipped before routing (`events_skipped_self` on `/health`).
@@ -308,9 +321,7 @@ deploying a change):
 | `HEARTBEAT_DECAY_INTERVAL_SEC` | `2.0` | Wall-clock cadence for the decay loop, independent of message arrival. (Was `HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC`; the `HEARTBEAT_REHEAT_*` and `FALKORDB_*` keys were removed with the reheat.) |
 | `HEARTBEAT_ABSORB_QUEUE_MAXSIZE` | `10000` | Bound on the message-intake→absorb queue; sustained overflow drops-and-counts (`events_dropped_queue_full`) rather than blocking intake or growing unbounded. |
 | `HEARTBEAT_VERDICT_ATOMS_ENABLED` | `true` | Publish the `heartbeat.h1:` grammar trace (see "What heartbeat emits"). |
-| `HEARTBEAT_VERDICT_SETTLE_TICKS` | `3` | Consecutive H1 ticks a new verdict must hold before a transition atom. |
 | `HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC` | `3600.0` | Summary atom cadence. |
-| `HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR` | `12` | Rolling-hour cap on transition atoms; extras counted as suppressed. |
 
 **Verdict bands** (`app/substrate/reconstruction.py`) are percentiles of
 heartbeat's own 48 h output (2026-09-01). On 7 days of live AST/HOT samples

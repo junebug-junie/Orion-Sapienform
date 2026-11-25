@@ -6,6 +6,7 @@ This is step 0 of the heartbeat-seats / field-demon design (PR #3837, ticket #38
 - **Reheat removed.** The bus_synaptic "reheat" is gone, together with its FalkorDB reader, its settings and env keys, the `last_reheat` block on `/health`, and the Hub panel that showed it. Decay alone still brings the substrate to rest.
 - **Seats changed.** cortex-orch now shares the execution seat. The agent harness (`orion-harness-governor`, about 18,500 event atoms a day) takes the freed seat. Every other catalogued producer is either routed or named with a reason.
 - **Evals and CI.** There is a new input audit eval that can run as a gate, and a before/after replay eval. A new CI workflow runs the heartbeat tests; until now nothing in CI ran them.
+- **Verdict transition atom retired.** The 2026-11-08 replay found that the verdict class is noise, so the heartbeat no longer publishes its settled class changes. The hourly summary and `/h1` now label the verdict as noise, and label `mean_ratio` as a last-3-events sequence meter.
 - **Probes re-run.** Both pre-registered probes were re-run against their original fail lines, and dated amendments were added to the pre-registration docs.
 
 ## Outcome moved
@@ -15,6 +16,25 @@ The heartbeat now moves with how busy Orion is. Before the overhaul it did not.
 On replayed real atoms (two 2-hour windows on 2026-11-24, one night and one day), the old build's H1 numbers did not track the number of atoms absorbed: every Spearman ρ was within ±0.10. The new build's bulk depth tracks that count with ρ = 0.69 in both windows, and its trajectory spread falls as activity rises (ρ −0.32 and −0.37).
 
 On the same 2 hours of live data, the old build now **fails** the neighbour-links probe: it reads as a thermometer (delta 0.004). The new build **holds** (delta 0.78).
+
+## Context: what the heartbeat measures (2026-11-08 replay)
+
+The memory-horizon replay is in `services/orion-heartbeat/evals/memory_horizon/`. Its section in `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md` is "Heartbeat: what it measures today". It found:
+
+- The gates are fixed random unitaries (seed 20260724). The tensor network encodes nothing learned.
+- The verdict class is noise. Real and shuffled input agree on it 67–68% of the time, and two seeds agree 69–70%.
+- `mean_ratio` is reproducible across seeds (r = +0.91). But it remembers only about the last 3 atoms (held-out R² 0.88), so it is a "last-3-events sequence meter".
+- The doc recommended three things:
+  - stop publishing the verdict class as meaningful;
+  - keep `mean_ratio`, labelled;
+  - rebuild the heartbeat as a **trained MPS Born machine** (#3296).
+
+**This PR does not change that verdict on the heartbeat.**
+
+- It cleans the inputs and retires dead ones, so the seats are honest when the Born-machine rebuild comes.
+- It applies the first two recommendations (retire the verdict-transition atom; label the verdict and `mean_ratio`).
+- **The real next step is the Born-machine rebuild, not more input tuning.** The new coupling to activity (bulk ρ 0.69) shows that the substrate now hears activity. It does not show that the random gates encode structure.
+- The 3-event memory finding was not re-tested on the new build. The gates are the same random unitaries, so it most likely still holds. One 11-08 caveat is now resolved: the replay held reheat constant, and reheat is now gone.
 
 ## Current architecture (before)
 
@@ -203,6 +223,8 @@ Pair 1 (biometrics–execution) is inverted in both builds, as in September. Tha
 
 ## Schema / bus / API changes
 
+- **Retired** grammar atom: `h1_verdict_transition` (trace prefix `heartbeat.h1:`). No consumer read it. Only the labelled `h1_hourly_summary` remains. Its summary drops the `transitions*` fields and gains `verdict_meaning=` and `mean_ratio_meaning=`. The `channels.yaml` comment is updated.
+- **Added** to `/h1`: `verdict_meaning` and `mean_ratio_meaning`. `/health` `verdict_atoms.confirmed_verdict` is replaced by `verdict_meaning`.
 - **Added** to `/health`:
   - `seat_order`, `unrouted_producer_reasons`;
   - `events_skipped_input` and `events_skipped_input_by_reason`;
@@ -217,17 +239,17 @@ Pair 1 (biometrics–execution) is inverted in both builds, as in September. Tha
 ## Env/config changes
 
 - **Added keys:** `HEARTBEAT_DECAY_INTERVAL_SEC`.
-- **Removed keys:** `HEARTBEAT_REHEAT_STRENGTH`, `HEARTBEAT_REHEAT_PROB_SCALE`, `HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC`, `FALKORDB_URI` and `FALKORDB_BUS_GRAPH` (heartbeat only).
+- **Removed keys:** `HEARTBEAT_VERDICT_SETTLE_TICKS`, `HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR`, `HEARTBEAT_REHEAT_STRENGTH`, `HEARTBEAT_REHEAT_PROB_SCALE`, `HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC`, `FALKORDB_URI` and `FALKORDB_BUS_GRAPH` (heartbeat only).
 - **Renamed keys:** `HEARTBEAT_DECAY_REHEAT_INTERVAL_SEC` is now `HEARTBEAT_DECAY_INTERVAL_SEC`.
 - **`.env_example` updated:** yes.
-- **Local `.env` synced:** yes, with `python scripts/sync_local_env_from_example.py orion-heartbeat --all-keys`, which added the new key. The 5 retired keys were removed by hand from the primary checkout's `services/orion-heartbeat/.env`. A backup was kept in the session scratchpad.
+- **Local `.env` synced:** yes, with `python scripts/sync_local_env_from_example.py orion-heartbeat --all-keys`, which added the new key. The 7 retired keys were removed by hand from the primary checkout's `services/orion-heartbeat/.env`. A backup was kept in the session scratchpad.
 - **Skipped keys:** none.
 
 ## Tests run
 
 ```text
 CI: all checks pass, including the new 'orion-heartbeat tests' workflow
-PYTHONPATH=. pytest services/orion-heartbeat/tests -q        -> 178 passed
+PYTHONPATH=. pytest services/orion-heartbeat/tests -q        -> 172 passed (transition-atom tests replaced by retirement and label tests)
 PYTHONPATH=. pytest services/orion-hub/tests/test_attention_organ_page.py services/orion-hub/tests/test_field_attention_operator_panel.py -q -> passed
 ```
 
@@ -316,6 +338,12 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 - **Issues:**
   - opened #3869 (band recalibration), #3870 (window producers' counts exist only in summary text), #3871 (verify-live);
   - refs #3838 (left open until #3871 is verified).
+
+## Where this PR differs from the coordinator's guidance
+
+**Gate strength.** The guidance was "presence-only, do not tune strengths, because the gates are random". I kept a measured `level` for 8 inputs. The reason: the bus and biometrics seats fire on a fixed clock (hourly CV about 0.21). As presence atoms they would be clockwork, which carries neither timing nor value, so the rules would have to skip them. That would empty the bus and biometrics seats, and the bus seat is half of the neighbour probe's deciding pair. A level that can read 0 is the only way those seats can tell "calm" from "active".
+
+This is not tuning. Levels are passed through raw: no weights, no fitted constants, only the √(2/π) calm-floor subtraction on the bus. Switching to presence-only is a one-line change per rule in `ROLE_RULES`. If the coordinator prefers presence-only, the cost is two seats.
 
 ## Open questions for Juniper
 

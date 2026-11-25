@@ -101,19 +101,14 @@ class Settings(BaseSettings):
     # to tell dark from rare.
     organ_fire_window_sec: float = Field(300.0, alias="HEARTBEAT_ORGAN_FIRE_WINDOW_SEC")
 
-    # --- H1 verdict atoms on orion:grammar:event (2026-10-07) ---
-    # app/substrate/verdict_atoms.py. Heartbeat publishes a grammar atom when
-    # the H1 verdict class changes and has HELD for verdict_settle_ticks
-    # consecutive H1 ticks, plus one summary atom per summary window.
-    # Ledger-only trace: no reducer, field channel or prior reads it.
+    # --- H1 summary atom on orion:grammar:event (2026-10-07) ---
+    # app/substrate/verdict_atoms.py. One summary atom per window, labelled
+    # with the 2026-11-08 replay's reading (verdict class = noise, mean_ratio
+    # = last-3-events sequence meter). Ledger-only trace. The settled
+    # transition atom and its HEARTBEAT_VERDICT_SETTLE_TICKS /
+    # HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR keys were retired 2026-11-24
+    # (#3838).
     verdict_atoms_enabled: bool = Field(True, alias="HEARTBEAT_VERDICT_ATOMS_ENABLED")
-    # 3 ticks (~90 s at the 30 s H1 cadence): on 7 days of recorded verdicts,
-    # 1 -> 31.8 atoms/h (threshold flicker), 2 -> 5.0/h, 3 -> 1.1/h.
-    verdict_settle_ticks: int = Field(3, ge=1, alias="HEARTBEAT_VERDICT_SETTLE_TICKS")
     verdict_summary_interval_sec: float = Field(3600.0, gt=0, alias="HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC")
-    # Hard ceiling on transition atoms per rolling hour; extras are counted in
-    # the summary (transitions_suppressed), not dropped silently.
-    verdict_max_transitions_per_hour: int = Field(12, ge=1, alias="HEARTBEAT_VERDICT_MAX_TRANSITIONS_PER_HOUR")
-
 
 settings = Settings()

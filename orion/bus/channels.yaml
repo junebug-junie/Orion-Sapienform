@@ -3102,8 +3102,9 @@ channels:
       # act ledger (2026-11-13, #3320): Orion's camera looks (`dig look`, actor orion.look, verb look),
       # published from a turn's Bash in the governor container (orion/dig/look.py).
       - orion-harness-governor
-      # settled H1 verdict transitions + one summary per hour (trace prefix
-      # heartbeat.h1:), gated by HEARTBEAT_VERDICT_ATOMS_ENABLED --
+      # one labelled H1 summary per hour (trace prefix heartbeat.h1:; the
+      # settled-transition atom was retired 2026-11-24, #3838), gated by
+      # HEARTBEAT_VERDICT_ATOMS_ENABLED --
       # services/orion-heartbeat/app/substrate/verdict_atoms.py. Ledger-only:
       # no substrate reducer or field channel reads these.
       - orion-heartbeat

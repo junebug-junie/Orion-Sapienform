@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -30,11 +29,11 @@ from .substrate.routing import (
     route_atom,
 )
 from .substrate.verdict_atoms import (
+    MEAN_RATIO_MEANING,
+    VERDICT_MEANING,
     H1Tick,
     HourlyWindow,
-    VerdictTransitionTracker,
     build_summary_event,
-    build_transition_event,
     safe_token,
 )
 
@@ -59,9 +58,9 @@ class HeartbeatService(BaseChassis):
     orion-substrate-runtime's already-solved standardization work instead of
     the 2026-05-01 charter's bespoke per-organ reducers).
 
-    **2026-10-07: publishes bounded H1 verdict atoms back onto
-    orion:grammar:event** (settled class transitions + one summary per
-    window, app/substrate/verdict_atoms.py). Ledger-only: no reducer, field
+    **2026-10-07: publishes a bounded H1 summary atom back onto
+    orion:grammar:event** (one summary per window; settled-transition atoms retired 2026-11-24 --
+    the class is noise, app/substrate/verdict_atoms.py). Ledger-only: no reducer, field
     channel or prior consumes them. Its own atoms come back on the same
     subscription and are skipped by source_service before routing
     (events_skipped_self), so heartbeat can never feed on itself.
@@ -156,12 +155,7 @@ class HeartbeatService(BaseChassis):
         # only to NAME what heartbeat does not route; routing stays
         # ORGAN_SITE_MAP (see routing.py for why).
         self.catalog_producers = catalog_grammar_producers()
-        self.verdict_tracker = VerdictTransitionTracker(settle_ticks=settings.verdict_settle_ticks)
         self.verdict_window = HourlyWindow(start=datetime.now(timezone.utc))
-        self._transition_times: deque[datetime] = deque()
-        # Transitions capped or failed since the last one that reached the bus
-        # -- carried on the next published atom so its from= is explicable.
-        self._unpublished_transitions = 0
         self.verdict_atoms_published = 0
         self.verdict_atoms_publish_failed = 0
         self.last_verdict_atom: dict[str, Any] | None = None
@@ -171,6 +165,10 @@ class HeartbeatService(BaseChassis):
             return None
         d = asdict(self.latest_h1)
         d["generated_at"] = self.latest_h1.generated_at.isoformat()
+        # 2026-11-08 replay labels (verdict_atoms.py): read verdict as noise
+        # and mean_ratio as a very-short-memory sequence meter.
+        d["verdict_meaning"] = VERDICT_MEANING
+        d["mean_ratio_meaning"] = MEAN_RATIO_MEANING
         return d
 
     async def stats(self) -> dict[str, Any]:
@@ -221,7 +219,7 @@ class HeartbeatService(BaseChassis):
                 "enabled": settings.verdict_atoms_enabled,
                 "published": self.verdict_atoms_published,
                 "publish_failed": self.verdict_atoms_publish_failed,
-                "confirmed_verdict": self.verdict_tracker.confirmed,
+                "verdict_meaning": VERDICT_MEANING,
                 "window_start": self.verdict_window.start.isoformat(),
                 "window_h1_ticks": self.verdict_window.h1_ticks,
                 "last": self.last_verdict_atom,
@@ -451,9 +449,9 @@ class HeartbeatService(BaseChassis):
         return True
 
     async def _observe_verdict(self, now: datetime) -> None:
-        """Feed the latest H1 result to the transition tracker and the summary
-        window; publish a settled transition if one confirmed (subject to the
-        per-hour cap)."""
+        """Feed the latest H1 result to the summary window. Settled-transition
+        atoms were retired 2026-11-24 (#3838): the class is noise (11-08
+        replay), see verdict_atoms.py."""
         h1 = self.latest_h1
         if h1 is None:
             return
@@ -465,27 +463,6 @@ class HeartbeatService(BaseChassis):
             bulk_penetration_depth=h1.bulk_penetration_depth,
         )
         self.verdict_window.record_tick(tick)
-        transition = self.verdict_tracker.observe(tick)
-        if transition is None:
-            return
-        while self._transition_times and (now - self._transition_times[0]).total_seconds() >= 3600.0:
-            self._transition_times.popleft()
-        if len(self._transition_times) >= settings.verdict_max_transitions_per_hour:
-            self.verdict_window.transitions_suppressed += 1
-            self._unpublished_transitions += 1
-            return
-        event = build_transition_event(
-            node=settings.node_name or "unknown",
-            transition=transition,
-            suppressed_since_last=self._unpublished_transitions,
-        )
-        if await self._publish_verdict_event(event, "transition"):
-            self._transition_times.append(now)
-            self.verdict_window.transitions_emitted += 1
-            self._unpublished_transitions = 0
-        else:
-            self.verdict_window.transitions_publish_failed += 1
-            self._unpublished_transitions += 1
 
     async def _maybe_flush_summary(self, now: datetime) -> None:
         window = self.verdict_window

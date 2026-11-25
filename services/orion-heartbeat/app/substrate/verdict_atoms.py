@@ -4,21 +4,18 @@ Heartbeat computes an H1 verdict (redundant / concentrated / mixed) every 30 s
 and, before this module, told no one except whoever polled ``/h1``. This
 module turns that stream into two kinds of grammar atom:
 
-* ``h1_verdict_transition`` -- the verdict class changed AND the new class held
-  for ``settle_ticks`` consecutive H1 ticks. Not every raw flip: replaying 7
-  days of the verdict as AST/HOT recorded it (substrate_attention_self_model,
-  16,642 samples, 2026-09-30..10-07) found 31.8 raw class changes per hour --
-  ``redundant`` runs have median length 1 and never exceed 3 samples,
-  ``concentrated`` median 1. A per-flip atom would be ~760/day of threshold
-  noise. Requiring 3 settled ticks cut that to ~1.1/hour on the same history.
-  A hard per-hour cap (``max_transitions_per_hour``) bounds it regardless;
-  a capped transition still moves the confirmed class, so the next published
-  atom carries ``suppressed_since_last=N`` to explain its ``from=``.
+* ``h1_verdict_transition`` -- RETIRED 2026-11-24 (#3838). The 2026-11-08
+  memory-horizon replay (docs/superpowers/specs/2026-11-08-prediction-error-
+  suite-rebuild-design.md, "Heartbeat: what it measures today") found the
+  verdict class no better than shuffled input (real vs shuffled agreement
+  67-68%, seed-vs-seed 69-70%). Publishing settled class changes at
+  confidence 1.0 presented noise as a finding, so the atom, its debouncer and
+  its per-hour cap are gone.
 * ``h1_hourly_summary`` -- once per summary window, also when every H1
   computation in it failed (``h1_ticks=0 h1_failures=N``, confidence 0 -- an
   absence, not calm). If the H1 loop task itself dies, summaries stop: that
   reads as missing ``heartbeat.h1:`` rows in grammar_events.
-  per-class tick counts, raw flips, settled transitions, mean/min/max of
+  per-class tick counts, raw flips, mean/min/max of
   std_ratio (ensemble spread), mean_ratio and bulk depth, and per-producer
   counts of grammar atoms heartbeat could not route.
 
@@ -42,9 +39,14 @@ from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenan
 # scan can resolve this file's GrammarProvenanceV1 identity.
 SOURCE_SERVICE = "orion-heartbeat"
 TRACE_PREFIX = "heartbeat.h1:"
-ROLE_TRANSITION = "h1_verdict_transition"
 ROLE_HOURLY_SUMMARY = "h1_hourly_summary"
 VERDICTS = ("concentrated", "mixed", "redundant")
+
+# Labels carried on every summary atom (and on /h1), from the 2026-11-08
+# replay: the class is noise; mean_ratio is reproducible (r=+0.91 across
+# seeds) but remembers about the last 3 atoms (held-out R^2 0.88).
+VERDICT_MEANING = "noise_no_better_than_shuffled_input_2026-11-08"
+MEAN_RATIO_MEANING = "last_3_events_sequence_meter_2026-11-08"
 
 _MAX_UNROUTED_KEYS = 32
 _SAFE_RE = re.compile(r"[^a-z0-9_.-]")
@@ -70,61 +72,6 @@ class H1Tick:
     bulk_penetration_depth: float
 
 
-@dataclass(frozen=True)
-class VerdictTransition:
-    from_verdict: str  # "none" for the first settled verdict after a (re)start
-    to_verdict: str
-    held_ticks: int
-    held_since: datetime
-    confirmed_at: datetime
-    mean_ratio: float
-    std_ratio: float
-    bulk_penetration_depth: float
-    mean_std_ratio_while_held: float
-
-
-class VerdictTransitionTracker:
-    """Debounced class-change detector. ``observe`` returns a transition only
-    when a class different from the last confirmed one has held for
-    ``settle_ticks`` consecutive ticks."""
-
-    def __init__(self, *, settle_ticks: int) -> None:
-        if settle_ticks < 1:
-            raise ValueError(f"settle_ticks must be >= 1, got {settle_ticks}")
-        self.settle_ticks = settle_ticks
-        self.confirmed: Optional[str] = None
-        # Current run of identical verdicts: constant-size state, however long
-        # a class holds.
-        self._streak_verdict: Optional[str] = None
-        self._streak_len = 0
-        self._streak_since: Optional[datetime] = None
-        self._streak_std_sum = 0.0
-
-    def observe(self, tick: H1Tick) -> Optional[VerdictTransition]:
-        if tick.verdict != self._streak_verdict:
-            self._streak_verdict = tick.verdict
-            self._streak_len = 0
-            self._streak_since = tick.at
-            self._streak_std_sum = 0.0
-        self._streak_len += 1
-        self._streak_std_sum += tick.std_ratio
-        if self._streak_len < self.settle_ticks or tick.verdict == self.confirmed:
-            return None
-        previous = self.confirmed
-        self.confirmed = tick.verdict
-        return VerdictTransition(
-            from_verdict=previous or "none",
-            to_verdict=tick.verdict,
-            held_ticks=self._streak_len,
-            held_since=self._streak_since or tick.at,
-            confirmed_at=tick.at,
-            mean_ratio=tick.mean_ratio,
-            std_ratio=tick.std_ratio,
-            bulk_penetration_depth=tick.bulk_penetration_depth,
-            mean_std_ratio_while_held=self._streak_std_sum / self._streak_len,
-        )
-
-
 @dataclass
 class HourlyWindow:
     """Accumulates one summary window. ``drain`` returns its kv summary and resets."""
@@ -132,9 +79,6 @@ class HourlyWindow:
     start: datetime
     verdict_ticks: dict[str, int] = field(default_factory=lambda: {v: 0 for v in VERDICTS})
     raw_flips: int = 0
-    transitions_emitted: int = 0
-    transitions_suppressed: int = 0
-    transitions_publish_failed: int = 0
     h1_failures: int = 0
     unrouted_by_source: dict[str, int] = field(default_factory=dict)
     _last_verdict: Optional[str] = None
@@ -174,10 +118,9 @@ class HourlyWindow:
         unrouted = "|".join(f"{k}:{n}" for k, n in sorted(self.unrouted_by_source.items())) or "none"
         return (
             f"window_start={self.start.isoformat()} window_end={end.isoformat()} "
-            f"h1_ticks={self.h1_ticks} h1_failures={self.h1_failures} verdict_ticks={ticks} "
-            f"raw_flips={self.raw_flips} transitions={self.transitions_emitted} "
-            f"transitions_suppressed={self.transitions_suppressed} "
-            f"transitions_publish_failed={self.transitions_publish_failed} "
+            f"h1_ticks={self.h1_ticks} h1_failures={self.h1_failures} "
+            f"verdict_meaning={VERDICT_MEANING} mean_ratio_meaning={MEAN_RATIO_MEANING} "
+            f"verdict_ticks={ticks} raw_flips={self.raw_flips} "
             f"{stat('std_ratio', self._std)} {stat('mean_ratio', self._mean)} "
             f"{stat('bulk', self._bulk)} "
             f"unrouted_atoms={unrouted}"
@@ -221,29 +164,6 @@ def _event(
             source_component="h1_verdict",
             source_trace_id=trace_id,
         ),
-    )
-
-
-def build_transition_event(
-    *, node: str, transition: VerdictTransition, suppressed_since_last: int = 0
-) -> GrammarEventV1:
-    t = transition
-    trace_id = f"{TRACE_PREFIX}{safe_token(node, 'node')}:transition:{_stamp(t.confirmed_at)}"
-    summary = (
-        f"from={t.from_verdict} to={t.to_verdict} held_ticks={t.held_ticks} "
-        f"held_since={t.held_since.isoformat()} confirmed_at={t.confirmed_at.isoformat()} "
-        f"mean_ratio={t.mean_ratio:.4f} std_ratio={t.std_ratio:.4f} "
-        f"mean_std_ratio_while_held={t.mean_std_ratio_while_held:.4f} "
-        f"bulk_penetration_depth={t.bulk_penetration_depth:.4f} "
-        f"suppressed_since_last={suppressed_since_last}"
-    )
-    return _event(
-        trace_id=trace_id,
-        role=ROLE_TRANSITION,
-        summary=summary,
-        emitted_at=t.confirmed_at,
-        time_range=TimeRangeV1(start=t.held_since, end=t.confirmed_at),
-        confidence=1.0,
     )
 
 

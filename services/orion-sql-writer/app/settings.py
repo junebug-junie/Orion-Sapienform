@@ -599,6 +599,9 @@ class Settings(BaseSettings):
     # age Juniper gave (child / adult) when the cluster's stored vectors confidently
     # read as the other band. Removes candidates only; off on cameras with a prior.
     vision_person_age_veto_enabled: bool = Field(True, alias="VISION_PERSON_AGE_VETO_ENABLED")
+    # Stroller / dog next to the person drops a guess its album says is unlikely
+    # (docs/superpowers/specs/2026-11-24-walkway-clue-evidence-design.md, patch 3).
+    vision_person_clue_veto_enabled: bool = Field(True, alias="VISION_PERSON_CLUE_VETO_ENABLED")
     # Each picture Juniper confirmed is the named person (a "same" picture verdict,
     # e.g. "Yes, that's X" on a walkway story card) teaches the person model as a
     # positive example, even when its group looks like two people. False = only

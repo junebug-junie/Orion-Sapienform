@@ -151,6 +151,12 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's curiosity "
         "tool arguments into the bus request; orion-hub's curiosity introspect listener validates them back",
     ),
+    "orion.schemas.introspect:ReadingResultArguments": (
+        "orion-harness-governor",
+        "the governor's Claude tools broker (orion/claude_tools/readers.py) validates Claude's reading_results "
+        "arguments and IntrospectTools turns them into a ReadingToolRequestV1 in the same process; the model "
+        "itself never crosses the bus",
+    ),
     "orion.schemas.introspect:OrionDayArguments": (
         "orion-harness-governor",
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's orion_day "

@@ -28,13 +28,16 @@ test('countRates: an idle link reads zero, which is calm, not missing', () => {
   const a = core.countRates(null, [{ id: 's', n: 7 }], key, 0);
   const b = core.countRates(a.next, [{ id: 's', n: 7 }], key, 20);
   assert.equal(b.rates.s, 0);
-  assert.equal(core.pulsesPerSecond(0), 0);
 });
 
-test('pulsesPerSecond grows with rate and is capped', () => {
-  assert.ok(core.pulsesPerSecond(1) > 0);
-  assert.ok(core.pulsesPerSecond(100) > core.pulsesPerSecond(1));
-  assert.equal(core.pulsesPerSecond(1e12), 3);
+test('countDeltas: one light per real message; first reading and a reset counter draw nothing', () => {
+  const key = (l) => l.a + '>' + l.b;
+  const first = core.countDeltas(null, [{ a: 'x', b: 'y', n: 100 }], key);
+  assert.deepEqual(first.deltas, {});
+  const second = core.countDeltas(first.next, [{ a: 'x', b: 'y', n: 107 }, { a: 'new', b: 'z', n: 3 }], key);
+  assert.deepEqual(second.deltas, { 'x>y': 7 });
+  const reset = core.countDeltas(second.next, [{ a: 'x', b: 'y', n: 2 }], key);
+  assert.deepEqual(reset.deltas, {});
 });
 
 test('binCounts drops events outside the window', () => {

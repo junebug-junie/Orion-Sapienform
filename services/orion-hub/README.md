@@ -3606,10 +3606,12 @@ stored rows. Every light is one row; nothing is a fused score.
 | Gold arc between two parts | one `experience_use` row: one organ cited another organ's experience | same |
 | Size of a part on the ring | its experience count in the last 30 minutes | same |
 | Outer stars | services in the bus synaptic graph (`orion_bus_synapse`); dim = no publish in the last hour | `GET /api/inner-sky/state` |
-| Blue pulses on links | `CAUSALLY_FOLLOWED_BY` links seen in 24 h; pulse rate = log of the count delta between two polls (real msgs/s) | same |
+| Blue pulse on a link | one real hop: the count delta of a `CAUSALLY_FOLLOWED_BY` link between two 5 s polls, one pulse each (at most 40 per link per poll) | same |
+| Star flash + spark | one message the service published (PUBLISHES count delta, at most 30 per service per poll) | same |
+| Center ("now") | Orion's now: the shared experience stream every part reads; comets land here | — |
 | "Attending to" | the open attention arc in durable-runs' `/temporal-self/frame` (none = none) | same |
 
-Live by default; **Replay 12 h** scrubs the window at 60/240/960×. `?embed=1` is the compact drawer view.
+Live by default; **Replay 12 h** scrubs the window at 60/240/960×. Narrower than 1100 px (the drawer when open) the page is compact; the drawer's ▶ (or the sky's own Widen link) takes the whole row and hides chat until ◀.
 Pure helpers: `static/js/inner-sky-core.js` (tested by `inner-sky-core.test.js`).
 
 The page never calls `GET /temporal-self/now`: that stores an `experience_shown` row, so a debug view would

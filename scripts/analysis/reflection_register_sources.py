@@ -6,8 +6,8 @@ measure for every organ: the finding-register judge (``orion.curiosity.register`
 700 characters of each item, with a question line naming which organ wrote it.
 
 Everything here is SELECT-only (``docker exec orion-athena-sql-db psql``) or ``GRAPH.RO_QUERY``. The judge
-is Orion's own local seat, called directly on its llama.cpp-compatible ``/v1/chat/completions``. No outside
-model is ever called.
+is Orion's own seat, called under an operator lease through orion-llm-gateway (``orion.evals.leased_llm``: one
+GPU pool hold per run, queued behind Orion's own work). No outside model is ever called.
 
 Sources (``ORGANS``):
 
@@ -196,20 +196,27 @@ def _curiosity_items(line: str, organ: str, *, start: str, end: str, with_text: 
     return out
 
 
-def judge_one(client: Any, url: str, item: Item) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """(label, reason, error, model) from Orion's local seat. A model not in PASSED_JUDGE_MODELS is an error."""
+def judge_one(lane: Any, item: Item) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """(label, reason, error, model) from Orion's own seat, under an operator lease through the gateway.
+
+    ``lane`` is an ``orion.evals.leased_llm.OperatorLane`` (``with operator_lane_sync("agent", holder=...)``).
+    A model not in PASSED_JUDGE_MODELS is an error. ``LaneRecalled`` propagates so the run stops."""
+    from orion.evals.leased_llm import LaneCallError
+
     try:
-        r = client.post(f"{url.rstrip('/')}/v1/chat/completions", json={
+        body = lane.chat({
             "messages": judge_messages(item.question, item.text[:ANSWER_CHARS]), "temperature": 0,
-            "max_tokens": JUDGE_MAX_TOKENS, "chat_template_kwargs": {"enable_thinking": False}})
-        r.raise_for_status()
-        body = r.json()
-    except Exception as exc:  # noqa: BLE001
-        return None, None, f"call: {type(exc).__name__}: {exc}"[:200], None
-    model = str(body.get("model") or "") or None
+            # Pinned: the gateway adds sampling defaults on some operator classes when a body leaves them unset.
+            "top_p": 1.0, "presence_penalty": 0,
+            "max_tokens": JUDGE_MAX_TOKENS, "chat_template_kwargs": {"enable_thinking": False}}, timeout_sec=300)
+        content = body["choices"][0]["message"].get("content")
+        model = str(body.get("model") or "") or None
+    except LaneCallError as exc:
+        return None, None, f"call: {exc}"[:200], None
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        return None, None, f"call: bad reply {exc!r}"[:200], None
     if not judge_model_passed(model):
         return None, None, f"model_not_evaluated: {model or 'unknown'}", model
-    content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content")
     label, reason, err = parse_judge_reply(content)
     return label, reason, err, model
 

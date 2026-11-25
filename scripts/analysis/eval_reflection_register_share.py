@@ -3,7 +3,7 @@
 
 Design: docs/superpowers/specs/2026-11-25-orion-self-reflection-drift-design.md, section 6 and acceptance
 check 6. Samples up to ``--per-organ`` items per organ in the window (deterministic: md5 of the row id),
-labels them with the finding-register judge on Orion's own local seat (prompt v2, temperature 0, thinking
+labels them with the finding-register judge on Orion's own seat (leased, through the gateway) (prompt v2, temperature 0, thinking
 off; a reply from a model not in PASSED_JUDGE_MODELS is a judge error, never a label), and prints the
 philosophical share per organ with a 95% Wilson interval and the judge-error count. Curiosity findings use
 the label the live register already stored (the same judge), so they cost no calls.
@@ -14,14 +14,19 @@ never counted as operational.
 Read-only: SELECT through ``docker exec orion-athena-sql-db psql``, ``GRAPH.RO_QUERY`` for nothing here
 (stored labels), and compute-only calls to the local seat. No outside model is called.
 
-    python3 scripts/analysis/eval_reflection_register_share.py --judge-url http://<circe tailnet ip>:8015 \\
+    python3 scripts/analysis/eval_reflection_register_share.py [--lane agent] \\
         [--days 14 | --start 2026-11-11 --end 2026-11-25] [--per-organ 30] [--organs outreach,day_letter]
+
+The judge runs under one operator lease on ``--lane`` (default ``agent``, Orion's Flash-Next agent seat) through
+the gateway (``orion.evals.leased_llm``); a recall stops the run with a partial report (exit 3).
+Needs ``ORION_BUS_URL`` (the GPU pool) and the gateway (``ORION_LLM_GATEWAY_URL``, default 127.0.0.1:8210).
 
 Writes ``/tmp/reflection-register-share/<end date>/report.md`` and ``items.jsonl``.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from collections import Counter
@@ -33,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reflection_register_sources import ORGANS, Item, judge_one, read_items, sample, wilson  # noqa: E402
 
 OUT_ROOT = Path("/tmp/reflection-register-share")
+HOLDER = "operator:reflection-register-share"
 
 
 def summarize(organ: str, labelled: list[dict]) -> dict:
@@ -67,7 +73,7 @@ def render(rows: list[dict], *, start: str, end: str, url: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--judge-url", default="", help="Orion's local seat base URL (needed for any organ but curiosity findings)")
+    ap.add_argument("--lane", default="agent", help="operator lane to judge on (one GPU pool hold, through the gateway)")
     ap.add_argument("--days", type=float, default=14.0)
     ap.add_argument("--start")
     ap.add_argument("--end")
@@ -84,32 +90,40 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = args.out or OUT_ROOT / end[:10]
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    import httpx
+    from orion.evals.leased_llm import EXIT_RECALLED, EXIT_UNAVAILABLE, LaneRecalled, LaneUnavailable, operator_lane_sync
 
     results: list[dict] = []
     summaries: list[dict] = []
-    with httpx.Client(timeout=300) as client:
-        for organ in organs:
-            stored = organ.endswith("_finding")
-            items: list[Item] = sample(read_items(organ, start=start, end=end, with_text=not stored), args.per_organ)
-            labelled = []
-            for it in items:
-                if stored:
-                    rec = {"label": it.stored_label, "error": None if it.stored_label else (it.stored_error or "no_label"),
-                           "model": "stored"}
-                elif not args.judge_url:
-                    rec = {"label": None, "error": "no_judge_url", "model": None}
-                else:
-                    label, reason, err, model = judge_one(client, args.judge_url, it)
-                    rec = {"label": label, "reason": reason, "error": err, "model": model}
-                labelled.append({"organ": organ, "sub": it.sub, "ref": it.ref, "at": it.at, **rec})
-                print(f"{organ:22s} {it.ref[:48]:48s} {rec['label'] or rec['error']}", file=sys.stderr)
-            results.extend(labelled)
-            summaries.append(summarize(organ, labelled))
-            for sub in sorted({x["sub"] for x in labelled if x["sub"]}):
-                summaries.append(summarize(f"{organ} / {sub}", [x for x in labelled if x["sub"] == sub]))
+    needs_judge = any(not o.endswith("_finding") for o in organs)
+    lane_cm = operator_lane_sync(args.lane, holder=HOLDER) if needs_judge else contextlib.nullcontext()
+    try:
+        with lane_cm as lane:
+            for organ in organs:
+                stored = organ.endswith("_finding")
+                items: list[Item] = sample(read_items(organ, start=start, end=end, with_text=not stored), args.per_organ)
+                labelled = []
+                for it in items:
+                    if stored:
+                        rec = {"label": it.stored_label, "error": None if it.stored_label else (it.stored_error or "no_label"),
+                               "model": "stored"}
+                    else:
+                        label, reason, err, model = judge_one(lane, it)
+                        rec = {"label": label, "reason": reason, "error": err, "model": model}
+                    labelled.append({"organ": organ, "sub": it.sub, "ref": it.ref, "at": it.at, **rec})
+                    print(f"{organ:22s} {it.ref[:48]:48s} {rec['label'] or rec['error']}", file=sys.stderr)
+                results.extend(labelled)
+                summaries.append(summarize(organ, labelled))
+                for sub in sorted({x["sub"] for x in labelled if x["sub"]}):
+                    summaries.append(summarize(f"{organ} / {sub}", [x for x in labelled if x["sub"] == sub]))
+    except LaneUnavailable as exc:
+        print(f"REFUSED: no seat on {args.lane}: {exc}", file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    except LaneRecalled as exc:
+        print(f"RECALLED after {len(results)} items: {exc}; partial items written", file=sys.stderr)
+        (out_dir / "items.partial.jsonl").write_text("".join(json.dumps(r, default=str) + "\n" for r in results))
+        return EXIT_RECALLED
     (out_dir / "items.jsonl").write_text("".join(json.dumps(r, default=str) + "\n" for r in results))
-    report = render(summaries, start=start, end=end, url=args.judge_url)
+    report = render(summaries, start=start, end=end, url=f"operator lane {args.lane}")
     (out_dir / "report.md").write_text(report)
     print(report)
     print(f"wrote {out_dir / 'report.md'}", file=sys.stderr)

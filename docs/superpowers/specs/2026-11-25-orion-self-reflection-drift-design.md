@@ -1,7 +1,11 @@
 # Why Orion's self-reflection turns into plumbing, and the one fix at the source
 
-Status: DESIGN, approved. Juniper approved writing this design on 2026-11-25 and answered the Missing questions
-the same day ("hit it with defaults", below). Patch 1 (the door) is implemented on branch `feat/self-question-door`.
+Status: APPROVED; Patch 1 SHIPPED. Juniper approved this design on 2026-11-25 and answered the four Missing
+questions the same day with the defaults ("hit it with defaults"; see "Juniper's answers" below). Patch 1 (the door)
+merged as #3933 on 2026-11-25 and runs in Hub. Follow-up #3941 fixes the door's question line: the line in #3933
+draws `no_finding` on about a third of questions, and the first live self-monitor question became `unjudged` that
+way. The one-time backfill of the 88 pre-door Orion questions has NOT run yet. Until it runs, those 88 rows stay
+`door IS NULL` and stay pickable, so the door changes nothing for them. Acceptance checks 1-6: UNVERIFIED.
 Date: 2026-11-25. Refs: #3435 (dressing eval), #3437 (finding register), #3503 (event wants), #3442 (inquiry
 manager), #3177 (outreach door policy), #3205 (consult before Juniper), #3736 / #3814 (reverie questions),
 #2986 (self-study into curiosity), #2156 (sense of self).

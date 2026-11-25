@@ -345,7 +345,8 @@ read `unknown` until a live probe settles them), `enemies` (alive slots with typ
 x, y, tile, hp), `drops` (type-$60 item objects), `walls` (22x32, True = blocked; play
 and cave only) and `walls_hash`. `level` 1-9 also reads `unknown` (no dungeon probe
 yet). `VERDICTS` in the module is the live-settlement table. `controllable` is false
-during transitions, cave text (`$AD` 0/1/3/7), an item lift (`$506`) and pause.
+during transitions, cave text (`$AD` 0/1/3/7), an item lift (`$506` 1..127; a
+level-9 save holds 242 while Link walks, so higher values are not a lift) and pause.
 Tile convention (shared by motor, atlas and the planner's text map): column
 `(x+4)//8`, row `(y+11-64+4)//8`, i.e. the game's own collision hotspot.
 

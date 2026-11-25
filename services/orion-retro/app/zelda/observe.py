@@ -154,7 +154,9 @@ def decode(ram, save, frame=None, include_walls=True):
     # (ObjState+1 $AD = 0 price transfer, 1 textbox, 3 item cue, 7 textbox; Link moved
     # 1 px in 15 frames of state 0) and while an item is held up
     # (ItemLiftTimer $506 counts 127 -> 0). Overworld $AD is an enemy's state, unused here.
-    frozen = (ram[0x506] != 0 or (mode == 'cave' and ram[0xAD] in (0, 1, 3, 7))
+    # Only 1..127 is a lift: live 2026-11-25 a level-9 save sat at $506 = 242 for 3,600 frames
+    # while Link walked 40 px on DOWN and RIGHT, so a value above 127 is not the lift timer.
+    frozen = (0 < ram[0x506] <= 0x7F or (mode == 'cave' and ram[0xAD] in (0, 1, 3, 7))
               or (_settled('paused') and ram[0xE0] != 0))
     out = dict(status='observed', profile=PROFILE, frame=frame, mode=mode, mode_code=code,
                submode=ram[0x13],

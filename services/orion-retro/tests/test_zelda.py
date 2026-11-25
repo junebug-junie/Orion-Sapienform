@@ -82,6 +82,9 @@ def test_walls_only_in_map_modes_and_control_gates():
     assert not obs(mode=0x0B, ad=0)['link']['controllable']        # cave prices transfer (live: frozen)
     assert obs(mode=0x0B, ad=2)['link']['controllable']
     assert not obs(lift=40)['link']['controllable']                # item held up
+    assert not obs(lift=0x7F)['link']['controllable']              # lift starts at 127
+    assert obs(lift=0x80)['link']['controllable']                  # above 127 is not the lift
+    assert obs(lift=242)['link']['controllable']                   # live level-9 save, Link walks at 242
     assert not obs(paused=1)['link']['controllable'] and obs(paused=1)['paused'] is True
     assert obs(mode=0x11)['mode'] == 'death'
 

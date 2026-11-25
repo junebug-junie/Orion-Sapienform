@@ -3215,6 +3215,10 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 # Only envelope_id from the envelope: the generic extras carry the ENVELOPE
                 # correlation_id (a fresh uuid4 per publish in attention-runtime), which would
                 # overwrite the goal's own correlation_id (#3924).
+                # No artifact_id = no dedup key (the schema would mint a fresh one per
+                # delivery), so refuse it to the fallback log instead of storing duplicates.
+                if not (isinstance(data_to_process, dict) and data_to_process.get("artifact_id")):
+                    raise ValueError("field goal payload has no artifact_id")
                 goal_extras = {"envelope_id": str(env.id)} if getattr(env, "id", None) else {}
                 write_ok = await _write(sql_model, schema_model, data_to_process, goal_extras, kind=env.kind)
             elif sql_model is LlmCallUsageSQL:

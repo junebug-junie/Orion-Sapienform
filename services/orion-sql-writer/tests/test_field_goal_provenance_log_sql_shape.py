@@ -146,11 +146,37 @@ def test_one_row_per_goal_with_columns_and_full_payload(monkeypatch) -> None:
 
 
 def test_redelivered_goal_does_not_double_insert(monkeypatch) -> None:
+    """Redelivery is a skipped duplicate: not a merge that overwrites the row, not an error
+    routed to the fallback log (review finding: count()==1 alone passed for both)."""
     session = _session(monkeypatch)
+    fallbacks: list[tuple] = []
+    monkeypatch.setattr(worker, "_write_fallback", lambda *a, **k: fallbacks.append(a))
     payload = _goal().model_dump(mode="json")
+    first, second = _envelope(payload), _envelope(payload)  # same artifact_id, new envelope
+    asyncio.run(worker.handle_envelope(first))
+    stored = session.query(FieldGoalProvenanceLogSQL).one()
+    received_at = stored.received_at
+    asyncio.run(worker.handle_envelope(second))
+    session.expire_all()
+    row = session.query(FieldGoalProvenanceLogSQL).one()
+    assert row.envelope_id == str(first.id)  # a merge would carry the second envelope's id
+    assert row.received_at == received_at
+    assert fallbacks == []
+    # The writer reports the second write as an idempotent skip.
+    data = FieldGoalProvenanceV1.model_validate(payload).model_dump()
+    assert worker._write_row(FieldGoalProvenanceLogSQL, data) is False
+
+
+def test_payload_without_artifact_id_is_refused_not_stored(monkeypatch) -> None:
+    session = _session(monkeypatch)
+    fallbacks: list[tuple] = []
+    monkeypatch.setattr(worker, "_write_fallback", lambda *a, **k: fallbacks.append(a))
+    payload = _goal().model_dump(mode="json")
+    del payload["artifact_id"]
     asyncio.run(worker.handle_envelope(_envelope(payload)))
-    asyncio.run(worker.handle_envelope(_envelope(payload)))  # same artifact_id, new envelope
-    assert session.query(FieldGoalProvenanceLogSQL).count() == 1
+    asyncio.run(worker.handle_envelope(_envelope(payload)))
+    assert session.query(FieldGoalProvenanceLogSQL).count() == 0
+    assert len(fallbacks) == 2
 
 
 def test_malformed_payload_is_rejected_logged_and_does_not_raise(monkeypatch, caplog) -> None:

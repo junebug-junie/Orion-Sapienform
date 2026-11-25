@@ -26,6 +26,7 @@ on:
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
       - "scripts/backfill_reading_act_cost.py"   # tested by test_act_reading_cost_integration.py
+      - "scripts/undo_vision_link.py"   # tested by test_vision_link_undo.py
       - "scripts/backfill_reading_act_energy.py"   # tested by test_reading_energy_closure_integration.py
       - "orion/situational/street_material.py"
       - "services/orion-substrate-runtime/**"
@@ -55,6 +56,7 @@ on:
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
       - "scripts/backfill_reading_act_cost.py"   # tested by test_act_reading_cost_integration.py
+      - "scripts/undo_vision_link.py"   # tested by test_vision_link_undo.py
       - "scripts/backfill_reading_act_energy.py"   # tested by test_reading_energy_closure_integration.py
       - "orion/situational/street_material.py"
       - "services/orion-substrate-runtime/**"
@@ -217,6 +219,7 @@ jobs:
             services/orion-sql-writer/tests/test_vision_confirm_asks.py \
             services/orion-sql-writer/tests/test_vision_person_model.py \
             services/orion-sql-writer/tests/test_vision_split.py \
+            services/orion-sql-writer/tests/test_vision_link_undo.py \
             services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
             services/orion-sql-writer/tests/test_vision_body_match.py \
             services/orion-sql-writer/tests/test_vision_reanchor.py \

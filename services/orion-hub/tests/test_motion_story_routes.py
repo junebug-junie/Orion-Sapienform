@@ -60,7 +60,9 @@ def test_routes_are_mounted_on_the_hub_app() -> None:
                      "/api/vision/motion-stories/{story_id}/strip/{name}",
                      "/api/vision/motion-stories/{story_id}/people/{individual_id}",
                      "/api/vision/motion-stories/{story_id}/persons/{person_key}/not-same",
-                     "/api/vision/known-names", "/api/vision/motion-stories/{story_id}/parts"}
+                     "/api/vision/known-names", "/api/vision/motion-stories/{story_id}/parts",
+                     "/api/vision/motion-stories/{story_id}/persons/{person_key}/same-name",
+                     "/api/vision/individual-links/{ask_id}/undo"}
 
 
 def test_cant_tell_never_counts_toward_the_gate() -> None:
@@ -1418,3 +1420,100 @@ def test_a_correction_on_a_linked_person_is_undone_for_every_camera_group() -> N
         assert (t["wrong_name_from_corrections"], t["wrong_name"]) == (0, 0)
 
     _run(body, [])
+
+
+# --- same name, not linked; link undo (who-card redesign Patch D, 2026-11-24) ---------------------------
+
+
+@needs_pg
+def test_an_unlinked_same_name_group_is_asked_about_once_never_linked_silently() -> None:
+    """Juniper's answer 4: "Orion has another Sasha group. Same person?" -- asked, never auto-linked. Her
+    yes is the existing "same person?" answer (sql-writer links them); asked once."""
+    async def body(pool, client):
+        await _individual(pool, "ind-s1", "Sasha")
+        await _individual(pool, "ind-s2", "Sasha")          # not in the story, not linked
+        await _individual(pool, "ind-s3", "sasha")
+        await _same(pool, "ind-s2", "ind-s3")
+        await _individual(pool, "ind-copy", "Sasha")
+        await pool.execute("UPDATE vision_individual SET label_copied = true WHERE individual_id = 'ind-copy'")
+        sid = await _walk(pool, 1, ["ind-s1"], strip=[0], thumbs=())
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        person = r.json()["stories"][0]["persons"][0]
+        assert person["same_name_other"]["individual_id"] == "ind-s2" and person["card_links"] == []
+        assert await pool.fetchval("SELECT count(*) FROM vision_individual_pair_verdict "
+                                   "WHERE 'ind-s1' IN (individual_a, individual_b)") == 0   # nothing automatic
+        url = f"/api/vision/motion-stories/{sid}/persons/ind-s1/same-name"
+        r = await client.post(url, json={"other": "ind-s2", "answer": "same"})
+        assert r.status_code == 200, r.text
+        row = await pool.fetchrow("SELECT * FROM orion_ask WHERE ask_id = $1", r.json()["ask_id"])
+        assert (row["source_kind"], row["source_ref"], row["answer"]) == ("vision_same_individual", "ind-s1|ind-s2", "same")
+        d = json.loads(row["answer_detail"])
+        assert (d["via"], d["action"], d["story_id"]) == ("motion_story", "same_name", sid)
+        from orion.grammar.camera_ask_acts import is_orion_camera_ask
+        assert not is_orion_camera_ask(row["source_kind"], row["evidence_refs"], row["answer_detail"])
+        # Asked once: answered (not yet applied) is enough to stop asking; the link it made is listed.
+        person = r.json()["story"]["persons"][0]
+        assert person["same_name_other"] is None
+        assert [(l["ask_id"], l["applied"]) for l in person["card_links"]] == [(r.json()["ask_id"], False)]
+        assert (await client.post(url, json={"other": "ind-s2", "answer": "same"})).status_code == 409
+
+    _run(body)
+
+
+@needs_pg
+def test_after_a_same_person_yes_the_merged_person_is_not_answered_twice() -> None:
+    """Orion's question 4 with this card's own merge: a yes mid-story links two groups; answering the
+    merged person again writes no second who-is-this answer for the group already answered."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Sasha")
+        await _individual(pool, "ind-b", "Sasha")
+        sid = await _walk(pool, 1, ["ind-a", "ind-b"], strip=[0, 1], thumbs=())
+        await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                          json={"action": "confirm", "name": "Sasha", "group": True})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/persons/ind-a/same-name",
+                              json={"other": "ind-b", "answer": "same"})
+        assert r.status_code == 200, r.text
+        await _same(pool, "ind-a", "ind-b", ask_id=r.json()["ask_id"])      # sql-writer applies the yes
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "confirm", "name": "Sasha", "group": True})
+        assert r.json()["skipped_individual_ids"] == ["ind-a"] and len(r.json()["ask_ids"]) == 1
+        n = await pool.fetch("SELECT source_ref, count(*) AS n FROM orion_ask WHERE source_kind = 'vision_individual' "
+                             "GROUP BY 1 ORDER BY 1")
+        assert [(x["source_ref"], x["n"]) for x in n] == [("ind-a", 1), ("ind-b", 1)]
+        person = r.json()["story"]["persons"][0]
+        assert person["individual_ids"] == ["ind-a", "ind-b"] and person["card_links"][0]["applied"] is True
+
+    _run(body, [])
+
+
+@needs_pg
+def test_link_undo_is_requested_from_the_card_only_for_its_own_links_within_7_days() -> None:
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Sasha")
+        await _individual(pool, "ind-b", "Sasha")
+        sid = await _walk(pool, 1, ["ind-a"], strip=[0], thumbs=())
+        r = await client.post(f"/api/vision/motion-stories/{sid}/persons/ind-a/same-name",
+                              json={"other": "ind-b", "answer": "same"})
+        ask = r.json()["ask_id"]
+        r = await client.post(f"/api/vision/individual-links/{ask}/undo")
+        assert r.status_code == 200 and r.json()["undo_requested"] is True
+        d = json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id = $1", ask))
+        assert d["undo_requested_at"]
+        # A refusal written back by sql-writer can be asked again; an undone link cannot.
+        await pool.execute("UPDATE orion_ask SET answer_detail = answer_detail || jsonb_build_object('undo_refused', 'x') "
+                           "WHERE ask_id = $1", ask)
+        assert (await client.post(f"/api/vision/individual-links/{ask}/undo")).status_code == 200
+        assert "undo_refused" not in json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id=$1", ask))
+        await pool.execute("UPDATE orion_ask SET answer_detail = answer_detail || jsonb_build_object('undone_at', 't') WHERE ask_id = $1", ask)
+        assert (await client.post(f"/api/vision/individual-links/{ask}/undo")).json()["detail"] == "already_undone"
+        # Not this card's (a "same person?" card from Orion), or too old: refused.
+        await pool.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, answered_at, "
+                           "answer_detail) VALUES ($1, 'q', 'vision_same_individual', 'ind-a|ind-b', 'answered', 'yes', "
+                           "now(), '{}'::jsonb)", "ask-" + "1" * 32)
+        assert (await client.post(f"/api/vision/individual-links/ask-{'1' * 32}/undo")).status_code == 422
+        await pool.execute("UPDATE orion_ask SET answer_detail = answer_detail - 'undone_at', "
+                           "answered_at = now() - interval '8 days' WHERE ask_id = $1", ask)
+        assert (await client.post(f"/api/vision/individual-links/{ask}/undo")).json()["detail"] == "older_than_7_days"
+        assert (await client.post("/api/vision/individual-links/not-an-ask/undo")).status_code == 400
+
+    _run(body)

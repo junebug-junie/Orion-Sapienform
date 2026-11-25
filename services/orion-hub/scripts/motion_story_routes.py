@@ -813,6 +813,201 @@ async def _persons(conn: Any, stories: list[dict[str, Any]]) -> None:
             logger.warning("motion_story_links_lookup_failed error=%s", exc)
     for s in stories:
         s["persons"] = story_persons.group_people(s.get("people") or [], roots, s.pop("_areas", None), links)
+    try:
+        async with conn.transaction():      # fail-open: the card still asks about each person
+            await _same_name_and_links(conn, stories, roots)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("motion_story_same_name_lookup_failed error=%s", exc)
+
+
+# --- same name, not linked; and the links this card made (who-card redesign Patch D, 2026-11-24) -------
+# Juniper (answer 4): two groups with one typed name that are not linked are ASKED about on the card
+# ("Orion has another Sasha group. Same person?"), never linked without asking. Her yes is the existing
+# "same person?" answer (vision_same_individual, answer_detail.via = 'motion_story'), which sql-writer
+# applies as a 'same' link; her no is a 'different'. A link made here can be undone from the card for
+# 7 days: the Hub only marks the ask (answer_detail.undo_requested_at); sql-writer's individuals cycle
+# runs the undo under its lock (app/vision_link_undo.py) and writes undone_at or undo_refused back.
+LINK_UNDO_DAYS = 7
+_SAME_NAME_CANDIDATES_SQL = """
+SELECT v.individual_id, v.label, v.kind,
+       (SELECT s.thumb_ref FROM vision_individual_sighting s WHERE s.individual_id = v.individual_id
+          AND s.thumb_ref LIKE 'thumb:%' ORDER BY s.ended_at DESC LIMIT 1) AS thumb_ref
+FROM vision_individual v
+WHERE v.label IS NOT NULL AND NOT v.label_copied AND lower(btrim(v.label)) = ANY($1::text[])
+ORDER BY v.labeled_at NULLS LAST, v.individual_id
+"""
+# Any verdict, or any answered "same person?" ask (applied or not), between two of these ids.
+_PAIR_SEEN_SQL = """
+SELECT individual_a AS a, individual_b AS b FROM vision_individual_pair_verdict
+WHERE individual_a = ANY($1::text[]) AND individual_b = ANY($1::text[])
+UNION
+SELECT split_part(source_ref, '|', 1), split_part(source_ref, '|', 2) FROM orion_ask
+WHERE source_kind = 'vision_same_individual' AND status = 'answered'
+  AND split_part(source_ref, '|', 1) = ANY($1::text[]) AND split_part(source_ref, '|', 2) = ANY($1::text[])
+"""
+_CARD_LINKS_SQL = """
+SELECT a.ask_id, a.source_ref, a.answered_at, a.answer_detail->>'undone_at' AS undone_at,
+       a.answer_detail->>'undo_requested_at' AS undo_requested_at,
+       a.answer_detail->>'undo_refused' AS undo_refused,
+       EXISTS (SELECT 1 FROM vision_individual_pair_verdict p WHERE p.individual_a || '|' || p.individual_b = a.source_ref
+               AND p.ask_id = a.ask_id AND p.verdict = 'same') AS applied
+FROM orion_ask a
+WHERE a.source_kind = 'vision_same_individual' AND a.status = 'answered'
+  AND a.answer_detail->>'via' = 'motion_story' AND a.answer_detail->>'action' = 'same_name'
+  AND lower(btrim(a.answer)) IN ('same', 'yes')
+  AND (split_part(a.source_ref, '|', 1) = ANY($1::text[]) OR split_part(a.source_ref, '|', 2) = ANY($1::text[]))
+ORDER BY a.answered_at
+"""
+
+
+def same_name_other(person: dict[str, Any], candidates: list[Any], roots: dict[str, str],
+                    seen: set[frozenset]) -> Optional[dict[str, Any]]:
+    """The other group to ask about for one person: same typed name and kind, not joined to the person,
+    and never answered about against any of its groups (one question, once)."""
+    label = (person.get("label") or "").strip().casefold()
+    if not label or person.get("label_copied"):
+        return None
+    mine = {roots.get(i, i) for i in person["individual_ids"]}
+    for c in candidates:
+        iid = c["individual_id"]
+        if (c["label"] or "").strip().casefold() != label or c["kind"] != person.get("kind"):
+            continue
+        if iid in person["individual_ids"] or roots.get(iid, iid) in mine:
+            continue
+        # Asked once per other GROUP: an answer about any of its camera groups answers it.
+        theirs = roots.get(iid, iid)
+        if any(roots.get(x, x) == theirs for pair in seen if len(pair & set(person["individual_ids"])) == 1
+               for x in pair - set(person["individual_ids"])):
+            continue
+        thumb = (c["thumb_ref"] or "")[len("thumb:"):]
+        return {"individual_id": iid, "short_id": iid[:8], "label": c["label"],
+                "thumb": thumb if _THUMB_HEX_RE.fullmatch(thumb) else None}
+    return None
+
+
+async def _same_name_and_links(conn: Any, stories: list[dict[str, Any]], roots: dict[str, str]) -> None:
+    persons = [p for s in stories for p in s.get("persons") or []]
+    for p in persons:
+        p["same_name_other"] = None
+        p["card_links"] = []
+    labels = sorted({(p.get("label") or "").strip().casefold() for p in persons
+                     if p.get("label") and not p.get("label_copied")})
+    if labels:
+        cands = await conn.fetch(_SAME_NAME_CANDIDATES_SQL, labels)
+        cand_ids = [c["individual_id"] for c in cands]
+        all_ids = sorted(set(cand_ids) | {i for p in persons for i in p["individual_ids"]})
+        if cand_ids:
+            reach = await conn.fetch(_COMPONENT_SQL, cand_ids)
+            roots = dict(roots)
+            roots.update(story_persons.link_roots([(r["start"], r["id"]) for r in reach]
+                                                  + [(i, roots[i]) for i in all_ids if i in roots]))
+        seen = {frozenset((r["a"], r["b"])) for r in await conn.fetch(_PAIR_SEEN_SQL, all_ids)}
+        for p in persons:
+            p["same_name_other"] = same_name_other(p, list(cands), roots, seen)
+    ids = sorted({i for p in persons for i in p["individual_ids"]})
+    if not ids:
+        return
+    for r in await conn.fetch(_CARD_LINKS_SQL, ids):
+        a, _, b = (r["source_ref"] or "").partition("|")
+        for p in persons:
+            if a in p["individual_ids"] or b in p["individual_ids"]:
+                p["card_links"].append({
+                    "ask_id": r["ask_id"], "a": a, "b": b, "answered_at": _iso(r["answered_at"]),
+                    "applied": bool(r["applied"]), "undone_at": r["undone_at"],
+                    "undo_requested_at": r["undo_requested_at"], "undo_refused": r["undo_refused"]})
+
+
+class SameNameBody(BaseModel):
+    other: str = Field(min_length=1, max_length=128)
+    answer: Literal["same", "different"]
+
+
+@router.post("/api/vision/motion-stories/{story_id}/persons/{person_key}/same-name")
+async def record_same_name(story_id: str, person_key: str, body: SameNameBody, request: Request) -> dict[str, Any]:
+    """"Orion has another <name> group. Same person?" Yes or no, as her "same person?" answer."""
+    if not _STORY_ID_RE.fullmatch(story_id or ""):
+        raise HTTPException(status_code=400, detail="bad_story_id")
+    for v in (person_key, body.other):
+        if not _INDIVIDUAL_ID_RE.fullmatch(v or ""):
+            raise HTTPException(status_code=400, detail="bad_individual_id")
+    pool = _pool(request)
+    row: Any = None
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                fresh = [_story_dict(r) for r in await conn.fetch(_ONE_STORY_SQL, story_id)]
+                if not fresh or fresh[0].get("story_id") is None:
+                    raise HTTPException(status_code=404, detail="story_not_found")
+                async with conn.transaction():
+                    await _enrich(conn, fresh)
+                person = next((p for p in fresh[0].get("persons") or [] if p["person_key"] == person_key), None)
+                if person is None:
+                    raise HTTPException(status_code=422, detail="person_not_in_story")
+                other = person.get("same_name_other")
+                if not other or other["individual_id"] != body.other:
+                    # Linked, answered or renamed since the card showed it: nothing to ask any more.
+                    raise HTTPException(status_code=409, detail="same_name_question_gone")
+                mine = next(g["individual_id"] for g in person["groups"]
+                            if (g.get("label") or "").strip().casefold() == other["label"].strip().casefold())
+                ref = story_persons.pair_ref(mine, body.other)
+                detail = {"story_id": story_id, "action": "same_name", "via": "motion_story", "person_key": person_key}
+                refs = [f"motion_story:{story_id}", f"individual:{mine}", f"individual:{body.other}",
+                        JUNIPER_STORY_CARD_REF]
+                row = await conn.fetchrow(
+                    _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}",
+                    f"Same person as the other {other['label']} group? "
+                    f"{'Yes' if body.answer == 'same' else 'No'} (said on a walkway story)",
+                    json.dumps(refs), None, json.dumps([]), body.answer, story_persons.SAME_PERSON_KIND, ref,
+                    json.dumps(detail))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_motion_http(exc)
+    stories, tally = await _readback(pool, story_id)
+    logger.info("motion_story_same_name story_id=%s person_key=%s pair=%s answer=%s ask_id=%s",
+                story_id, person_key, row["source_ref"], body.answer, row["ask_id"])
+    return {"ok": True, "story_id": story_id, "ask_id": row["ask_id"], "pair": row["source_ref"],
+            "answer": body.answer, "story": stories[0] if stories else None, "tally": tally}
+
+
+_LINK_ASK_SQL = """
+SELECT ask_id, answer, answered_at, answer_detail FROM orion_ask
+WHERE ask_id = $1 AND source_kind = 'vision_same_individual' AND status = 'answered' FOR UPDATE
+"""
+
+
+@router.post("/api/vision/individual-links/{ask_id}/undo")
+async def request_link_undo(ask_id: str, request: Request) -> dict[str, Any]:
+    """Undo a "same person" link this card made (7 days). Marks the ask; sql-writer applies it on its
+    next individuals cycle, or refuses and says why (app/vision_link_undo.py)."""
+    if not re.fullmatch(r"ask-[0-9a-f]{32}", ask_id or ""):
+        raise HTTPException(status_code=400, detail="bad_ask_id")
+    pool = _pool(request)
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(_LINK_ASK_SQL, ask_id)
+                if row is None:
+                    raise HTTPException(status_code=404, detail="link_not_found")
+                detail = row["answer_detail"]
+                detail = json.loads(detail) if isinstance(detail, str) else dict(detail or {})
+                if detail.get("via") != "motion_story" or (row["answer"] or "").strip().lower() not in ("same", "yes"):
+                    raise HTTPException(status_code=422, detail="not_a_link_this_card_made")
+                if detail.get("undone_at"):
+                    raise HTTPException(status_code=409, detail="already_undone")
+                age = await conn.fetchval("SELECT now() - $1::timestamptz", row["answered_at"])
+                if age.days >= LINK_UNDO_DAYS:
+                    raise HTTPException(status_code=409, detail="older_than_7_days")
+                await conn.execute(
+                    "UPDATE orion_ask SET answer_detail = coalesce(answer_detail, '{}'::jsonb) - 'undo_refused' "
+                    "- 'undo_refused_detail' || jsonb_build_object('undo_requested_at', now()::text) WHERE ask_id = $1",
+                    ask_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_motion_http(exc)
+    logger.info("motion_story_link_undo_requested ask_id=%s", ask_id)
+    return {"ok": True, "ask_id": ask_id, "undo_requested": True}
 
 
 # --- the sentence graded in parts (who-card redesign Patch C, 2026-11-24) ------------------------------

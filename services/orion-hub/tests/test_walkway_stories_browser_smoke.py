@@ -679,3 +679,57 @@ def test_walkway_story_sentence_graded_in_parts_browser_smoke():
         assert posts == [(f"/api/vision/motion-stories/{4:032x}/parts", {"part": "people", "verdict": "yes"})]
         assert page.locator("[data-story-part='people'] [data-part-verdict='yes']").get_attribute("aria-pressed") == "true"
         browser.close()
+
+
+def test_walkway_story_same_name_question_and_link_undo_browser_smoke():
+    """Who-card Patch D: "Orion has another Sasha group. Same person?" with both pictures; Yes POSTs her
+    answer; the link then shows with Undo, which asks Orion's next pass to remove it."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    html = _html()
+    other = {"individual_id": "ind-s2", "short_id": "ind-s2", "label": "Sasha", "thumb": GONE}
+    sasha = _pp("ind-s1", label="Sasha", same_name_other=other, card_links=[])
+    story = _story(6, persons=[sasha])
+    linked = dict(story, persons=[dict(sasha, same_name_other=None, card_links=[
+        {"ask_id": "ask-" + "a" * 32, "a": "ind-s1", "b": "ind-s2", "applied": False, "undone_at": None,
+         "undo_requested_at": None, "undo_refused": None}])])
+    posts: list[tuple[str, dict]] = []
+
+    def handle(route):
+        url = route.request.url
+        path = url.split("http://hub.test", 1)[1].split("?", 1)[0]
+        if path == "/":
+            return route.fulfill(body=html, content_type="text/html")
+        if path.startswith("/static/"):
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
+        if path == "/api/vision/motion-stories":
+            return route.fulfill(body=json.dumps({"ok": True, "stories": [story], "tally": _tally(1, 1)}),
+                                 content_type="application/json")
+        if route.request.method == "POST":
+            posts.append((path, json.loads(route.request.post_data or "{}")))
+            body = {"ok": True, "story": linked, "tally": _tally(1, 1)} if path.endswith("/same-name") else {"ok": True}
+            return route.fulfill(body=json.dumps(body), content_type="application/json")
+        if path.startswith("/api/vision/crop-thumbs/"):
+            return route.fulfill(body=PIXEL, content_type="image/gif")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser, page = _page(p, html, handle)
+        q = page.locator("[data-person-same-name='ind-s2']")
+        assert "Orion has another Sasha group. Same person?" in q.text_content()
+        assert q.locator("img").count() == 2
+        _fits(page)
+        q.locator("[data-person-same-name-answer='same']").click()
+        page.wait_for_selector("[data-person-link-undo]")
+        assert posts == [(f"/api/vision/motion-stories/{6:032x}/persons/ind-s1/same-name",
+                          {"other": "ind-s2", "answer": "same"})]
+        assert page.locator("[data-person-same-name]").count() == 0
+        assert "Orion links them on its next pass" in page.locator("[data-person-card-link]").text_content()
+        page.locator("[data-person-link-undo]").click()
+        page.wait_for_function("() => document.querySelector('[data-person-card-link]').textContent.includes('Undo asked for')")
+        assert posts[-1] == (f"/api/vision/individual-links/ask-{'a' * 32}/undo", {})
+        assert page.locator("[data-person-link-undo]").count() == 0
+        browser.close()

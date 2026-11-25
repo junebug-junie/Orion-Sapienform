@@ -4926,6 +4926,20 @@ active correction as a wrong name whatever its verdict says. The tally adds
 `wrong_name_from_corrections`. Migration:
 `services/orion-sql-db/manual_migration_vision_motion_story_parts_v1.sql`.
 
+**Same name, not linked; link undo (2026-11-24, who-card redesign Patch D).** When
+another camera group carries the person's typed name and nobody linked or answered
+about the two, the card asks "Orion has another Sasha group. Same person?" with
+both pictures (`same_name_other` on the person; Juniper: ask, never link silently).
+`POST .../persons/{person_key}/same-name {other, answer: same|different}` writes her
+"same person?" answer (`vision_same_individual`, `answer_detail.via = motion_story`);
+sql-writer links them. Each link made this way is listed on the person
+(`card_links`) with "Undo" for 7 days: `POST /api/vision/individual-links/{ask_id}/undo`
+marks the ask; sql-writer's individuals cycle removes the link
+(`app/vision_link_undo.py`, also `scripts/undo_vision_link.py`, dry run by default),
+re-derives copied names, and writes `undone_at`, or `undo_refused` with the reason
+(a split recorded it, a name was typed since, or other `same` links still join the
+two).
+
 ## Retro browser play
 
 `/retro` offers native NES viewing/control without an additional access code through a

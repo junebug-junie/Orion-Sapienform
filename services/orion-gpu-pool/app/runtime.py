@@ -166,11 +166,15 @@ class PoolRuntime:
                  perception_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
                  perception_alert_held_sec_per_hour: float = 3360.0,
                  perception_realert_sec: float = 21600.0,
-                 value_order: ValueOrderConfig | None = None, operator_last: bool = True):
+                 value_order: ValueOrderConfig | None = None, operator_last: bool = True,
+                 event_stream: Callable[[BaseEnvelope], Awaitable[Any]] | None = None):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
+        # #3920: every pool event is also XADDed to the durable stream (GPU_POOL_EVENT_STREAM) through
+        # this sink. Pub/sub alone lost the events published while sql-writer restarted. None: off.
+        self.event_stream = event_stream
         self.prober, self.now, self.mode = prober, now, mode
         # Attention patch 3b: the background class is served by value (None: arrival order).
         self.value_order = value_order
@@ -1813,28 +1817,44 @@ class PoolRuntime:
         the turn stays joinable through the payload's ``turn_correlation_id``."""
         if self.bus is None:
             return
-        await self._publish(GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND, event.model_dump(mode="json"),
-                            event_envelope_correlation(event))
+        env = await self._publish(GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND, event.model_dump(mode="json"),
+                                  event_envelope_correlation(event))
+        if self.event_stream is not None:
+            await self._stream_event(env)
         if event.event in _GRAMMAR_EVENTS:
             await self._grammar(event)
 
-    async def _publish(self, channel: str, kind: str, payload: dict, corr: str | None) -> None:
+    async def _publish(self, channel: str, kind: str, payload: dict, corr: str | None) -> BaseEnvelope:
         t = time.monotonic()
         try:
-            await self._publish_inner(channel, kind, payload, corr)
+            return await self._publish_inner(channel, kind, payload, corr)
         finally:
             self._phase("bus_publish", t)
 
-    async def _publish_inner(self, channel: str, kind: str, payload: dict, corr: str | None) -> None:
+    async def _publish_inner(self, channel: str, kind: str, payload: dict, corr: str | None) -> BaseEnvelope:
         try:
             cid = uuid.UUID(str(corr)) if corr else uuid.uuid4()
         except ValueError:
             cid = uuid.uuid4()
+        env = BaseEnvelope(kind=kind, source=ServiceRef(name=self.service_name), correlation_id=cid, payload=payload)
         try:
-            await self.bus.publish(channel, BaseEnvelope(
-                kind=kind, source=ServiceRef(name=self.service_name), correlation_id=cid, payload=payload))
+            await self.bus.publish(channel, env)
         except Exception:  # noqa: BLE001 -- telemetry must never break scheduling
             logger.warning("gpu_pool_publish_failed channel=%s", channel, exc_info=True)
+        return env
+
+    async def _stream_event(self, env: BaseEnvelope) -> None:
+        """The durable copy (#3920): the same envelope the pub/sub publish carried, XADDed to the
+        stream sql-writer reads through a consumer group. Written even when the publish failed.
+        Best-effort like the publish: a Redis error is logged, never raised into scheduling."""
+        t = time.monotonic()
+        try:
+            await self.event_stream(env)
+        except Exception:  # noqa: BLE001 -- telemetry must never break scheduling
+            logger.warning("gpu_pool_event_stream_failed event_id=%s",
+                           (env.payload or {}).get("event_id"), exc_info=True)
+        finally:
+            self._phase("event_stream", t)
 
     async def _grammar(self, event: GpuPoolEventV1) -> None:
         """Lease facts land in grammar_events via sql-writer. Layer "capacity", never "transport":

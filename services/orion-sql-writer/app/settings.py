@@ -145,6 +145,15 @@ class Settings(BaseSettings):
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    # #3920: gpu_pool_events is written from the durable stream the pool XADDs every event to, read
+    # through a consumer group (app/durable_stream_intake.py). Pub/sub kept nothing while this service
+    # restarted, so every rebuild lost ~20 s of pool events. ON: the pub/sub subscription to
+    # orion:gpu_pool:event is dropped (one source, no double intake). OFF: back to pub/sub.
+    gpu_pool_event_stream_enabled: bool = Field(True, alias="SQL_WRITER_GPU_POOL_EVENT_STREAM_ENABLED")
+    gpu_pool_event_stream_key: str = Field("orion:stream:gpu_pool:event", alias="SQL_WRITER_GPU_POOL_EVENT_STREAM_KEY")
+    gpu_pool_event_stream_group: str = Field("cg:sql-writer", alias="SQL_WRITER_GPU_POOL_EVENT_STREAM_GROUP")
+    gpu_pool_event_stream_dlq: str = Field("orion:stream:gpu_pool:event:dlq",
+                                           alias="SQL_WRITER_GPU_POOL_EVENT_STREAM_DLQ")
 
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="ORION_HEARTBEAT_INTERVAL_SEC")
@@ -213,7 +222,8 @@ class Settings(BaseSettings):
             "orion:curiosity:peer:brief",
             "orion:curiosity:supervisor:reading",
             "orion:durable:run:state",
-            "orion:gpu_pool:event",
+            # orion:gpu_pool:event is NOT here: it is read from its durable stream (#3920,
+            # gpu_pool_event_stream_* below). Pub/sub only when that stream intake is off.
             "orion:gpu_pool:state",
             "orion:physiology:state",
             "orion:physiology:want:decision",
@@ -967,6 +977,11 @@ class Settings(BaseSettings):
         return {**DEFAULT_ROUTE_MAP, **overrides}
 
     @property
+    def effective_stream_channels(self) -> list[str]:
+        """Redis Streams this writer reads through a consumer group (not pub/sub). #3920."""
+        return [self.gpu_pool_event_stream_key] if self.gpu_pool_event_stream_enabled else []
+
+    @property
     def effective_subscribe_channels(self) -> list[str]:
         """Back-compat alias.
 
@@ -1087,8 +1102,12 @@ class Settings(BaseSettings):
         # route with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:durable:run:state" not in channels:
             channels.append("orion:durable:run:state")
-        # Same guarantee, same reason (gpu_pool.event.v1 is a code-default route).
-        if "orion:gpu_pool:event" not in channels:
+        # gpu_pool.event.v1 is a code-default route. With the durable stream intake on (#3920) the
+        # pub/sub channel is REMOVED even when a stale operator .env still lists it: two intakes
+        # would only race the same rows. Off: the old guarantee, pub/sub is always subscribed.
+        if self.gpu_pool_event_stream_enabled:
+            channels = [c for c in channels if c != "orion:gpu_pool:event"]
+        elif "orion:gpu_pool:event" not in channels:
             channels.append("orion:gpu_pool:event")
         if "orion:gpu_pool:state" not in channels:
             channels.append("orion:gpu_pool:state")

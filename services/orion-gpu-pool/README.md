@@ -18,7 +18,7 @@ Design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md`.
 | the only client | `orion/gpu_pool/client.py` (`async with gpu_lease(...)`) |
 | live projection | `gpu_pool_leases`, `gpu_pool_cards` (`services/orion-sql-db/manual_migration_gpu_pool_v1.sql`, then `_v2_holds.sql`, then `_v3_actuation_pause.sql`) |
 | swap actuation engine + guards | `app/runtime.py` (`_begin_actuation`, `on_actuate_result`, `_check_actuation`), `app/guards.py` |
-| lease history | `gpu_pool_events`, written by orion-sql-writer from `orion:gpu_pool:event` |
+| lease history | `gpu_pool_events`, written by orion-sql-writer from the durable stream `orion:stream:gpu_pool:event` (#3920) |
 
 **Adding a card:** add it under `cards:` in the YAML, then add or extend the roles on it. **Adding
 a service:** add a role (`kind: service` needs `slots` and `vram_gb`) and a class that uses it.
@@ -63,6 +63,7 @@ and `fault_cleared:discovery` never fired.
 | `orion:gpu_pool:lease:request` | acquire / heartbeat / release / cancel / attach / status (RPC; answers at once). See "Durable-run holds" below. |
 | `orion:gpu_pool:actuate:request` / `:actuate:result` | pool ↔ host actuator (`GpuActuateV1` / `GpuActuateResultV1`). The pool sends only for swap seats with a `launch:` block in `config/gpu_pool.yaml`, and nothing while actuation is paused (stage 5.7). |
 | `orion:gpu_pool:event` | lease facts; callers wake on `granted` |
+| `orion:stream:gpu_pool:event` | the same envelope, XADDed to a Redis Stream (MAXLEN ~`GPU_POOL_EVENT_STREAM_MAXLEN`, default 40000, about one peak day). sql-writer reads it through consumer group `cg:sql-writer`, so events published while sql-writer restarts are written when it returns (#3920: pub/sub lost ~20 s of events on every sql-writer rebuild). Best-effort: a stream error is logged as `gpu_pool_event_stream_failed`, never raised into scheduling. Off: `GPU_POOL_EVENT_STREAM_ENABLED=false`. |
 | `orion:gpu_pool:state` (+ `:state:request`) | whole-pool snapshot |
 | `orion:gpu_pool:control:request` | operator: lend, unlend, hold, release, replay, cancel, backfill, clear_fault, pause_actuation, resume_actuation. No token (the pool trusts the bus like every Orion service); each verb is logged with its actor and published as a pool event. |
 | `orion:llm:worker:announce` | worker → pool discovery |

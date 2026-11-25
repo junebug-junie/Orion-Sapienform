@@ -14,6 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 GPU_POOL_LEASE_REQUEST_CHANNEL = "orion:gpu_pool:lease:request"
 GPU_POOL_EVENT_CHANNEL = "orion:gpu_pool:event"
+# Durable Redis Stream mirror of GPU_POOL_EVENT_CHANNEL (same envelope, XADD not PUBLISH). Pub/sub
+# stays for live callers that wake on "granted"; sql-writer persists from this stream through a
+# consumer group, so events published while it restarts are written when it returns (#3920).
+GPU_POOL_EVENT_STREAM = "orion:stream:gpu_pool:event"
+GPU_POOL_EVENT_STREAM_DLQ = "orion:stream:gpu_pool:event:dlq"
 GPU_POOL_STATE_CHANNEL = "orion:gpu_pool:state"
 GPU_POOL_STATE_REQUEST_CHANNEL = "orion:gpu_pool:state:request"
 GPU_POOL_CONTROL_REQUEST_CHANNEL = "orion:gpu_pool:control:request"

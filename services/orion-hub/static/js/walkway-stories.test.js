@@ -55,7 +55,7 @@ test('strip model: no strip, a pruned strip, or a bad story id is "no picture"',
   assert.equal(ws.stripModel({ story_id: '../x', evidence_strip: { frame: { file: 'frame.jpg' } } }).frame, null);
 });
 
-test('verdict buttons are the four Juniper asked for, plus Can\'t tell', () => {
+test('verdict buttons are the four Theo asked for, plus Can\'t tell', () => {
   assert.deepEqual(ws.VERDICTS.map((v) => v.value), ['right', 'wrong_name', 'wrong_motion', 'wrong_other']);
   assert.deepEqual(ws.CANT_TELL, { value: 'cant_tell', label: "Can't tell" });
   assert.equal(ws.VIEW_VALUE, 'walkway-live');
@@ -69,7 +69,7 @@ test('gate line says how many dark or picture-less stories the gate does not cov
   assert.equal(ws.gateLine({ checked: 10, not_checkable: 0, gate }), 'Hub only for now: 40 more to check.');
 });
 
-// Each person's own pictures (2026-11-24, Juniper: "how the f would i know which is which").
+// Each person's own pictures (2026-11-24, Theo: "how the f would i know which is which").
 test('story people: one row per individual, lettered in order', () => {
   const got = ws.storyPeople({ people: [{ individual_id: 'a' }, null, { individual_id: 'b' }, { individual_id: 'a' },
     { individual_id: '' }, { individual_id: 'c' }] });
@@ -189,23 +189,23 @@ test('a link this card made says where it stands', () => {
 // 2026-11-25 card fixes: what "Right people?" asks, the automatic no after a name correction,
 // and the result line under graded parts.
 test('people part says what Orion claimed', () => {
-  assert.equal(ws.partQuestion({ name_label: 'Addy' }, 'people'), 'Right person? (Orion said Addy)');
+  assert.equal(ws.partQuestion({ name_label: 'Sasha' }, 'people'), 'Right person? (Orion said Sasha)');
   assert.equal(ws.partQuestion({ name_label: null }, 'people'), 'Right number of people?');
   assert.equal(ws.partQuestion({}, 'direction'), 'Right direction?');
 });
 
 test('a name correction on the walker pre-marks people as no; sent or held', () => {
-  const story = { story_id: 's1', name_label: 'Addy',
-    persons: [{ person_key: 'k1', role: 'walker', label: 'Addy', story_action: null }] };
+  const story = { story_id: 's1', name_label: 'Sasha',
+    persons: [{ person_key: 'k1', role: 'walker', label: 'Sasha', story_action: null }] };
   assert.equal(ws.correctedName(story, null), null);
-  const held = { story_id: 's1', person_key: 'k1', spec: { action: 'someone_else', name: 'Juniper' } };
-  assert.equal(ws.correctedName(story, held), 'Addy');
+  const held = { story_id: 's1', person_key: 'k1', spec: { action: 'someone_else', name: 'Theo' } };
+  assert.equal(ws.correctedName(story, held), 'Sasha');
   const sent = Object.assign({}, story, { persons: [Object.assign({}, story.persons[0],
-    { story_action: { action: 'name', name: 'Juniper' } })] });
-  assert.equal(ws.correctedName(sent, null), 'Addy');
+    { story_action: { action: 'name', name: 'Theo' } })] });
+  assert.equal(ws.correctedName(sent, null), 'Sasha');
   // A yes, a companion, or a sentence that named nobody is not a correction.
   const yes = Object.assign({}, story, { persons: [Object.assign({}, story.persons[0],
-    { story_action: { action: 'confirm', name: 'Addy' } })] });
+    { story_action: { action: 'confirm', name: 'Sasha' } })] });
   assert.equal(ws.correctedName(yes, null), null);
   const comp = Object.assign({}, story, { persons: [Object.assign({}, story.persons[0],
     { role: 'companion', story_action: { action: 'someone_else', name: 'X' } })] });

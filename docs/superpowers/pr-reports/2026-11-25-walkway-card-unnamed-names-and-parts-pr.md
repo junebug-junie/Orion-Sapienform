@@ -3,7 +3,7 @@
 Three fixes Juniper hit on the first live use of the new walkway card (2026-11-25):
 
 - An unnamed person ("Who is this?") now shows the known names and a type box at once. Before, they hid behind an "It's ..." button that read as a label, so "Can't see them" looked like the only answer.
-- The sentence parts quote Orion's own sentence and say what Orion claimed: "Right person? (Orion said Addy)" or "Right number of people?". Before, the card showed the sentence renamed by her answer ("Juniper walked ...") and asked "Right people?" again.
+- The sentence parts quote Orion's own sentence and say what Orion claimed: "Right person? (Orion said Sasha)" or "Right number of people?". Before, the card showed the sentence renamed by her answer ("Theo walked ...") and asked "Right people?" again.
 - A name correction on the walker pre-marks "Right person?" as No, held or sent (the server already writes this row when the answer is sent).
 - No lone whole-story "Can't tell" under the parts. A result line says what the parts add up to and why ("counts as can't tell (you said can't tell for: ...)"), or "Counted as X so far" for an old-button verdict with parts still open.
 

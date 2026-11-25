@@ -28,7 +28,7 @@ MESSAGE_CHARS = 500  # per message in the printed conversation; the full text is
 SNIPPET_CHARS = 220
 
 _CONV_DATE = "to_char(to_timestamp(c.create_time) AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
-_MSG_JOIN = "JOIN chat_gpt_message m ON m.session_id = 'chatgpt:' || c.conversation_id"
+_MSG_JOIN = "LEFT JOIN chat_gpt_message m ON m.session_id = 'chatgpt:' || c.conversation_id"
 
 
 def check_words(words: list[str]) -> list[str]:
@@ -37,7 +37,7 @@ def check_words(words: list[str]) -> list[str]:
         raise ValueError("gpt find: give one or more words, e.g. `gpt find orion memory`")
     if len(words) > MAX_WORDS:
         raise ValueError(f"gpt find: at most {MAX_WORDS} words")
-    bad = [w for w in words if not WORD_RE.fullmatch(w)]
+    bad = [w for w in words if not WORD_RE.fullmatch(w) or w.startswith("--")]
     if bad:
         raise ValueError(f"gpt find: words are 2-40 letters, digits or ' . + # - _ ; refused {bad[0][:40]!r}")
     return words
@@ -50,6 +50,10 @@ def _like(word: str) -> str:
 
 def _all_match(column: str, words: list[str]) -> str:
     return " AND ".join(f"{column} ILIKE {_like(w)}" for w in words)
+
+
+def _any_match(column: str, words: list[str]) -> str:
+    return "(" + " OR ".join(f"{column} ILIKE {_like(w)}" for w in words) + ")"
 
 
 def check_conv_id(conv_id: str) -> str:
@@ -77,7 +81,13 @@ def overview_sql() -> list[str]:
 
 
 def find_sql(words: list[str], limit: int = FIND_LIMIT, *, oldest: bool = False) -> str:
-    hit = _all_match("m.content", words)
+    """Conversations where every word appears somewhere: in the title or in any of its messages.
+
+    ``hits`` counts messages holding any of the words; ``first_hit`` is the earliest of them.
+    """
+    each_word = " AND ".join(
+        f"(count(*) FILTER (WHERE m.content ILIKE {_like(w)}) > 0 OR c.title ILIKE {_like(w)})" for w in words)
+    hit = _any_match("m.content", words)
     return (
         f"SELECT c.conversation_id, {_CONV_DATE} AS day, c.title, "
         f"count(*) FILTER (WHERE {hit}) AS hits, "
@@ -85,14 +95,15 @@ def find_sql(words: list[str], limit: int = FIND_LIMIT, *, oldest: bool = False)
         "count(*) OVER () AS matched "
         f"FROM chat_gpt_conversation c {_MSG_JOIN} "
         f"GROUP BY c.conversation_id, c.title, c.create_time "
-        f"HAVING count(*) FILTER (WHERE {hit}) > 0 OR ({_all_match('c.title', words)}) "
+        f"HAVING {each_word} "
         f"ORDER BY c.create_time {'ASC' if oldest else 'DESC'} LIMIT {int(limit)}"
     )
 
 
 def conv_match_sql(conv_id: str) -> str:
     # conv_id is checked by check_conv_id (hex and dashes only) before it reaches SQL.
-    return (f"SELECT c.conversation_id, {_CONV_DATE} AS day, c.title, c.message_count, c.turn_count "
+    return (f"SELECT c.conversation_id, {_CONV_DATE} AS day, c.title, c.message_count, c.turn_count, "
+            "count(*) OVER () AS matched "
             f"FROM chat_gpt_conversation c WHERE c.conversation_id LIKE '{conv_id}%' ORDER BY c.create_time LIMIT 6")
 
 
@@ -144,7 +155,7 @@ def render_find(words: list[str], rows: list[dict], *, oldest: bool = False) -> 
     for r in rows:
         hits = r.get("hits") or "0"
         lines.append(f"{r.get('day')} {r.get('conversation_id')}  {_one_line(r.get('title'), 80)}  "
-                     f"({hits} messages hit{', title hit' if hits == '0' else ''})")
+                     f"({hits} messages hit{', title only' if hits == '0' else ''})")
         if r.get("first_hit"):
             lines.append(f"    {snippet(r['first_hit'], words)}")
     return lines
@@ -163,5 +174,6 @@ def render_conv(conv: dict, messages: list[dict]) -> list[str]:
 
 
 def render_ambiguous(conv_id: str, rows: list[dict]) -> list[str]:
-    return [f"gpt conv {conv_id}: {len(rows)} conversations start with that; use more characters:"] + [
+    matched = rows[0].get("matched") or len(rows) if rows else 0
+    return [f"gpt conv {conv_id}: {matched} conversations start with that; use more characters:"] + [
         f"  {r.get('day')} {r.get('conversation_id')}  {_one_line(r.get('title'), 80)}" for r in rows]

@@ -1821,8 +1821,8 @@ def cmd_gpt(args: list[str], out: Out, runner=None) -> str:
             parts = [psql_rows(runner, sql) for sql in gpt.overview_sql()]
             return capped(gpt.render_overview(*parts), tail=None)
         if args[0] == "find":
-            oldest = args[1:2] == ["--oldest"]
-            words = gpt.check_words(args[2:] if oldest else args[1:])
+            oldest = "--oldest" in args[1:]
+            words = gpt.check_words([w for w in args[1:] if w != "--oldest"])
             rows = psql_rows(runner, gpt.find_sql(words, oldest=oldest))
             path = out.write("gpt-find", {"words": words, "oldest": oldest, "rows": rows})
             return capped(gpt.render_find(words, rows, oldest=oldest), tail=f"full hits: {path}")

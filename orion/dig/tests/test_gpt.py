@@ -123,3 +123,25 @@ def test_missing_grant_is_named(out):
 def test_bad_usage(out):
     with pytest.raises(dig.DigError, match="usage: gpt"):
         dig.cmd_gpt(["conv"], out, Runner())
+
+
+def test_find_words_may_sit_in_different_messages_or_title():
+    sql = gpt.find_sql(["orion", "memory"])
+    # each word is checked over the whole conversation, not inside one message
+    assert "(count(*) FILTER (WHERE m.content ILIKE '%orion%') > 0 OR c.title ILIKE '%orion%')" in sql
+    assert "(count(*) FILTER (WHERE m.content ILIKE '%memory%') > 0 OR c.title ILIKE '%memory%')" in sql
+    assert "LEFT JOIN chat_gpt_message" in sql  # a conversation with no messages can still match by title
+
+
+def test_oldest_flag_anywhere_and_dashdash_words_refused(out):
+    r = Runner(find=[])
+    dig.cmd_gpt(["find", "orion", "--oldest"], out, r)
+    assert "ASC LIMIT" in r.seen[0] and "--oldest" not in r.seen[0]
+    with pytest.raises(dig.DigError):
+        dig.cmd_gpt(["find", "--newest", "orion"], out, Runner())
+
+
+def test_ambiguous_says_the_true_count(out):
+    rows = [dict(CONV, conversation_id=f"29895d6f-{i:04d}", matched="14") for i in range(6)]
+    text = dig.cmd_gpt(["conv", "29895d6f"], out, Runner(convs=rows))
+    assert "14 conversations start with that" in text

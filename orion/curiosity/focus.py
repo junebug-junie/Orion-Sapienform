@@ -77,6 +77,9 @@ JUNIPER_PROTECTED = (
     "Juniper asked for this focus; it stays until a run takes it or it expires"
 )
 PENDING_KEPT = "a focus is already waiting for the next run; it is not replaced by a question chosen alone"
+# The same words queued again after that focus left the slot (replaced, expired, cleared, refused). Its id is
+# derived from the words, so queueing them again can never succeed (reverie Patch 3 reads this prefix).
+QUEUED_EARLIER = "this exact focus was queued earlier in this conversation and is now"
 
 _ID_NS = uuid5(NAMESPACE_URL, "orion.curiosity.focus.v1")
 # Serializes the multi-statement writers (queue, release, clear) so two of them cannot both
@@ -330,7 +333,7 @@ async def queue_focus(
                     # The same words from the same chat turn, but that focus is no longer queued:
                     # an ok=true here would let Orion say "queued" when nothing is.
                     raise FocusRefused(
-                        f"this exact focus was queued earlier in this conversation and is now "
+                        f"{QUEUED_EARLIER} "
                         f"{existing['effective_status']}; nothing was queued. Reword it to queue it again"
                     )
                 return QueueResult(focus=_row(existing), replaced=None, already_queued=True)

@@ -187,6 +187,9 @@ class ReverieQuestionDayV1(_Model):
     question: str
     why: str | None = None
     routed_to: str = "none"
+    # Added 2026-11-25 (reverie Patch 3): waiting | sent | lapsed | dropped | None. Same two-way ROLLOUT as
+    # OrionDayMaterialV1.reverie_questions: deploy orion-hub and orion-durable-runs together.
+    offer_status: str | None = None
     outcome: dict | None = None
     created_at: datetime
 

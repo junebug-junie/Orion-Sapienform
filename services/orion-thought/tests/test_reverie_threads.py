@@ -44,7 +44,7 @@ class Fake:
     """Every dep a poll touches, recording what it did."""
 
     def __init__(self, *, waiting=(), slot_pending=False, routes=0, route_result=("focus:f9", "queued"),
-                 reoffer_texts=(), thread_rows=(), stored=None, reconcile=()):
+                 reoffer_texts=(), thread_rows=(), stored=None, reconcile=(), last_cont=False):
         self.waiting = list(waiting)
         self.slot = slot_pending
         self.routes = routes
@@ -53,6 +53,8 @@ class Fake:
         self.thread_rows_ = list(thread_rows)
         self.stored = stored or {}
         self.reconcile = list(reconcile)
+        self.last_cont = last_cont
+        self.sweeps = 0
         self.asked, self.asked_threads, self.persisted, self.routed, self.updates = 0, [], [], [], []
         self.outcomes, self.thread_writes, self.readers_called = [], [], []
 
@@ -111,7 +113,11 @@ class Fake:
             return None
 
         async def sweep():
+            self.sweeps += 1
             return {"adopted": 0}
+
+        async def last_cont():
+            return self.last_cont
 
         async def waiting():
             return list(self.waiting)
@@ -143,7 +149,7 @@ class Fake:
             route=route, update_route=update, record_use=use, now=lambda: NOW,
             sweep_waiting=sweep, waiting=waiting, slot_pending=slot, reoffer_open_texts=reoffer_texts,
             reconcile_rows=reconcile_rows, write_outcome=write_outcome, thread_rows=thread_rows,
-            write_threads=write_threads, threads_enabled=True,
+            write_threads=write_threads, last_was_continuation=last_cont, threads_enabled=True,
         )
 
 
@@ -153,6 +159,8 @@ def r(monkeypatch):
     mod._STRETCH_REFUSALS.clear()
     mod._STRETCH_NO_MATERIAL.clear()
     mod._REOFFER_TRIED.clear()
+    mod._SWEEP_DONE[0] = False
+    monkeypatch.setattr(mod.settings, "reverie_thread_max_digs", 3)
     monkeypatch.setattr(mod.settings, "reverie_focus_max_per_day", 3)
     monkeypatch.setattr(mod.settings, "reverie_thread_lapse_days", 14.0)
     yield mod
@@ -407,3 +415,100 @@ def test_inquiry_ledger_is_not_built():
     app = Path(__file__).resolve().parents[1] / "app"
     src = "\n".join(p.read_text() for p in app.glob("*.py"))
     assert "INSERT INTO curiosity_inquiry" not in src
+
+
+# --- review of #3997 ---------------------------------------------------------------------------------
+
+
+def test_a_thread_is_exhausted_after_three_dug_questions():
+    """Finding 1: 77% of digs say continue; a thread must not hold the reverie for days."""
+    t = th()
+    rows = [_q("a", NOW - timedelta(days=3), outcome=DUG_CONTINUE),
+            _q("b", NOW - timedelta(days=2), outcome=DUG_CONTINUE),
+            _q("c", NOW - timedelta(days=1), outcome=DUG_CONTINUE)]
+    status, reason, wants = t.thread_status(rows, now=NOW, lapse=LAPSE, max_digs=3)
+    assert status == "exhausted" and not wants and "3 questions" in reason
+    status, _, wants = t.thread_status(rows[:2], now=NOW, lapse=LAPSE, max_digs=3)
+    assert status == "open" and wants
+    assert t.thread_status(rows, now=NOW, lapse=LAPSE, max_digs=0)[0] == "open"  # 0 = no bound
+
+
+def test_a_continuation_goes_first_on_at_most_every_other_stretch(r):
+    """Finding 1: after a stretch that went to a thread, the picker gets this one."""
+    f = Fake(thread_rows=[_q("a", NOW - timedelta(days=1), outcome=DUG_CONTINUE)], last_cont=True)
+    q = asyncio.run(r.run_reverie_once(f.deps()))
+    assert q.seed_kind == "lost_bet" and f.asked_threads[0][1] is None and "lost_bet" in f.readers_called
+
+
+def test_the_alternate_stretch_falls_back_to_the_thread_when_the_picker_has_nothing(r):
+    f = Fake(thread_rows=[_q("a", NOW - timedelta(days=1), outcome=DUG_CONTINUE)], last_cont=True)
+    deps = dataclasses.replace(f.deps(), seed_readers={})
+    q = asyncio.run(r.run_reverie_once(deps))
+    assert q.thread_id == "T" and f.asked_threads[0][1] is not None
+
+
+def test_an_outcome_written_before_the_finish_row_is_rewritten_when_it_lands(r):
+    """Finding 2 (live: run a32417ee8a57 ran with no finish row). The reconcile SQL returns a row whose
+    outcome has finish_found=false once its finish row exists; build_outcome then writes the full one."""
+    from app import store
+
+    sql = " ".join(store.RECONCILE_SQL.split())
+    assert "(q.outcome->>'finish_found') = 'false' AND fin.detail IS NOT NULL" in sql
+    f = Fake(reconcile=[RAN])
+    assert asyncio.run(r.reconcile_outcomes(f.deps())) == 1
+    assert f.outcomes[0][1]["finish_found"] is True and f.outcomes[0][1]["continue_line"] is True
+
+
+def test_write_outcome_may_replace_only_a_finish_missing_outcome():
+    import inspect
+
+    from app import store
+
+    src = inspect.getsource(store.write_reverie_outcome)
+    assert "outcome IS NULL OR (outcome->>'finish_found') = 'false'" in src
+
+
+def test_routed_words_say_waiting():
+    """Finding 3: a waiting question is not 'kept, not sent' in the day letter, Hub tab or brief."""
+    from orion.reverie.questions import COLUMNS, routed_words
+
+    assert "offer_status" in COLUMNS
+    assert routed_words({"routed_to": "none", "offer_status": "waiting"}) == "waiting for the focus slot"
+    assert routed_words({"routed_to": "none", "offer_status": "lapsed"}).endswith("lapsed")
+    assert routed_words({"routed_to": "none"}) == "kept, not sent"
+    assert routed_words({"routed_to": "focus:x", "offer_status": "sent"}) == "sent to curiosity"
+
+
+def test_a_reoffer_refused_as_queued_earlier_lapses_instead_of_looping(r):
+    """Finding 4: the focus id comes from the words, so 'queued earlier ... now expired' never clears."""
+    from orion.curiosity.focus import QUEUED_EARLIER
+
+    note = f"focus refused: {QUEUED_EARLIER} expired; nothing was queued. Reword it to queue it again"
+    assert th().is_queued_earlier_refusal(note) and not th().is_slot_full_refusal(note)
+    f = Fake(waiting=[_waiting_row()], route_result=("none", note))
+    asyncio.run(r.run_reverie_once(f.deps()))
+    assert f.updates[-1][0] == "w1" and f.updates[-1][3] == "lapsed"
+
+
+def test_hubs_queued_earlier_refusal_uses_the_constant():
+    import inspect
+
+    import orion.curiosity.focus as focus
+
+    assert "{QUEUED_EARLIER}" in inspect.getsource(focus.queue_focus)
+
+
+def test_the_adopt_sweep_runs_once_per_process(r):
+    """Finding 5: the sweep is an UPDATE; it must not run every poll."""
+    f = Fake()
+    asyncio.run(r.run_reverie_once(f.deps()))
+    asyncio.run(r.run_reverie_once(f.deps()))
+    assert f.sweeps == 1
+
+
+def test_the_lapse_check_takes_a_naive_timestamp(r):
+    """Finding 6: a naive created_at must not raise in the lapse loop."""
+    naive = (NOW - timedelta(days=15)).replace(tzinfo=None)
+    f = Fake(waiting=[_waiting_row(created=naive)])
+    asyncio.run(r.run_reverie_once(f.deps()))
+    assert ("w1", "none", "lapsed: waited 14 days for the focus slot", "lapsed") in f.updates

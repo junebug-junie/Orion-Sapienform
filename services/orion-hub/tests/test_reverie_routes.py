@@ -404,3 +404,15 @@ def test_router_registered_on_api_routes():
     paths = {r.path for r in api_routes.router.routes}
     assert "/api/reverie/visual/recent" in paths
     assert "/api/reverie/questions/recent" in paths
+
+
+def test_question_view_says_waiting_for_a_waiting_question():
+    """Reverie Patch 3 review: a question waiting for the focus slot is not shown as "kept, not sent"."""
+    row = {"question_id": "q1", "thread_id": "t", "created_at": datetime(2026, 11, 25, tzinfo=timezone.utc),
+           "seed_kind": "lost_bet", "question": "Q?", "routed_to": "none", "offer_status": "waiting",
+           "route_note": "waiting for the focus slot: another focus was pending"}
+    view = reverie_routes.question_view(row)
+    assert view["offer_status"] == "waiting" and view["routed_words"] == "waiting for the focus slot"
+    assert "offer_status" in reverie_routes._QUESTIONS_SQL
+    js = (Path(__file__).resolve().parents[1] / "static" / "js" / "reverie-tab.js").read_text()
+    assert 'q.offer_status === "waiting"' in js

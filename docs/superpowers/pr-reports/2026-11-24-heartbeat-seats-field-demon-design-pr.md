@@ -1,13 +1,14 @@
 ## Summary
 
-- Design, rev 2: the field demon and a **trained** heartbeat (an MPS Born machine) fit the same organ variables and check each other's cuts.
-- Rev 1 used the heartbeat's per-service seats as organs. Homework showed that is weak: seat counts are mostly the bus counts the demon already has, and the heartbeat's gates are random (11-08 replay: about 3 events of memory, verdict no better than shuffled).
-- It adds a history table of every heartbeat spec from July to November and what each found.
-- It records Juniper's snag (dead inputs). Step 0 is #3838, in progress.
+- Design, rev 3: the field demon's model **is** a trained tensor network: the heartbeat's MPS, fit to Orion's organ states now and k steps later (a Born machine).
+- One trained chain gives three readouts: the forecast (demon), cut cost over the partition lattice (Φ-style integration), and entanglement per cut (heartbeat).
+- The linear VAR(1) is kept only as the baseline the network must beat.
+- It includes a history table of every heartbeat spec from July to November.
+- Rev 1 (per-service seats as organs) and rev 2 (two separate models) are superseded.
 
 ## Outcome moved
 
-The heartbeat gets a real job: a second, non-linear model of where Orion comes apart, cross-checking the demon's Φ-style cut cost (#3296). The first patch is a read-only cross-check replay.
+The demon becomes a lattice model, as Juniper intended, and the heartbeat gets a learned job in place of random gates. The first patch is a read-only replay with known-answer tests, including one that only a non-linear model can pass.
 
 ## Current architecture
 

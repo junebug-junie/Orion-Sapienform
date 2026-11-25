@@ -2578,11 +2578,12 @@ channels:
     #
     # orion-sql-writer: removed 2026-07-18 because it had no code for this
     # channel; re-added 2026-11-25 (#3924) with a real consumer -- route
-    # memory.field_goals.proposed.v1 -> FieldGoalProvenanceLogSQL, insert-only
-    # table field_goal_provenance_log (PK artifact_id, full payload in
-    # payload_json; services/orion-sql-db/
-    # manual_migration_field_goal_provenance_log_v1.sql). Before this the
-    # producer's log line was the only record of a goal.
+    # memory.field_goals.proposed.v1 -> FieldGoalEpisodeSQL: one row per goal
+    # episode (a run of the same target; repeats folded into repeat_count,
+    # re-delivered artifact_ids skipped), table field_goal_episode
+    # (services/orion-sql-writer/app/field_goal_episode.py; services/orion-sql-db/
+    # manual_migration_field_goal_episode_v1.sql). Before this the producer's
+    # log line was the only record of a goal.
     producer_services: ["orion-attention-runtime"]
     # orion-spark-concept-induction and orion-world-pulse added 2026-07-30 (SSP §6
     # Objective 6): both now run orion.autonomy.goal_state_listener so

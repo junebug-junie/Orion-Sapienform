@@ -30,6 +30,9 @@ class GpuPoolEventSQL(Base):
     detail = Column(JSON, nullable=True)
 
     __table_args__ = (
+        # Retention ages rows by created_at (grammar_truth._batch_delete_sql); without this it
+        # seq-scans the whole table every cycle (#3763).
+        Index("idx_gpu_pool_events_created", "created_at"),
         Index("idx_gpu_pool_events_generated", "generated_at"),
         Index("idx_gpu_pool_events_lease", "lease_id", "generated_at"),
         Index("idx_gpu_pool_events_class_generated", "work_class", "generated_at"),

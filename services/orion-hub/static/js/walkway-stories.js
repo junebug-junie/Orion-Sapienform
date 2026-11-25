@@ -600,7 +600,11 @@
   function linkState(l) {
     if (!l) return "";
     if (l.undone_at) return "Link undone.";
-    if (l.undo_refused) return `Undo refused: ${l.undo_refused}`;
+    if (l.undo_refused) {
+      const via = l.undo_refused_detail && Array.isArray(l.undo_refused_detail.still_joined_by)
+        ? l.undo_refused_detail.still_joined_by : [];
+      return `Undo refused: ${l.undo_refused}${via.length ? ` (joined through ${via.join(", ")})` : ""}`;
+    }
     if (l.undo_requested_at) return "Undo asked for; Orion applies it on its next pass.";
     return l.applied ? "Linked as the same person on this card." : "Same person: Orion links them on its next pass.";
   }

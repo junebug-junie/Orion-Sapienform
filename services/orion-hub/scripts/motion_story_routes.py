@@ -848,7 +848,7 @@ WHERE source_kind = 'vision_same_individual' AND status = 'answered'
 _CARD_LINKS_SQL = """
 SELECT a.ask_id, a.source_ref, a.answered_at, a.answer_detail->>'undone_at' AS undone_at,
        a.answer_detail->>'undo_requested_at' AS undo_requested_at,
-       a.answer_detail->>'undo_refused' AS undo_refused,
+       a.answer_detail->>'undo_refused' AS undo_refused, a.answer_detail->'undo_refused_detail' AS undo_refused_detail,
        EXISTS (SELECT 1 FROM vision_individual_pair_verdict p WHERE p.individual_a || '|' || p.individual_b = a.source_ref
                AND p.ask_id = a.ask_id AND p.verdict = 'same') AS applied
 FROM orion_ask a
@@ -864,13 +864,13 @@ def same_name_other(person: dict[str, Any], candidates: list[Any], roots: dict[s
                     seen: set[frozenset]) -> Optional[dict[str, Any]]:
     """The other group to ask about for one person: same typed name and kind, not joined to the person,
     and never answered about against any of its groups (one question, once)."""
-    label = (person.get("label") or "").strip().casefold()
+    label = (person.get("label") or "").strip().lower()      # the SQL's lower(btrim()), same folding
     if not label or person.get("label_copied"):
         return None
     mine = {roots.get(i, i) for i in person["individual_ids"]}
     for c in candidates:
         iid = c["individual_id"]
-        if (c["label"] or "").strip().casefold() != label or c["kind"] != person.get("kind"):
+        if (c["label"] or "").strip().lower() != label or c["kind"] != person.get("kind"):
             continue
         if iid in person["individual_ids"] or roots.get(iid, iid) in mine:
             continue
@@ -890,7 +890,7 @@ async def _same_name_and_links(conn: Any, stories: list[dict[str, Any]], roots: 
     for p in persons:
         p["same_name_other"] = None
         p["card_links"] = []
-    labels = sorted({(p.get("label") or "").strip().casefold() for p in persons
+    labels = sorted({(p.get("label") or "").strip().lower() for p in persons
                      if p.get("label") and not p.get("label_copied")})
     if labels:
         cands = await conn.fetch(_SAME_NAME_CANDIDATES_SQL, labels)
@@ -914,7 +914,9 @@ async def _same_name_and_links(conn: Any, stories: list[dict[str, Any]], roots: 
                 p["card_links"].append({
                     "ask_id": r["ask_id"], "a": a, "b": b, "answered_at": _iso(r["answered_at"]),
                     "applied": bool(r["applied"]), "undone_at": r["undone_at"],
-                    "undo_requested_at": r["undo_requested_at"], "undo_refused": r["undo_refused"]})
+                    "undo_requested_at": r["undo_requested_at"], "undo_refused": r["undo_refused"],
+                    "undo_refused_detail": (json.loads(r["undo_refused_detail"])
+                                            if isinstance(r["undo_refused_detail"], str) else r["undo_refused_detail"])})
 
 
 class SameNameBody(BaseModel):
@@ -947,9 +949,19 @@ async def record_same_name(story_id: str, person_key: str, body: SameNameBody, r
                 if not other or other["individual_id"] != body.other:
                     # Linked, answered or renamed since the card showed it: nothing to ask any more.
                     raise HTTPException(status_code=409, detail="same_name_question_gone")
-                mine = next(g["individual_id"] for g in person["groups"]
-                            if (g.get("label") or "").strip().casefold() == other["label"].strip().casefold())
+                want = other["label"].strip().lower()
+                named = [g for g in person["groups"] if (g.get("label") or "").strip().lower() == want]
+                mine = next((g["individual_id"] for g in named if not g.get("label_copied")),
+                            named[0]["individual_id"] if named else None)
+                if mine is None:
+                    raise HTTPException(status_code=409, detail="same_name_question_gone")
                 ref = story_persons.pair_ref(mine, body.other)
+                # One answer per pair, even on a double click: the second waits, then finds it answered.
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", "same_name:" + ref)
+                if await conn.fetchval(
+                        "SELECT 1 FROM orion_ask WHERE source_kind = 'vision_same_individual' AND status = 'answered' "
+                        "AND source_ref = $1", ref) is not None:
+                    raise HTTPException(status_code=409, detail="same_name_question_gone")
                 detail = {"story_id": story_id, "action": "same_name", "via": "motion_story", "person_key": person_key}
                 refs = [f"motion_story:{story_id}", f"individual:{mine}", f"individual:{body.other}",
                         JUNIPER_STORY_CARD_REF]
@@ -991,12 +1003,14 @@ async def request_link_undo(ask_id: str, request: Request) -> dict[str, Any]:
                     raise HTTPException(status_code=404, detail="link_not_found")
                 detail = row["answer_detail"]
                 detail = json.loads(detail) if isinstance(detail, str) else dict(detail or {})
-                if detail.get("via") != "motion_story" or (row["answer"] or "").strip().lower() not in ("same", "yes"):
+                if (detail.get("via") != "motion_story" or detail.get("action") != "same_name"
+                        or (row["answer"] or "").strip().lower() not in ("same", "yes")):
                     raise HTTPException(status_code=422, detail="not_a_link_this_card_made")
                 if detail.get("undone_at"):
                     raise HTTPException(status_code=409, detail="already_undone")
-                age = await conn.fetchval("SELECT now() - $1::timestamptz", row["answered_at"])
-                if age.days >= LINK_UNDO_DAYS:
+                # The writer's window, measured the same way (its pair row's decided_at = answered_at).
+                if await conn.fetchval("SELECT now() - $1::timestamptz > make_interval(days => $2)",
+                                       row["answered_at"], LINK_UNDO_DAYS):
                     raise HTTPException(status_code=409, detail="older_than_7_days")
                 await conn.execute(
                     "UPDATE orion_ask SET answer_detail = coalesce(answer_detail, '{}'::jsonb) - 'undo_refused' "

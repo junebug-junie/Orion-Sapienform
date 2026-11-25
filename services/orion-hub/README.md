@@ -4938,7 +4938,8 @@ marks the ask; sql-writer's individuals cycle removes the link
 (`app/vision_link_undo.py`, also `scripts/undo_vision_link.py`, dry run by default),
 re-derives copied names, and writes `undone_at`, or `undo_refused` with the reason
 (a split recorded it, a name was typed since, or other `same` links still join the
-two).
+two). A pair she answered once is not asked about again, even after an undo: the
+undo takes the link back, not her right to be asked twice.
 
 ## Retro browser play
 

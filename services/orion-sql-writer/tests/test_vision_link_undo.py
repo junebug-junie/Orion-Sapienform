@@ -113,9 +113,10 @@ def test_undo_refuses_out_of_scope_too_old_and_dependents_and_names_them(pg) -> 
         _card_link(conn, "ask-other-card", "a", "b", via="ask_card")            # not this card's
         _card_link(conn, "ask-old", "c", "d", at=NOW - timedelta(days=8))        # out of the window
         _card_link(conn, "ask-named", "e", "f")
-        conn.execute(text("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, answer, "
-                          "answered_at) VALUES ('ask-name-later', 'q', 'vision_individual', 'f', 'answered', 'Sam', :t)"),
-                     {"t": NOW - timedelta(minutes=5)})
+        # A name typed on the story card after the link (a vision_story_person "someone else, called Sam"
+        # applied as a typed label): read from the label itself, whichever card wrote it.
+        conn.execute(text("UPDATE vision_individual SET label = 'Sam', label_copied = false, labeled_at = :t, "
+                          "label_ask_id = 'ask-name-later' WHERE individual_id = 'f'"), {"t": NOW - timedelta(minutes=5)})
     with pg.begin() as conn:
         assert "not a 'same person' link made on a walkway story card" in lu.undo_link(conn, "ask-other-card", now=NOW)["reason"]
         assert lu.undo_link(conn, "ask-old", now=NOW)["reason"].startswith("older than 7 days")
@@ -123,7 +124,8 @@ def test_undo_refuses_out_of_scope_too_old_and_dependents_and_names_them(pg) -> 
         assert rep["ok"] is False and rep["name_asks"] == ["ask-name-later"]
         assert conn.execute(text("SELECT count(*) FROM vision_individual_pair_verdict")).scalar() == 3
     with pg.begin() as conn:
-        conn.execute(text("DELETE FROM orion_ask WHERE ask_id = 'ask-name-later'"))
+        conn.execute(text("UPDATE vision_individual SET label = NULL, labeled_at = NULL, label_ask_id = NULL "
+                          "WHERE individual_id = 'f'"))
         conn.execute(text(
             "INSERT INTO vision_individual_split (split_id, source_individual_id, new_individual_id, ask_id, group_key, "
             "status, moved, linked_pair) VALUES ('split-1', 'x', 'e', 'ask-x', '', 'split', '[]'::jsonb, "
@@ -230,3 +232,29 @@ def test_undo_script_is_a_dry_run_unless_apply(pg) -> None:
         assert conn.execute(text("SELECT count(*) FROM vision_individual_pair_verdict")).scalar() == 0
     listed = subprocess.run([sys.executable, str(script), "--list", "--dsn", PG], capture_output=True, text=True)
     assert "ask-link" in listed.stdout and "undone=" in listed.stdout
+
+
+@needs_pg
+def test_an_unexpected_error_on_one_undo_is_recorded_not_retried_forever(pg, monkeypatch) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        for i in ("a", "b", "c", "d"):
+            _ind(conn, i)
+        _card_link(conn, "ask-boom", "a", "b", at=NOW - timedelta(hours=2))
+        _card_link(conn, "ask-ok", "c", "d")
+        conn.execute(text("UPDATE orion_ask SET answer_detail = answer_detail || "
+                          "jsonb_build_object('undo_requested_at', 'now')"))
+    real = lu.undo_link
+
+    def flaky(conn, ask_id, **kw):
+        if ask_id == "ask-boom":
+            conn.execute(text("SELECT 1/0"))
+        return real(conn, ask_id, **kw)
+
+    monkeypatch.setattr(lu, "undo_link", flaky)
+    with pg.begin() as conn:
+        assert lu.apply_link_undos(conn, NOW) == {"links_undone": 1, "link_undos_refused": 1}
+    with pg.begin() as conn:
+        d = {r[0]: r[1] for r in conn.execute(text("SELECT ask_id, answer_detail FROM orion_ask")).fetchall()}
+        assert d["ask-boom"]["undo_refused"].startswith("error: ") and "undone_at" in d["ask-ok"]

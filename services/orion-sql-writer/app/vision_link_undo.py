@@ -36,7 +36,6 @@ from typing import Any, Dict, List, Optional
 
 from app.vision_individuals import (
     INDIVIDUALS_LOCK_KEY,
-    SOURCE_KIND_INDIVIDUAL,
     SOURCE_KIND_SAME,
     _detail,
     parse_pair_ref,
@@ -145,10 +144,12 @@ def undo_link(conn, ask_id: str, *, now: Optional[datetime] = None, lock: bool =
     if splits:
         return {**report, "ok": False, "reason": "a split recorded this link; undo the split first",
                 "splits": splits}
+    # Any name she typed on the linked person since, whichever card wrote it (a who-is-this, a story
+    # card, an "Is this <name>?", a name box on a "same person?" card): read from the labels themselves.
     names = [r[0] for r in conn.execute(text(
-        "SELECT ask_id FROM orion_ask WHERE source_kind = :k AND status = 'answered' AND source_ref = ANY(:g) "
-        "AND answered_at > :d ORDER BY answered_at"), {"k": SOURCE_KIND_INDIVIDUAL, "g": group,
-                                                       "d": decided or now}).fetchall()]
+        "SELECT coalesce(label_ask_id, individual_id) FROM vision_individual WHERE individual_id = ANY(:g) "
+        "AND label IS NOT NULL AND NOT label_copied AND labeled_at > :d AND coalesce(label_ask_id, '') <> :k "
+        "ORDER BY labeled_at"), {"g": group, "d": decided or now, "k": ask_id}).fetchall()]
     if names:
         return {**report, "ok": False, "reason": "a name was typed on this linked person after the link; Juniper decides",
                 "name_asks": names}
@@ -166,6 +167,10 @@ def undo_link(conn, ask_id: str, *, now: Optional[datetime] = None, lock: bool =
     conn.execute(text(
         "UPDATE orion_ask SET answer_detail = coalesce(answer_detail, '{}'::jsonb) || "
         "jsonb_build_object('undone_at', CAST(:t AS text)) WHERE ask_id = :a"), {"t": now.isoformat(), "a": ask_id})
+    if report["contradictions"]:
+        conn.execute(text(
+            "UPDATE orion_ask SET answer_detail = answer_detail || jsonb_build_object('contradictions', "
+            "CAST(:c AS jsonb)) WHERE ask_id = :a"), {"c": json.dumps(report["contradictions"]), "a": ask_id})
     logger.info("[VISION_LINK_UNDONE] ask_id=%s pair=%s|%s relabelled=%d", ask_id, a, b, len(relabelled))
     return {**report, "ok": True, "relabelled": relabelled}
 
@@ -187,10 +192,14 @@ def apply_link_undos(conn, now: datetime) -> Dict[str, int]:
                 if not rep["ok"]:
                     raise _Refused(rep)
             out["links_undone"] += 1
-        except _Refused as r:
-            reason = r.report.get("reason") or "refused"
-            extra = {k: r.report[k] for k in ("still_joined_by", "splits", "name_asks", "contradictions")
-                     if r.report.get(k)}
+        except Exception as exc:  # noqa: BLE001 - one bad undo must not block the others, nor loop
+            if isinstance(exc, _Refused):
+                reason = exc.report.get("reason") or "refused"
+                extra = {k: exc.report[k] for k in ("still_joined_by", "splits", "name_asks", "contradictions")
+                         if exc.report.get(k)}
+            else:
+                logger.warning("vision_link_undo_error ask_id=%s error=%s", ask_id, exc)
+                reason, extra = f"error: {type(exc).__name__}: {exc}"[:200], {}
             conn.execute(text(
                 "UPDATE orion_ask SET answer_detail = answer_detail || jsonb_build_object('undo_refused', "
                 "CAST(:r AS text), 'undo_refused_detail', CAST(:d AS jsonb)) WHERE ask_id = :a"),

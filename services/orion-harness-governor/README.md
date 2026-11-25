@@ -595,7 +595,7 @@ exit 1 with a plain reason, never empty text.
   body-economy ...` as an argument list, no shell, 15 s). Added 2026-11-25 (#3948): `consults`
   (category `consults`, `dig consult [<id>]`), `arc` (category `self`, `dig arc|act <id>`), and Orion's own
   introspect reads over the bus: `dreams`, `curiosity`, `reading_results` (category `memory`) and
-  `orion_day` (category `self`). Items marked `intimate` are dropped and counted, never sent. `dig body`
+  `orion_day` (category `self`). An item marked `intimate` would be dropped, but no producer sets that field yet: Orion's consent is the gate. `dig body`
   and `dig portrait` are left out: ~55 s live, past the 62 s MCP call limit once consent is counted.
   Nothing in the table writes.
 - **Grants:** `$ORION_DIG_HOME/self/claude_grants.jsonl`, newest line per category; none = `ask`. Only

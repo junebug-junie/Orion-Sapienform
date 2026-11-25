@@ -11,7 +11,8 @@ A reader that cannot read raises ``ReaderUnavailable`` with a short reason: the 
   arrive already matched against fixed hex patterns (``ConsultsArguments``, ``ArcArguments``).
 * ``dreams``, ``curiosity``, ``reading_results``, ``orion_day``: Orion's own introspect read tools
   (``orion/introspect/tools.py`` ``IntrospectTools.invoke``, one bus RPC each), rendered as short text.
-  Items marked ``intimate`` are dropped and counted, never sent.
+  An item whose producer marks it ``intimate`` is dropped and counted. No producer sets ``sensitivity``
+  today (2026-11-25), so this is a guard for later, not a filter that acts now: Orion's consent is the gate.
 
 Not here on purpose: ``dig body`` and ``dig portrait`` take ~55 s live (2026-11-25), which with the 41 s
 consent wait would pass the 62 s MCP call limit.
@@ -88,18 +89,19 @@ def _drop_report_file(lines: Sequence[str], dig_home: Path) -> list[str]:
     """Drop dig's "full ...: <path>" line (a path in this container means nothing to Claude) and
     delete that file: it is this call's own copy of a result nobody will read."""
     root = (dig_home / "dig" / DIG_ID).resolve()
-    kept: list[str] = []
-    for line in lines:
-        m = FULL_LINE_RE.match(line.strip())
-        if m:
-            path = Path(m.group(1))
-            try:
-                if path.resolve().parent == root and path.suffix == ".json":
-                    path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            continue
-        kept.append(line)
+    kept = list(lines)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    # Only dig's own last line: earlier lines can quote text (a consult turn) that merely looks like one.
+    m = FULL_LINE_RE.match(kept[-1].strip()) if kept else None
+    if m:
+        kept.pop()
+        path = Path(m.group(1))
+        try:
+            if path.resolve().parent == root and path.suffix == ".json":
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
     return kept
 
 

@@ -266,3 +266,16 @@ def test_introspect_item_text_is_cut():
                          "items": [_item(1, text="x" * 5000)]})
     text = asyncio.run(readers.introspect_reader(tools, "dreams")(ClaudeDreamsArguments(reason="juniper asked")))
     assert "x" * readers.ITEM_TEXT_CHARS not in text and "…" in text
+
+
+def test_only_the_last_line_counts_as_dig_full_result_line(tmp_path):
+    other = tmp_path / "dig" / "claude-tools" / "someone-elses-call-1.json"
+    other.parent.mkdir(parents=True)
+    other.write_text("{}")
+    quoted = f"full report: {other}"
+
+    def runner(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, stdout=f"turn 2 said:\n{quoted}\nend of turn\n\n", stderr="")
+
+    text = readers.run_dig(["x"], "consult", runner=runner, env={"ORION_DIG_HOME": str(tmp_path)})
+    assert quoted in text and other.exists()

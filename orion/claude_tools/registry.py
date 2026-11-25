@@ -129,7 +129,7 @@ ARC_DESCRIPTION = (
 DREAMS_DESCRIPTION = (
     "Orion's dreams: nightly dream stories and the speculative links a sleep cycle proposed between two "
     "memories. query=<topic> finds them by meaning, dream_id=<id> opens one, nothing gives the newest. "
-    "Dreams are not established fact. Intimate items are never sent. Category `memory`." + _ASK
+    "Dreams are not established fact. Category `memory`." + _ASK
 )
 CURIOSITY_DESCRIPTION = (
     "Orion's curiosity runs: the sittings where Orion chose something to look into, what it concluded and "
@@ -171,7 +171,7 @@ TOOLS: dict[str, ToolDef] = {
     ),
     "dreams": ToolDef(
         name="dreams", category="memory", description=DREAMS_DESCRIPTION,
-        summary="your dreams (stories and sleep-cycle links), never intimate ones",
+        summary="your dreams (stories and sleep-cycle links), full text up to 1,200 characters each",
         arguments=ClaudeDreamsArguments,
     ),
     "curiosity": ToolDef(

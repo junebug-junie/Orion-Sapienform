@@ -1,135 +1,128 @@
-# Heartbeat seats + field demon: fixed organs for Φ, a real forecast for the heartbeat
+# Heartbeat + field demon: one set of organs, two models that check each other
 
-Status: design. Juniper asked for this on 2026-11-24. Related: #3296 (integration rung),
-#3822 (slow test), #3795 (pipeline coupling floor).
+Status: design, rev 2 (2026-11-25). Juniper asked for this on 2026-11-24. Related: #3296
+(integration rung), #3822 (slow test), #3795 (pipeline coupling floor), #3838 (heartbeat overhaul).
+
+**Rev 2 change.** Rev 1 proposed using the heartbeat's 5 per-service seats as the demon's organs.
+Homework through the heartbeat's spec history (below) showed two things:
+- Per-service seat counts are mostly the same bus traffic counts the demon already uses, grouped
+  differently.
+- The heartbeat's network uses random gates, so its seats carry almost no content (11-08 replay).
+
+The strong version is the one the 11-08 spec recommended: train the heartbeat as a model of
+Orion's state, on the same organ variables the demon fits. Then use the two models to check each
+other's cuts.
 
 ## Arsonist summary
 
-The field demon needs organs that hold still. The data-derived modes are real, but they drift
-(#3822: day-to-day match 0.56-0.63, bar 0.7). The heartbeat already has fixed organs: 5 seats, one
-per service. The service that emitted an event decides its seat, so a seat cannot drift.
+Two models, one question: where does Orion come apart?
 
-The heartbeat needs a forecast. Its own surprise test says "There is no forecast model"
-(`docs/research/preregistration/2026-09-20-heartbeat-surprise-run.md`). Its "surprise" is only how
-much its picture changed since the last snapshot.
+- **The field demon** (`orion/substrate/demon.py`) is a linear forecaster (VAR(1)) over organ
+  variables. Cutting it apart costs forecast skill. That cost is the integration rung's
+  Φ-style measure (#3296).
+- **The heartbeat, rebuilt as a trained network.** It becomes a matrix-product state fit by
+  maximum likelihood to observed organ states, which is called a tensor-network **Born machine**.
+  The tangling (entanglement) across a cut of a trained MPS is the real shared information between
+  the two sides of Orion's state. The cuts of the MPS are the same partitions Φ searches.
 
-So the two fit:
-- **Seats → demon:** forecast each seat, and measure the cut cost at each seat boundary. Φ then
-  has something stable to cut between now, not after 12-08.
-- **Demon → heartbeat:** each seat's forecast error is a surprise in the proper sense: what was
-  expected, minus what happened.
-- **Cross-check:** the heartbeat's neighbour test found that execution↔bus is really linked and
-  biometrics↔execution is not (`2026-09-20-heartbeat-neighbor-links-v2-run.md`). The demon finds
-  seat-to-seat links with different maths. If both methods agree, that is strong evidence. If they
-  disagree, one of them is wrong.
+Both models see the same organ variables over the same hours, so they can check each other:
+- **They agree on the weakest cut:** that cut is real structure in Orion, found by two different
+  kinds of maths.
+- **They disagree:** one model is wrong, and we look at why.
+- **Different reach:** the demon is linear and the Born machine is not. A cut that only the Born
+  machine finds is non-linear coupling, which the demon misses.
 
-**Snag (Juniper, 2026-11-24): the heartbeat runs on dead metrics.** It must be overhauled before
-anything is built on its seats. Step 0 below is that overhaul.
+This also gives the heartbeat a job. Today nothing decides on it, and the 11-08 replay found its
+verdict is noise.
+
+## History: what each heartbeat spec found (July-November)
+
+| Date | Spec | Finding |
+|---|---|---|
+| 07-24 | `2026-07-24-spark-field-holographic-lattice-design.md` | Built it: 5 per-service seats, 10-site MPS. Dropped the charter's fidelity test as close to circular; used the entanglement profile. |
+| 07-28 | `2026-07-28-precision-weighted-attention-organ-and-heartbeat-discrimination-design.md`, `...spark-introspector-retirement...` | It read "redundant" on almost every tick (it thermalized). Added 8 trajectories and a relax/reheat loop. Called the strongest live "pulse". |
+| 07-29 | `2026-07-29-heartbeat-into-ast-hot-design.md` | The verdict became a self-model input. Nothing acts on it. |
+| 08-21 | `2026-08-21-phi-v2-design.md` | `heartbeat_mean_ratio` was used as an "independent" Φ input. |
+| 09-19/20 | `docs/research/preregistration/2026-09-*heartbeat*` | It passed lattice-vs-thermometer and the exec↔bus link test. It failed "settles during a conversation". |
+| 10-01 | `2026-10-01-heartbeat-cabinet-crosswalk-design.md` | It fails the metric gate's independence and theory checks. The design only logs it beside cabinet temperature. |
+| 10-07 | `2026-10-07-orion-self-calibration-design.md` | `heartbeat_smear` is broken: a dead seat reads as a huge number, not as absent. |
+| 10-30 | `2026-10-30-self-now-capacities-vsm-design.md` | It is a collector only. It replies to nothing. |
+| **11-08** | `2026-11-08-prediction-error-suite-rebuild-design.md` | **The 2.5 h replay.** The gates are fixed random unitaries. Memory is about 3 events (the last 3 atoms predict `mean_ratio` with held-out R² 0.88; the last 30 predict nothing). The verdict class is no better than shuffled input. Recommendation: stop treating the verdict as meaningful, and rebuild the heartbeat as a trained Born machine for the integration rung. |
+| 11-24 | this doc, #3838 | Dead inputs: stamped constant strengths on 3 of 5 seats; reheat below its calm floor; 13 producers unrouted. |
+
+#3296 already rules that heartbeat entropy is never a Φ *input*. This design keeps that rule. The
+trained heartbeat is a second *model* of the inputs, not an input.
 
 ## Current architecture
 
-- `services/orion-heartbeat` subscribes to `orion:grammar:event`.
-- It routes 5 producers to boundary seats 0-4 (`app/substrate/routing.py` `ORGAN_SITE_MAP`):
-  hub (chat), biometrics, cortex-exec (execution), bus (transport), cortex-orch (route).
-- Each `atom_emitted` event applies a gate to its seat. The atom type picks the gate kind.
-  `confidence` / `salience` / `uncertainty` set its strength.
-- A wall-clock loop relaxes each trajectory and applies a "reheat". The reheat is driven by the
-  raw mean |gap z-score| of the `orion_bus_synapse` graph.
-- The output is an H1 verdict (boundary/bulk entanglement ratio), published as a ledger-only
-  trace. No consumer reads it.
-
-### What is dead or near-dead today (live check, 2026-11-24 ~22:00 UTC)
-
-Live data, last 6 h of `grammar_events`, `atom_emitted` only:
-
-| Seat | Atom strengths that vary | Plain reading |
-|---|---|---|
-| biometrics | `signal` salience (824 values), `observation` salience (260) | carries real values |
-| hub | a few values (4-14) | mostly fixed |
-| cortex-exec | none: every atom type has 1-2 fixed values | only **when** it fires carries information |
-| bus | `signal` uncertainty only; salience fixed at 0.5/0.6 | mostly fixed |
-| cortex-orch | 40 events in 24 h | almost silent |
-
-- **Fixed strengths.** For 3 of the 5 seats, the gate strength is a constant stamped by the
-  emitter, not a measurement. Those seats carry timing only.
-- **Reheat driver at its floor.** Live `raw_mean_abs_gap_zscore` is 0.53. The calm floor for
-  |z| is about 0.80 (√(2/π)), so the reading sits below it, and `reheat_prob` is 0.0035. The
-  10-02 check found the same thing: a near-constant hum, with busy edges and quiet edges not
-  significantly different (shuffle p=0.16).
-- **Narrow coverage.** 13 catalogued grammar producers are not routed to any seat (`/health`
-  `catalog_producers_unrouted`), including mind, thought, dream, gpu-pool and actions. The 5 seats
-  were "confirmed live" in July. They are not Orion's organs today.
-- **Short history.** `grammar_events` keeps about 3 days (since 11-21).
-
-Juniper may know of more dead inputs. Step 0 starts with a full audit, not this partial one.
+- **Heartbeat:**
+  - Per-service seats, with random fixed gates.
+  - A relax/reheat loop.
+  - It publishes a ledger-only H1 trace and has no deciding consumer.
+  - #3838 (step 0, in progress) audits and removes the dead inputs.
+- **Demon:**
+  - Built and tested (#3728).
+  - Its first live read was on drifting data-derived modes (#3796).
+  - The slow test (#3822) shows those modes are real but drift (day-to-day match 0.56-0.63, bar
+    0.7), and settle at 2-4 day blocks.
 
 ## Missing questions
 
-1. Which metrics does Juniper mean by "dead"? This doc found fixed atom strengths, a reheat stuck
-   at its floor, and 13 unrouted producers. Are there others?
-2. Should the seats stay per-service, or become per-organ, using the body atlas organ names
-   (`project_body_atlas`)? Per-service is fixed but arbitrary. Per-organ is closer to "who is
-   sitting where".
-3. Is the MPS (tensor network) part of the heartbeat still wanted, given that its inputs are
-   mostly timing? Or do the seats and their counts become the product, with the MPS kept only as
-   one reader?
+1. **Organ variables.** Candidates are the #3296 list (data-derived modes at 2-4 day blocks, once
+   stable), or per-service activity as a fallback. Per-service is stable but mostly pipeline
+   (#3795). Recommendation: use modes at a 4-day block when #3822's re-run (~12-08) passes. Until
+   then, run both models on per-service activity as a labelled preview.
+2. **Discretising.** A Born machine models discrete states. How many levels per organ? The
+   recommendation is 3 (low, usual, high against the organ's own time-of-day profile). That keeps
+   the state space small enough to fit from a few weeks of 5-minute buckets.
+3. **Keep the random-gate heartbeat running meanwhile?** The 11-08 recommendation is yes, with
+   `mean_ratio` labelled a "last-3-events sequence meter" and the verdict class not presented as
+   meaningful. #3838 applies this.
 
 ## Proposed schema / API changes
 
-Step 0 (overhaul) and step 2 only. Step 1 changes nothing.
-
-- **Step 0:**
-  - Seat map: decide on question 2. Route every live producer, or name each one left out with a
-    reason. Merge cortex-orch into execution unless it starts firing.
-  - Gate strength: use a measured value where the emitter has one. Where it has none, gate on
-    presence only, and say so. Do not use stamped constants.
-  - Reheat: either drive it from a live signal that can read calm, or remove it. Removing it
-    needs an answer to the 07-28 thermalization problem (see the README).
-  - Retire every dead input completely: kill the producer path, not just the reader (CLAUDE.md
-    metric gate, "retire the old one completely").
-- **Step 2:** a durable 5-minute seat-count rollup. The likely home is the bus-history rollup
-  from Patch 1 (#3282), with seat as a column. That keeps seat history past 3 days.
+None in the first patch, because it is a read-only replay. Later:
+- A trained-model mode in `services/orion-heartbeat`, refit on rolling windows. It publishes
+  per-cut mutual information beside the demon's cut cost on the integration hourly record (#3296).
+  This replaces the random-gate ensemble only after the replay passes.
 
 ## Files likely to touch
 
-- `services/orion-heartbeat/app/substrate/routing.py`, `service.py`, `bus_synaptic.py`, README,
-  tests.
-- Emitters with stamped strengths: `services/orion-cortex-exec/app/grammar_emit.py`,
-  `services/orion-bus/app/grammar_emit.py`, `services/orion-hub/...` (step 0, only if real
-  values exist there).
-- `scripts/heartbeat_seats_demon_replay.py` (new, step 1).
-- `orion/substrate/demon.py`: no change expected.
-- Step 2: the bus-history rollup table and its reducer.
+- `orion/substrate/born_machine.py` (new, pure): fit an MPS to discrete state vectors by
+  maximum likelihood, and read the mutual information at each cut. quimb is already a heartbeat
+  dependency. A small numpy DMRG-style fit may be simpler; decide in the patch.
+- `scripts/integration_cut_crosscheck_replay.py` (new): the demon cut cost and the Born-machine
+  cut mutual information on the same organs and hours, against the time-shift null.
+- Later: `services/orion-heartbeat/app/substrate/*`, README.
 
 ## Non-goals
 
-- No change to how the demon itself works.
-- No consumer of the heartbeat verdict. It stays ledger-only until it passes a test.
-- No Φ verdict in this work. That is #3296's next step, once seats pass step 1.
-- No new seats invented by hand. Seats come from emitter identity or the body atlas, not from a
-  taxonomy.
+- No Φ verdict. That is #3296.
+- No heartbeat output wired into cognition.
+- No hand-made organ list. Organs come from #3822's stability test, or from service identity as a
+  labelled preview.
+- No change to the demon.
 
 ## Acceptance checks
 
-- **Step 0 (overhaul):**
-  - Every input has a traced producer (file:line).
-  - Every input varies on live data.
-  - Every input can return to a calm reading on a quiet night.
-  - The audit table is in the PR.
-  - The 09-19 lattice-vs-thermometer and 09-20 neighbour-links probes are re-run. They still pass,
-    or the PR says what changed.
-- **Step 1 (read-only replay, 3+ days):**
-  - Per-seat foresight (skill against the better of the clock and persistence) at 5-60 min.
-  - Cut cost at each seat boundary, against the time-shift null.
-  - Agreement table: demon links against heartbeat neighbour links. Report which seat pairs agree
-    and which do not.
-  - Pipeline check: report the cut cost of hub, exec, orch and bus as one block against the rest,
-    so that pipeline coupling (#3795) is not read as integration.
-- **Step 2:** the seat-count rollup has 7+ days of rows, matching `grammar_events` counts exactly
-  over a 1-hour spot check.
+- **Born machine, known answers:**
+  - Two independent halves give mutual information about 0 at their cut.
+  - A copied variable gives mutual information near its entropy.
+  - A shuffled-time null gives about 0 at every cut.
+- **Replay:**
+  - For each cut: the demon cut cost and the Born-machine mutual information, each against the
+    time-shift null, with effect, spread and P(real).
+  - Rank agreement between the two models across cuts (Spearman with a bootstrap interval).
+  - The weakest cut found by each model.
+- **Pipeline check:** the hub/exec/orch/bus block against the rest is reported separately, so
+  pipeline coupling (#3795) is not read as integration.
+- **Gate:** the trained heartbeat replaces the random-gate ensemble only if its cut mutual
+  information beats the null and agrees with the demon on the weakest cut more often than the
+  null does.
 
 ## Recommended next patch
 
-Step 0, the heartbeat overhaul, starting with the input audit. It is read-only to start, and it
-answers missing question 1. Step 1 (the replay) can run on today's seats in parallel, labelled as a
-preview, because it is read-only. It must not be read as a verdict until step 0 lands.
+1. Finish #3838 (step 0). It is in progress.
+2. Build the Born-machine module and the cross-check replay, run on per-service activity as a
+   labelled preview.
+3. Re-run on stable modes after #3822's ~12-08 re-run.

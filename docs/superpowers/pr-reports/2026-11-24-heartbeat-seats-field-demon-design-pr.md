@@ -1,13 +1,13 @@
 ## Summary
 
-- Design: use the heartbeat's 5 fixed seats as organs for the field demon, and use the demon's forecast as the heartbeat's surprise.
-- It records Juniper's snag: the heartbeat runs on dead metrics. A heartbeat overhaul (step 0) comes first.
-- A partial live audit is included. Fixed atom strengths on 3 of 5 seats. The reheat driver sits below its calm floor. 13 grammar producers are routed to no seat. Seat history is 3 days.
-- Spec: `docs/superpowers/specs/2026-11-24-heartbeat-seats-field-demon-design.md`.
+- Design, rev 2: the field demon and a **trained** heartbeat (an MPS Born machine) fit the same organ variables and check each other's cuts.
+- Rev 1 used the heartbeat's per-service seats as organs. Homework showed that is weak: seat counts are mostly the bus counts the demon already has, and the heartbeat's gates are random (11-08 replay: about 3 events of memory, verdict no better than shuffled).
+- It adds a history table of every heartbeat spec from July to November and what each found.
+- It records Juniper's snag (dead inputs). Step 0 is #3838, in progress.
 
 ## Outcome moved
 
-The Φ rung (#3296) gets a path to stable organs now, instead of waiting for data-derived modes to settle (#3822). The heartbeat gets a path to a real forecast.
+The heartbeat gets a real job: a second, non-linear model of where Orion comes apart, cross-checking the demon's Φ-style cut cost (#3296). The first patch is a read-only cross-check replay.
 
 ## Current architecture
 

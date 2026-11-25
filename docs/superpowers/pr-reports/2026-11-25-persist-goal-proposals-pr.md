@@ -148,6 +148,6 @@ Issues opened: #3928. Issues closed: #3924 (by this PR).
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3929
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

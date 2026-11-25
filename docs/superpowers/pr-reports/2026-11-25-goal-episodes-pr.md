@@ -172,6 +172,6 @@ Issues: #3924 (done by #3929 and this PR). #3928 is commented and closed (streak
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3940
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

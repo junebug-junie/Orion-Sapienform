@@ -130,21 +130,23 @@ def judge_questions(lane, qs: list[dict], judged: list[dict]) -> dict[str, str]:
     return doors
 
 
-def live(lane, out_dir: Path) -> dict:
+def live(lane_name: str, out_dir: Path) -> dict:
+    """Read first, then hold the seat only while judging (a psql failure holds nothing)."""
     from reflection_register_sources import psql_json, wilson
 
     qs = psql_json("SELECT json_build_object('id', question_id, 'text', text, 'minted_by', minted_by, 'status', status) "
                    "FROM curiosity_self_questions")
+    findings = psql_json("SELECT json_build_object('run_id', run_id, 'register', register, 'question_ref', question_ref, "
+                         "'at', created_at) FROM curiosity_finding_register WHERE line = 'self_inquiry' AND register IS NOT NULL")
     judged: list[dict] = []
     try:
-        doors = judge_questions(lane, qs, judged)
+        with operator_lane_sync(lane_name, holder=HOLDER) as lane:
+            doors = judge_questions(lane, qs, judged)
     except LaneRecalled:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "questions.partial.jsonl").write_text("".join(json.dumps(j) + "\n" for j in judged))
         raise
     minted = {q["id"]: q["minted_by"] for q in qs}
-    findings = psql_json("SELECT json_build_object('run_id', run_id, 'register', register, 'question_ref', question_ref, "
-                         "'at', created_at) FROM curiosity_finding_register WHERE line = 'self_inquiry' AND register IS NOT NULL")
     rows = []
     for f in findings:
         qid = str(f.get("question_ref") or "").removeprefix("self_question:")
@@ -184,8 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.live:
         out = args.out or Path("/tmp/self-question-door-replay") / datetime.now(timezone.utc).strftime("%Y-%m-%d")
         try:
-            with operator_lane_sync(args.lane, holder=HOLDER) as lane:
-                result = live(lane, out)
+            result = live(args.lane, out)
         except LaneRecalled as exc:
             print(f"RECALLED on {args.lane}: {exc}; wrote {out / 'questions.partial.jsonl'}", file=sys.stderr)
             return EXIT_RECALLED

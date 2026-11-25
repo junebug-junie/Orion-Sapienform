@@ -201,6 +201,19 @@ def _curiosity_items(line: str, organ: str, *, start: str, end: str, with_text: 
     return out
 
 
+def served_model(lane: Any, body: dict) -> Optional[str]:
+    """The model that served the reply. The lane sends ``model=<operator route>`` (e.g. ``operator_agent``),
+    and the gateway rewrites it only for vLLM grants, so a llama.cpp/strata seat may echo the route name
+    back. A route name is not a model: then the pool's grant record (``model_file``) names the seat's
+    model. Nothing known -> None (``model_not_evaluated: unknown``, never a label)."""
+    model = str(body.get("model") or "").strip()
+    route = str(getattr(lane, "route", "") or "")
+    if model and model != route and not model.startswith("operator"):
+        return model
+    grant = getattr(getattr(lane, "lease", None), "grant", None)
+    return str(getattr(grant, "model_file", "") or "") or None
+
+
 def judge_one(lane: Any, item: Item) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """(label, reason, error, model) from one judge call on ``lane`` (an orion.evals.leased_llm.OperatorLane,
     ``chat(body, timeout_sec)``). A failed call is an error tuple; a model not in PASSED_JUDGE_MODELS is an
@@ -213,7 +226,7 @@ def judge_one(lane: Any, item: Item) -> tuple[Optional[str], Optional[str], Opti
             "top_p": 1.0, "presence_penalty": 0,
             "max_tokens": JUDGE_MAX_TOKENS, "chat_template_kwargs": {"enable_thinking": False}},
             timeout_sec=JUDGE_TIMEOUT_SEC)
-        model = str(body.get("model") or "") or None
+        model = served_model(lane, body)
         content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content")
     except LaneCallError as exc:
         return None, None, f"call: {exc}"[:200], None

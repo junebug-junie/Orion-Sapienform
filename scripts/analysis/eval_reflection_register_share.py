@@ -91,6 +91,7 @@ def label_organs(organs: list[str], *, start: str, end: str, per_organ: int, lan
                     label, reason, err, model = judge_one(lane, it)
                 except LaneRecalled:
                     results.extend(labelled)
+                    summaries.append(summarize(f"{organ} (cut off by recall)", labelled))
                     raise
                 rec = {"label": label, "reason": reason, "error": err, "model": model}
             labelled.append({"organ": organ, "sub": it.sub, "ref": it.ref, "at": it.at, **rec})

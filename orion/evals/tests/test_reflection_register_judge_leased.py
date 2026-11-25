@@ -182,3 +182,48 @@ def test_replay_live_recall_writes_partial_questions_and_exits_3(replay, src, mo
     assert seen == [("agent", replay.HOLDER)]
     rows = [json.loads(x) for x in (tmp_path / "questions.partial.jsonl").read_text().splitlines()]
     assert [r["question_id"] for r in rows] == ["lived.orion.0", "lived.orion.1"]
+
+
+class _Grant:
+    def __init__(self, model_file):
+        self.model_file = model_file
+
+
+class _Lease:
+    def __init__(self, model_file):
+        self.grant = _Grant(model_file)
+
+
+def test_a_reply_that_echoes_the_route_reads_the_grants_model(src) -> None:
+    # The lane sends model=operator_agent; a llama.cpp/strata seat may echo it. A route is not a model.
+    item = src.Item("outreach", "outreach:1", "q", "t")
+    lane = FakeLane(_reply(model="operator_agent"))
+    lane.route, lane.lease = "operator_agent", _Lease("qwen3.8-flash-next-iq3_s.gguf")
+    assert src.judge_one(lane, item) == ("operational", "r", None, "qwen3.8-flash-next-iq3_s.gguf")
+    bare = FakeLane(_reply(model="operator_agent"))
+    bare.route = "operator_agent"
+    assert src.judge_one(bare, item)[2] == "model_not_evaluated: unknown"
+    # A real served name in the reply wins over the grant record.
+    named = FakeLane(_reply(model="other-8b"))
+    named.route, named.lease = "operator_agent", _Lease("qwen3.8-flash-next-iq3_s.gguf")
+    assert src.judge_one(named, item)[2] == "model_not_evaluated: other-8b"
+
+
+def test_share_partial_report_counts_the_organ_cut_off(share, monkeypatch, tmp_path) -> None:
+    items = [share.Item("outreach", f"outreach:{i}", "q", "t") for i in range(3)]
+    monkeypatch.setattr(share, "read_items", lambda organ, **kw: items)
+    monkeypatch.setattr(share, "operator_lane_sync", _fake_hold(FakeLane(_reply(), recall_after=2), []))
+    share.main(["--organs", "outreach", "--out", str(tmp_path), "--end", "2026-11-25T00:00:00+00:00"])
+    assert "| outreach (cut off by recall) | 2 | 0 | 2 |" in (tmp_path / "report.partial.md").read_text()
+
+
+def test_replay_reads_before_it_holds_a_seat(replay, src, monkeypatch, tmp_path) -> None:
+    def boom(sql):
+        raise RuntimeError("psql down")
+
+    seen: list = []
+    monkeypatch.setattr(src, "psql_json", boom)
+    monkeypatch.setattr(replay, "operator_lane_sync", _fake_hold(FakeLane(_reply()), seen))
+    with pytest.raises(RuntimeError):
+        replay.main(["--live", "--out", str(tmp_path)])
+    assert seen == []

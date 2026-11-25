@@ -1059,7 +1059,15 @@ async def lifespan(app: FastAPI):
             # RedisStreamWorkQueue logs every read and ack at INFO; ~33k pool events a day.
             _quiet = logging.getLogger("sql-writer.durable_stream_intake.queue")
             _quiet.setLevel(logging.WARNING)
-            gpu_pool_event_queue = RedisStreamWorkQueue(settings.orion_bus_url, logger_=_quiet)
+            # Socket timeouts + keepalive: a half-open connection must not hang XREADGROUP (BLOCK 5 s)
+            # forever with no error. socket_timeout stays above the block time.
+            import redis.asyncio as _aioredis
+            _pool_event_client = _aioredis.from_url(
+                settings.orion_bus_url, decode_responses=False, socket_timeout=15, socket_connect_timeout=5,
+                socket_keepalive=True, health_check_interval=30,
+            )
+            gpu_pool_event_queue = RedisStreamWorkQueue(settings.orion_bus_url, client=_pool_event_client,
+                                                        logger_=_quiet)
 
             async def _gpu_pool_event_handler(env):
                 await _handle_envelope(env, bus=svc.bus)
@@ -1311,6 +1319,7 @@ async def lifespan(app: FastAPI):
         if gpu_pool_event_queue is not None:
             try:
                 await gpu_pool_event_queue.close()
+                await gpu_pool_event_queue.client.aclose()   # our own client: the queue does not own it
             except Exception:  # noqa: BLE001 -- shutdown best-effort
                 logger.warning("gpu_pool_event stream queue close failed", exc_info=True)
 

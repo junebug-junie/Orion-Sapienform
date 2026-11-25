@@ -104,6 +104,44 @@ def test_events_published_while_the_writer_is_down_are_written_when_it_returns(t
     asyncio.run(go())
 
 
+def test_a_queue_built_from_a_url_alone_is_connected_by_the_intake(table, monkeypatch) -> None:
+    """main.py builds RedisStreamWorkQueue(settings.orion_bus_url) with no client and never calls connect().
+    Deployed 2026-11-25 08:29Z, every loop raised 'RedisStreamWorkQueue not connected' and no pool event
+    reached gpu_pool_events for ~2 h. The intake must connect its own queue."""
+    import orion.core.bus.work_queue as wq
+
+    async def go():
+        redis = fakeredis.aioredis.FakeRedis()
+        monkeypatch.setattr(wq.aioredis, "from_url", lambda *a, **k: redis)
+        env = _event("lease-url-only")
+        await _queue(redis).enqueue(GPU_POOL_EVENT_STREAM, env)
+        intake = _intake(RedisStreamWorkQueue("redis://from-settings"))   # exactly as main.py builds it
+        assert await intake.run_once() == 1
+        assert table() == [env.payload["event_id"]]
+    asyncio.run(go())
+
+
+def test_a_deleted_group_is_recreated_instead_of_failing_on_nogroup_forever(table) -> None:
+    """FLUSHDB / a Redis restart without persistence deletes the group; the next loop must recreate it."""
+    from redis.exceptions import ResponseError
+
+    async def go():
+        redis = fakeredis.aioredis.FakeRedis()
+        pool = _queue(redis)
+        first = _event("lease-first")
+        await pool.enqueue(GPU_POOL_EVENT_STREAM, first)
+        intake = _intake(_queue(redis))
+        assert await intake.run_once() == 1
+        await redis.delete(GPU_POOL_EVENT_STREAM)          # group gone with the key
+        after = _event("lease-after-flush")
+        await pool.enqueue(GPU_POOL_EVENT_STREAM, after)  # XADD recreates the stream, not the group
+        with pytest.raises(ResponseError, match="NOGROUP"):
+            await intake.run_once()
+        assert await intake.run_once() == 1               # group recreated at 0, entry written
+        assert table() == [first.payload["event_id"], after.payload["event_id"]]
+    asyncio.run(go())
+
+
 def test_first_boot_writes_entries_streamed_before_the_group_existed_and_dedupes_the_rest(table) -> None:
     """Deploy order: the pool streams first; the old pub/sub writer already wrote some of those rows."""
     async def go():

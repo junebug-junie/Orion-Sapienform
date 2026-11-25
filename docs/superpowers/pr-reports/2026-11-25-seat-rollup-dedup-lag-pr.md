@@ -173,6 +173,6 @@ After deploy, check: `curl -s localhost:7251/health` shows `seat_rollup.arrival_
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3907
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

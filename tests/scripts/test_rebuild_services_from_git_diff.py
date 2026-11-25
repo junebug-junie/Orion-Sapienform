@@ -81,6 +81,7 @@ def _run(
     log_checker: bool = False,
     services: tuple[str, ...] = (),
     sandbox_helper: str | None = None,
+    chat_drain_helper: str | None = None,
     env_extra: dict[str, str] | None = None,
 ):
     fake_root = tmp_path / "repo"
@@ -102,6 +103,8 @@ def _run(
         helper = fake_scripts / "sync_fcc_sandbox_after_deploy.sh"
         helper.write_text(sandbox_helper)
         helper.chmod(0o755)
+    if chat_drain_helper is not None:
+        (fake_scripts / "wait_for_chat_turns_idle.py").write_text(chat_drain_helper)
 
     capture = tmp_path / "safe-build-args.txt"
     safe_build = fake_scripts / "safe_docker_build.sh"
@@ -154,6 +157,10 @@ def _run(
     env["ORION_REBUILD_LOG"] = str(tmp_path / "post_pull_rebuild.log")
     env.pop("ORION_POST_MERGE_REBUILD", None)
     env.pop("ORION_POST_PULL_SANDBOX_SYNC", None)
+    # Many tests use orion-hub / orion-harness-governor as stand-in stacks: the chat
+    # drain (build, wait, up --no-build) is on only where a test asks for it.
+    env["ORION_REBUILD_CHAT_DRAIN"] = "1" if chat_drain_helper is not None else "0"
+    env.pop("ORION_REBUILD_CHAT_DRAIN_WAIT_S", None)
     env.update(env_extra or {})
     completed = subprocess.run(
         [str(script), *(extra_args or [])],
@@ -1001,3 +1008,63 @@ def test_turn_in_flight_starts_a_detached_retry_that_logs_itself(tmp_path: Path)
     assert "sandbox-helper --wait-s 7" in calls
     assert f"sandbox-helper --wait-s 9 --log-to {tmp_path / 'post_pull_rebuild.log'}" in calls
     assert "retry-line" in (tmp_path / "post_pull_rebuild.log").read_text()
+
+
+# A fake chat-drain helper: records that it ran (after the build, before the up)
+# by appending to the same capture file the fake safe_docker_build.sh writes.
+_FAKE_DRAIN = """\
+import os, sys
+with open(os.environ["REBUILD_TEST_CAPTURE"], "a") as fh:
+    fh.write("DRAIN " + " ".join(sys.argv[1:]) + "\\n")
+print("drained waited_s=12")
+"""
+
+
+def test_hub_is_built_then_drained_then_restarted(tmp_path: Path) -> None:
+    """A pull mid-chat must not recreate Hub until no chat turn is in flight."""
+    completed, calls = _run(tmp_path, plan="orion-hub,build", chat_drain_helper=_FAKE_DRAIN)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-hub build", "DRAIN --wait-s 600", "orion-hub up -d --no-build"]
+    assert "CHAT_DRAIN orion-hub drained waited_s=12" in completed.stdout
+    assert "CHAT_DRAIN orion-hub drained waited_s=12" in (tmp_path / "post_pull_rebuild.log").read_text()
+
+
+def test_governor_drains_and_keeps_force_recreate(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-harness-governor,recreate", chat_drain_helper=_FAKE_DRAIN,
+                            env_extra={"ORION_REBUILD_CHAT_DRAIN_WAIT_S": "30"})
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-harness-governor build", "DRAIN --wait-s 30",
+                     "orion-harness-governor up -d --no-build --force-recreate"]
+
+
+def test_failed_build_never_waits_or_restarts(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-hub,build", build_rc=1, chat_drain_helper=_FAKE_DRAIN)
+    assert calls == ["orion-hub build"]
+    assert "FAILED orion-hub" in completed.stderr
+
+
+def test_missing_drain_helper_still_restarts(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-hub,build", env_extra={"ORION_REBUILD_CHAT_DRAIN": "1"})
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-hub build", "orion-hub up -d --no-build"]
+    assert "CHAT_DRAIN orion-hub unknown reason=helper_missing" in completed.stdout
+
+
+def test_drain_kill_switch_keeps_the_plain_up(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-hub,build", chat_drain_helper=_FAKE_DRAIN,
+                            env_extra={"ORION_REBUILD_CHAT_DRAIN": "0"})
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == ["orion-hub up -d --build"]
+
+
+def test_other_stacks_never_drain(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-vision-retina,build", chat_drain_helper=_FAKE_DRAIN)
+    assert calls == ["orion-vision-retina up -d --build"]
+
+
+def test_dry_run_names_the_chat_drain(tmp_path: Path) -> None:
+    completed, calls = _run(tmp_path, plan="orion-hub,build", extra_args=["--dry-run"],
+                            chat_drain_helper=_FAKE_DRAIN)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert calls == []
+    assert "wait for in-flight chat turns (max 600s)" in completed.stdout

@@ -54,7 +54,7 @@ organs:
     # /temporal-self/now?organ=dream at gather, its experience: cites to /temporal-self/now/use at persist).
     # The sleep cycle (dream.cycle) and dream.carry still do not read it: the cycle's replay picks keyed
     # candidates by code with no model step that could cite, and a carry run's first text hop would need the
-    # shown id carried across its steps (follow-up issue, integration patch 7b).
+    # shown id carried across its steps (#3972).
     temporal_sources: [dream_cycle, dream_hypothesis, dream_day]
     salience_magnitude:
       dream_cycle: dream_hypothesis_count

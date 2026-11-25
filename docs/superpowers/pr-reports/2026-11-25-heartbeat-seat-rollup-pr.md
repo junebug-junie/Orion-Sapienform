@@ -53,6 +53,7 @@ How the value matches the replay exactly:
 - `scripts/demon_network_replay.py`: rollup-first read path with ledger refill, source labels, routing-version check (`--any-routing-version` to override), `fsum`, medians over usable windows only.
 - `scripts/sync_local_env_from_example.py`: visits orion-heartbeat, syncs `HEARTBEAT_SEAT_ROLLUP_`.
 - `tests/test_heartbeat_seat_rollup_bus_catalog.py`, `.github/workflows/orion-heartbeat-tests.yml`: catalog/registry test, run by the heartbeat workflow.
+- `tests/test_check_integration_seam.py`: the stale-channel test replaced every real exemption with a fake one, which unregistered this branch's new channel (CI failure on the first push). It now adds the fake one beside the real ones.
 
 ## Schema / bus / API changes
 

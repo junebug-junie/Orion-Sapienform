@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
+from orion.prime.attention_line import HEADER as ATTENTION_SCHEMA_HEADER
 from orion.prime.intention import can_take_on
 from orion.prime.slots import queue
 from orion.prime.sitting import UNREAD_PREFIX as SITTING_UNREAD_PREFIX
@@ -397,6 +398,10 @@ class FrameInputs:
     # A game sitting (game company patch 4, orion/prime/sitting.py ``sitting_frame_line``): one line while someone
     # plays on the Retro service. None: nobody plays, or PRIME_SITTING_WAKE_ENABLED is off; the section is not shown.
     sitting_line: Optional[str] = None
+    # The attention schema (choice-as-EFE Step 2a, orion/prime/attention_line.py ``attention_schema_line``): one line
+    # from the latest substrate_attention_self_model row. None: PRIME_ATTENTION_SCHEMA_LINE_ENABLED is off and the
+    # section is not shown. A stale, missing or unread row is a line that says absent, never None.
+    attention_schema: Optional[str] = None
 
 
 def now_items(inputs: "FrameInputs") -> list[dict[str, Any]]:
@@ -719,6 +724,8 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         "ENERGY MONEY:\n" + "\n".join(_energy_lines(inputs)),
         "CURIOSITY (whether a question waits for its next run):\n" + "\n".join(_curiosity_lines(inputs)),
     ]
+    if inputs.attention_schema is not None:
+        sections.append(ATTENTION_SCHEMA_HEADER + "\n" + inputs.attention_schema)
     if inputs.sitting_line:
         # An unread sitting is not an open one: it gets its own header (review finding).
         head = ("GAME SITTING (unknown):" if inputs.sitting_line.startswith(SITTING_UNREAD_PREFIX)

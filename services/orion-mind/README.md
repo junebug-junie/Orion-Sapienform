@@ -288,6 +288,8 @@ for slack by design.
 | `PRIME_REFRACTORY_SEC` | `300` | least time between thoughts (at most 12 an hour while E9 is measured) |
 | `PRIME_HUNGER_NEEDS_ENABLED` | `true` | hunger needs wake Prime (off: changes only; the quiet floor is deleted) |
 | `PRIME_SITTING_WAKE_ENABLED` | `true` | a game sitting wakes Prime when it passes 3 min and when it ends; at most 2 thoughts name one sitting; the frame shows one sitting line (`orion/prime/sitting.py`; reads `orion:retro:sitting` and `orion:retro:watch` on the bus Redis) |
+| `PRIME_ATTENTION_SCHEMA_LINE_ENABLED` | `true` | the frame shows YOUR ATTENTION SCHEMA: one line from the newest `substrate_attention_self_model` row (what is salient, top-down or bottom-up, its confidence or "unknown"); older than 10 min reads as absent (`orion/prime/attention_line.py`); false = no read, no section |
+| `PRIME_ATTENTION_SCHEMA_PG_DSN` | empty | read-only Postgres for that line; empty = the line says the read is not configured |
 | `PRIME_HUNGER_THRESHOLD` | `0.5` | damped drive at which a need wakes Prime |
 | `PRIME_HUNGER_DAILY_BUDGET` | `24` | thoughts in any 24 h before only a change wakes Prime |
 | `PRIME_HUNGER_READ_SEC` | `300` | how often surprise and connection are read from durable-runs |

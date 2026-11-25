@@ -243,6 +243,13 @@ class Settings(BaseSettings):
     # that chose among concerns) is not behind this flag: it is the graph's evidence and costs no model call.
     # Off for now (2026-11-13): live choice-built labels still read as noise; on once a label fix lands.
     PRIME_PERSONALITY_LINE_ENABLED: bool = Field(default=False, alias="PRIME_PERSONALITY_LINE_ENABLED")
+    # The attention schema in Prime's frame (choice-as-EFE Step 2a, orion/prime/attention_line.py): one line from the
+    # newest substrate_attention_self_model row (what is salient, top-down or bottom-up, its confidence; a row older
+    # than 10 min reads as absent), read once per thought, read-only, from PRIME_ATTENTION_SCHEMA_PG_DSN. false =
+    # rollback: no read, no section. Step 2b's predicted_shift bet is not built (no live domain; see the PR report),
+    # so there are no bets for this flag to stop yet. Shipped ON.
+    PRIME_ATTENTION_SCHEMA_LINE_ENABLED: bool = Field(default=True, alias="PRIME_ATTENTION_SCHEMA_LINE_ENABLED")
+    PRIME_ATTENTION_SCHEMA_PG_DSN: str = Field(default="", alias="PRIME_ATTENTION_SCHEMA_PG_DSN")
     # Orion's consent to a Claude tool call (docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-
     # design.md section 3; app/prime_consent.py): orion-mind answers orion:prime:consent:request with one short
     # model call (frame <= 4,000 chars) on route PRIME_CONSENT_LLM_ROUTE (circe chat lane 0, pool priority

@@ -411,13 +411,13 @@ class WatchService:
         st.last_change = st.max_change
         cal = self.calibrations.get(str(game)) if game else None
         floor = cal.floor if cal is not None else None
+        timer_sec = self._timer_sec(cal)
         result = W.gate(st.max_change, floor, now=now, last_input_at=float(cur.last_input_at),
                         last_look_at=st.last_look_at, look_gap_sec=self.look_gap,
-                        timer_sec=self._timer_sec(cal), timer_from=st.first_check_at)
+                        timer_sec=timer_sec, timer_from=st.first_check_at)
         W.count(st.counters, result, input_in_window=input_in_window,
                 timer_due=result == W.GATE_TIMER_STALE and W.timer_due(
-                    now=now, last_look_at=st.last_look_at, timer_from=st.first_check_at,
-                    timer_sec=self._timer_sec(cal)))
+                    now=now, last_look_at=st.last_look_at, timer_from=st.first_check_at, timer_sec=timer_sec))
         if result not in (W.GATE_NO_FLOOR, W.GATE_STATIC) and result not in W.TIMER_GATES:
             st.last_over_floor_at = now
         if result in W.LOOK_GATES and not st.looking and (self._look_task is None or self._look_task.done()):

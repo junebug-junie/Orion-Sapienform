@@ -617,3 +617,75 @@ def test_serialize_with_reports_queued_reason_once_then_grants_after_release():
 
 async def store_status(rt, lease_id):
     return (await rt.store.lease(lease_id))["status"]
+
+
+def hold_bg(cls, rid=None, **kw):
+    """A durable run's background hold, as orion-durable-runs asks for it."""
+    return GpuLeaseRequestV1(verb="acquire", work_class=cls, holder="durable-runs:test", request_id=rid,
+                             kind="hold", priority="background", retryable=True, **kw)
+
+
+def test_hold_back_from_an_outage_expires_once_and_is_regranted_not_wedged():
+    """Live 2026-11-24: a planned mesh shutdown froze a granted background hold for 3 h. On the
+    first tick back it was past both its heartbeat TTL and background_max_hold_sec, so one tick
+    sent Expire AND Recall. Recall on retry_wait is illegal; the rejection wedged the lease thread
+    and every later requeue was dropped without a word."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        r = await rt.acquire(hold_bg("agent"))
+        assert r.status == "granted"
+        await later(rt, clock, CFG.defaults.background_max_hold_sec + 3 * 3600)   # the outage
+        row = await rt.store.lease(r.lease_id)
+        assert row["status"] == "retry_wait"
+        assert not rt.bus.events("recalled")
+        await later(rt, clock, CFG.defaults.retry.max_sec + 1)     # past any retry backoff
+        await later(rt, clock, 1)
+        row = await rt.store.lease(r.lease_id)
+        assert row["status"] == "granted", row
+        snap = await rt.graph.aget_state(rt._thread(r.lease_id))
+        assert snap.next == ("wait",)
+    run(go())
+
+
+def test_illegal_event_is_rejected_without_wedging_the_lease_thread():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        r = await rt.acquire(hold_bg("agent"))
+        clock.advance(CFG.defaults.hold_lease_ttl_sec + 1)
+        await rt.tick()
+        assert (await rt.store.lease(r.lease_id))["status"] == "retry_wait"
+        assert await rt._resume(r.lease_id, {"type": "recall", "reason": "x",
+                                             "recall_by": clock().isoformat()}) is None
+        snap = await rt.graph.aget_state(rt._thread(r.lease_id))
+        assert snap.next == ("wait",) and not any(t.error for t in snap.tasks)
+        await later(rt, clock, CFG.defaults.retry.max_sec + 1)
+        await later(rt, clock, 1)
+        assert (await rt.store.lease(r.lease_id))["status"] == "granted"
+    run(go())
+
+
+def test_a_thread_wedged_by_older_code_heals_on_its_next_event():
+    """The live lease wedged on 2026-11-24 still carries the errored task in its checkpoint: the
+    next event heals it instead of being dropped."""
+    from langgraph.types import Command
+
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        r = await rt.acquire(hold_bg("agent"))
+        clock.advance(CFG.defaults.hold_lease_ttl_sec + 1)
+        await rt.tick()
+        cfg = rt._thread(r.lease_id)
+        try:   # what the old _resume did: hand the illegal event straight to the graph
+            await rt.graph.ainvoke(Command(resume={"type": "recall", "at": clock().isoformat(),
+                                                   "recall_by": clock().isoformat()}), cfg)
+        except Exception:  # noqa: BLE001
+            pass
+        assert (await rt.graph.aget_state(cfg)).next == ()          # wedged, as live
+        await later(rt, clock, CFG.defaults.retry.max_sec + 1)
+        await later(rt, clock, 1)
+        assert (await rt.store.lease(r.lease_id))["status"] == "granted"
+        assert (await rt.graph.aget_state(cfg)).next == ("wait",)
+    run(go())

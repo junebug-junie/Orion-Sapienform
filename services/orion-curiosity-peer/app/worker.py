@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Union
 
 from app.brief_prompt import parse_peer_brief_body
@@ -14,6 +15,12 @@ from app.claude_peer import (
     claude_reason,
     describe_claude_refusal,
     run_claude_peer,
+)
+from app.claude_limit_backoff import (
+    MEMORY as _CLAUDE_LIMIT_MEMORY,
+    ClaudeLimitMemory,
+    describe_hold,
+    seed_memory_from_graph,
 )
 from app.settings import Settings
 from orion.autonomy.ask_claude_trigger import _budget_refusal
@@ -369,11 +376,14 @@ def handle_help_request(
     bus: Any = None,
     loop: Optional[asyncio.AbstractEventLoop] = None,
     begin_episode: Optional[Callable[[HelpRequestV1], bool]] = None,
+    limit_memory: Optional[ClaudeLimitMemory] = None,
+    now: Optional[Callable[[], datetime]] = None,
 ) -> PeerBriefV1 | None:
-    """Process one HelpRequest: Claude budget gate → episode → Claude once → persist.
+    """Process one HelpRequest: limit back-off → Claude meter → episode →
+    Claude once → persist.
 
     Claude is the only peer. Inject `claude` / `observe_claude_limit` /
-    `persist` in tests.
+    `persist` / `limit_memory` / `now` in tests.
     """
     help_req = parse_help_request(raw)
     settings = settings or Settings()
@@ -390,15 +400,44 @@ def handle_help_request(
         else:
             _default_persist(brief, settings=settings, bus=bus, loop=loop)
 
-    # Claude meter, fail-closed. It reads Claude Code transcripts under
+    memory = limit_memory if limit_memory is not None else _CLAUDE_LIMIT_MEMORY
+    clock = now or (lambda: datetime.now(timezone.utc))
+
+    # Back-off first (#3655): Claude's own "you've hit your limit" on the last
+    # real call holds every hire until the reset it named. No Claude call, no
+    # transcript scan.
+    hold = memory.active(clock())
+    if hold is not None:
+        brief = _refused_budget_brief(
+            help_req, claude_reason(describe_hold(hold), "claude_limit_backoff")
+        )
+        logger.warning(
+            "curiosity_peer_claude_limit_backoff help_id=%s resets_at=%s stated=%s",
+            help_req.help_id,
+            hold.resets_at.isoformat(),
+            hold.reset_stated,
+        )
+        _persist(brief)
+        return brief
+
+    # Claude transcript meter. It reads Claude Code transcripts under
     # CURIOSITY_PEER_CLAUDE_PROJECTS_PATH (compose mounts the host tree
-    # read-only) and refuses (`budget_unobserved`) wherever it cannot see them.
+    # read-only). A transcript-observed `limited` still refuses. `unknown`
+    # (no Claude Code session in the window -- the account is idle) no longer
+    # refuses here: try, back off on refusal (#3655, Juniper 2026-11-24).
+    # `_budget_refusal` itself is unchanged for its other callers.
     def _observe_claude_default() -> Any:
         return observe(root=settings.CURIOSITY_PEER_CLAUDE_PROJECTS_PATH)
 
     claude_observe = observe_claude_limit or _observe_claude_default
     claude_limit = claude_observe()
     claude_refusal = _budget_refusal(claude_limit)
+    if claude_refusal == "budget_unobserved":
+        logger.info(
+            "curiosity_peer_claude_meter_unobserved_trying help_id=%s",
+            help_req.help_id,
+        )
+        claude_refusal = None
     if claude_refusal is not None:
         brief = _refused_budget_brief(
             help_req,
@@ -417,6 +456,23 @@ def handle_help_request(
         )
         _persist(brief)
         return brief
+
+    def _record(brief: PeerBriefV1, raw_error: str = "") -> None:
+        # raw_error: the unclipped exception text, so a long error that names
+        # the reset late is not cut before the reset is read.
+        recorded = memory.record_outcome(
+            status=brief.status,
+            text=f"{raw_error} {brief.refusal_reason or ''} {brief.summary or ''}",
+            at=clock(),
+            default_sec=settings.CURIOSITY_PEER_CLAUDE_LIMIT_BACKOFF_DEFAULT_SEC,
+        )
+        if recorded is not None:
+            logger.warning(
+                "curiosity_peer_claude_limit_hit help_id=%s resets_at=%s stated=%s",
+                help_req.help_id,
+                recorded.resets_at.isoformat(),
+                recorded.reset_stated,
+            )
 
     if settings.CURIOSITY_PEER_EPISODES_ENABLED:
         if begin_episode is None:
@@ -447,6 +503,7 @@ def handle_help_request(
     try:
         result = claude_fn(help_req, context_pack=context_pack)
         brief = _map_claude_result(help_req, result)
+        _record(brief)
         _persist(brief)
         return brief
     except Exception as claude_exc:
@@ -463,8 +520,43 @@ def handle_help_request(
                 "claude_failed",
             ),
         )
+        _record(brief, raw_error=str(claude_exc))
         _persist(brief)
         return brief
+
+
+def seed_claude_limit_memory(
+    settings: Settings,
+    *,
+    graph_client: Any = None,
+    memory: Optional[ClaudeLimitMemory] = None,
+    now: Optional[datetime] = None,
+) -> Any:
+    """Boot: seed the limit back-off from the newest claude_room brief in the
+    last 5 h (worldview PeerBrief nodes this service writes). Best effort: a
+    graph error logs and leaves the memory empty (the next limit failure sets it).
+    """
+    memory = memory if memory is not None else _CLAUDE_LIMIT_MEMORY
+    if graph_client is None and not _graph_credentials_ready(settings):
+        logger.info("curiosity_peer_limit_seed_skipped reason=graph_unconfigured")
+        return None
+    try:
+        client = graph_client or _build_curiosity_graph_client(settings)
+        hold = seed_memory_from_graph(
+            memory,
+            client.graph_query,
+            now=now or datetime.now(timezone.utc),
+            default_sec=settings.CURIOSITY_PEER_CLAUDE_LIMIT_BACKOFF_DEFAULT_SEC,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_peer_limit_seed_failed err=%s", exc)
+        return None
+    logger.info(
+        "curiosity_peer_limit_seeded active=%s resets_at=%s",
+        hold is not None,
+        hold.resets_at.isoformat() if hold is not None else None,
+    )
+    return hold
 
 
 def apply_peer_brief_consumed(

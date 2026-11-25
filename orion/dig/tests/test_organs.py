@@ -42,7 +42,7 @@ def _rows() -> dict[str, list[dict]]:
                   {"source_kind": "prime_thought", "n": "1"}],
         "uses": [("e-dream-1", "dream_cycle", "reverie")],
         "cites_made": [{"citing_organ": "reverie", "n": "1"}],
-        "reads": [{"reader_organ": "reverie", "reads": "3", "reads_no_cite": "2"},
+        "reads": [{"reader_organ": "reverie", "reads": "4", "reads_no_cite": "2", "reads_unclosed": "1"},
                   {"reader_organ": "prime", "reads": "2", "reads_no_cite": "2"}],
         "top": [
             {"event_id": "e-rev-lo", "source_kind": "reverie_chain", "source_table": "substrate_reverie_chain",
@@ -132,8 +132,11 @@ def test_counts_top_items_by_salience_and_refs():
 
 def test_read_and_cited_nothing_is_told_apart_from_did_not_read():
     lines = _build().lines
-    assert "  read the now 2 times; 2 of those reads cited nothing; 0 valid cites" in lines  # prime
-    assert "  read the now 3 times; 2 of those reads cited nothing; 1 valid cites" in lines  # reverie
+    # prime's row predates reads_unclosed (an old query): it reads as 0 never closed
+    assert ("  read the now 2 times; 2 of those reads cited nothing; 0 never closed (no model call used them); "
+            "0 valid cites") in lines  # prime
+    assert ("  read the now 4 times; 2 of those reads cited nothing; 1 never closed (no model call used them); "
+            "1 valid cites") in lines  # reverie
     assert '  did not read the now (registry: "not yet migrated; integration patch 7")' in lines  # dream
 
 

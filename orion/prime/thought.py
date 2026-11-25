@@ -261,7 +261,7 @@ _REPLY_CITES_THEN_MOVE = ('\n "refs": [] | [{"kind": "experience", "id": "<the i
 EXPERIENCE_PROMPT = """
 
 WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT lists what Orion's other organs recorded since then (readings,
-curiosity runs, camera sightings, prediction surprises, questions your reveries left ...), highest salience first, each with its
+curiosity runs, camera sightings, prediction surprises, questions your reveries left ...), what is about your concerns first, each with its
 [experience:<id>]. When one of them shaped this thought, cite it in the top-level "refs" key of the JSON reply
 template, the one before "move" (not the move's refs): [{"kind": "experience", "id": "<the id after experience:>"}], at most 3,
 only ones you actually used. If your reading draws on something from that section, cite it.
@@ -559,8 +559,31 @@ def _num_or_none(value: Any) -> Optional[float]:
 NOW_LINE_REFS = 3  # related refs shown per item (the item carries up to 8)
 
 
-def _now_lines(inputs: FrameInputs) -> list[str]:
-    """One line per experience: its id to cite, organ, age, label, salience and surprise when known, refs."""
+def held_now_refs(state: PrimeStateV1) -> list[str]:
+    """What Prime holds, as refs for GET /temporal-self/now?held=... (#3783): each held concern's event_ref, its arc
+    (``arc:<id>``) and its own id (``prime_concern:<id>``). Waiting concerns are not held. Exact ids only."""
+    from orion.temporal_self.now import NOW_MAX_HELD_REFS
+
+    refs: list[str] = []
+    for c in state.concerns:
+        for r in (c.event_ref, f"arc:{c.arc_id}" if c.arc_id else None, f"prime_concern:{c.concern_id}"):
+            if r and r not in refs:
+                refs.append(r)
+    return refs[:NOW_MAX_HELD_REFS]
+
+
+def _held_concern_ids(item: dict[str, Any], state: Optional[PrimeStateV1]) -> list[str]:
+    """The held concerns an item's ``held_refs`` point at (by the same refs ``held_now_refs`` sent)."""
+    refs = {str(r) for r in (item.get("held_refs") or []) if r}
+    if not refs or state is None:
+        return []
+    return [c.concern_id for c in state.concerns
+            if refs & {c.event_ref or "", f"arc:{c.arc_id}" if c.arc_id else "", f"prime_concern:{c.concern_id}"}]
+
+
+def _now_lines(inputs: FrameInputs, state: Optional[PrimeStateV1] = None) -> list[str]:
+    """One line per experience: its id to cite, organ, age, label, salience and surprise when known, refs, and the
+    held concern it is about (#3783: such items come first)."""
     lines: list[str] = []
     for item in now_items(inputs):
         sal, nats = _num_or_none(item.get("salience")), _num_or_none(item.get("surprise_nats"))
@@ -569,9 +592,11 @@ def _now_lines(inputs: FrameInputs) -> list[str]:
             scores.append(f"surprise {nats:.2f} nats")
         label = " ".join(str(item.get("label") or "").split()) or f"({item.get('source_kind') or 'no label'})"
         refs = [str(r) for r in (item.get("related_refs") or []) if r][:NOW_LINE_REFS]
+        about = _held_concern_ids(item, state)
         lines.append(f"- [experience:{str(item['event_id']).strip()}] {item.get('organ') or '?'} "
                      f"{_age(inputs.now, item.get('occurred_at'))}: {label} ({'; '.join(scores)})"
-                     + (f" refs {', '.join(refs)}" if refs else ""))
+                     + (f" refs {', '.join(refs)}" if refs else "")
+                     + (f" -- ABOUT YOUR CONCERN {', '.join(about)}" if about else ""))
     if not lines:
         return ["(nothing new from the other organs since your last thought)"]
     dropped = int(_num((inputs.orion_now or {}).get("dropped_by_organ_cap"))) + int(
@@ -700,8 +725,9 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
                 else "A GAME SITTING IS OPEN (a person plays on your Retro service; the play is theirs):")
         sections.append(head + "\n" + inputs.sitting_line)
     if shows_now(inputs):
-        sections.append("WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (other organs, highest salience first; cite "
-                        "the ones you use):\n" + "\n".join(_now_lines(inputs)))
+        sections.append("WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (other organs; what is about your concerns "
+                        "first, then one per organ before any organ's second; cite the ones you use):\n"
+                        + "\n".join(_now_lines(inputs, state)))
     if inputs.receptors is not None or inputs.receptors_error:
         sections.append("ORGANS YOU CAN SIGNAL (family: directions it handles):\n"
                         + "\n".join(_regulation_lines(state, inputs)))

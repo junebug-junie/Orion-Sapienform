@@ -313,8 +313,17 @@ def test_plan_request_is_the_reverie_question_verb_on_the_agent_lane_with_seed_a
     assert req.plan.verb_name == "reverie_question"
     assert req.args.extra["llm_route"] == "agent" and req.args.extra["execution_lane"] == "agent"
     assert set(req.context) == {"seed_kind", "seed_material", "seed_refs", "seed_evidence", "user_message",
-                                "mode", "orion_now"}
+                                "mode", "orion_now", "chat_template_kwargs", "max_tokens"}
     assert req.plan.metadata["recall_enabled_default"] == "false"
+
+
+def test_question_call_turns_thinking_off_and_leaves_room_for_the_json():
+    """Regression (live 2026-11-24): the agent lane thinks by default; at the gateway's 512-token default every
+    reverie call ran out mid-reasoning and 7 of 8 were stored as unparseable."""
+    r = rev()
+    req = r.build_question_plan_request(_seed(), correlation_id="c1")
+    assert req.context["chat_template_kwargs"] == {"enable_thinking": False}
+    assert req.context["max_tokens"] >= 1024
 
 
 def test_prompt_renders_the_seed_and_warns_on_unrecognised():
@@ -424,6 +433,51 @@ def test_a_refused_lane_writes_no_row_and_three_refusals_give_up_the_stretch(cle
         assert asyncio.run(clean_state.run_reverie_once(f.deps())) is None
     assert f.persisted == [] and f.asked == 3
     assert clean_state.REVERIE_SKIP_COUNTS["lane_refused_stretch"] >= 1
+
+
+def test_a_refused_lane_never_closes_the_now_read(clean_state):
+    """#3498: the model never saw the now, so the read stays open and the next reverie is offered it again."""
+    f = Fake(ask_raises=clean_state.ReverieLlmUnavailable("timeout"))
+    assert asyncio.run(clean_state.run_reverie_once(f.deps())) is None
+    assert f.asked == 1 and f.uses == []
+
+
+def test_a_model_answer_with_no_cites_still_closes_the_read(clean_state):
+    """#3498: the model ran and cited nothing: the read is closed with no cites ("read, cited nothing")."""
+    f = Fake(answer={"question": "Why does the substrate keep winning?", "refs": [REF]})
+    q = asyncio.run(clean_state.run_reverie_once(f.deps()))
+    assert q.cites == [] and f.uses == [("s1", [])]
+
+
+def test_a_persist_failure_after_the_answer_still_closes_the_read(clean_state):
+    f = Fake()
+
+    async def no_persist(q):
+        return False
+
+    import dataclasses
+
+    deps = dataclasses.replace(f.deps(), persist=no_persist)
+    assert asyncio.run(clean_state.run_reverie_once(deps)) is None
+    assert f.uses == [("s1", ["e1"])]
+
+
+def test_record_reverie_now_use_posts_an_empty_close(clean_state, monkeypatch):
+    from orion.schemas.reverie import ReverieQuestionV1
+
+    import app.temporal_self_cue as cue_mod
+
+    posted = []
+
+    async def fake_post(shown_id, cites, citing_ref, timeout_sec, *, correlation_id=""):
+        posted.append((shown_id, cites, citing_ref))
+        return {"uses": []}
+
+    monkeypatch.setattr(cue_mod, "post_now_use", fake_post)
+    q = ReverieQuestionV1(question_id="q1", thread_id="t", thread_key="k", seed_kind="lost_bet", none_reason="x")
+    asyncio.run(clean_state.record_reverie_now_use(clean_state.NowCue(shown_id="s9"), q))
+    asyncio.run(clean_state.record_reverie_now_use(clean_state.NowCue(reason="timeout"), q))  # never read: no post
+    assert posted == [("s9", [], "reverie_question:q1")]
 
 
 def test_the_focus_cap_keeps_the_question_but_does_not_route_it(clean_state, monkeypatch):

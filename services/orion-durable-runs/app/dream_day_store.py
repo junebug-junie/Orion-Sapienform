@@ -133,7 +133,8 @@ def concerns_from_state(raw: Any, now: datetime) -> tuple[list[DreamDayConcernV1
 
 
 async def read_now(run_id: str, *, base_url: str = SELF_URL) -> TemporalNowV1:
-    """Orion's now for the dream organ: no ``since``, so it moves the dream organ's own cursor."""
+    """Orion's now for the dream organ: no ``since``, so it reads from the dream organ's own cursor. The read moves
+    that cursor only once the persist node closes it (``record_cites``, possibly with no cites; #3498)."""
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
         resp = await client.get(f"{base_url}{NOW_ROUTE}", params={"organ": ORGAN, "run_ref": f"dream_day:{run_id}"})
         resp.raise_for_status()
@@ -141,7 +142,8 @@ async def read_now(run_id: str, *, base_url: str = SELF_URL) -> TemporalNowV1:
 
 
 async def record_cites(shown_id: str, cites: list[str], citing_ref: str, *, base_url: str = SELF_URL) -> dict[str, Any]:
-    """The run's cites, checked by ``record_use`` against the shown row (the use endpoint)."""
+    """The run's cites (possibly none), checked by ``record_use`` against the shown row (the use endpoint). The post
+    closes the read (#3498)."""
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
         resp = await client.post(f"{base_url}{USE_ROUTE}",
                                  json={"shown_id": shown_id, "citing_ref": citing_ref[:300], "cites": cites[:32]})

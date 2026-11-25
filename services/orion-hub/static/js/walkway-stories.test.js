@@ -112,3 +112,22 @@ test('crop owners: each time crop gets the letter of the person it belongs to', 
 test('a yes on a named row reads back as a yes', () => {
   assert.equal(ws.actionLine({ action: 'confirm', name: 'Sasha' }), 'You said yes, this is Sasha.');
 });
+
+test('linked persons: one row per person, "seen as N camera groups", one not-same choice per direct link', () => {
+  const sasha = { person_key: 'g1', individual_ids: ['g1', 'g2'], label: 'Sasha', pictured: true,
+    pictures: [{ thumb: H('a'), crop_id: 'c1' }],
+    groups: [{ individual_id: 'g1', short_id: 'g1aaaaaa' }, { individual_id: 'g2', short_id: 'g2bbbbbb' }],
+    links: [{ a: 'g1', b: 'g2' }, { a: 'g1', b: 'outside' }] };
+  const entries = ws.storyPeople({ persons: [sasha, { person_key: 'z', individual_ids: ['z'] }],
+    people: [{ individual_id: 'g1' }, { individual_id: 'g2' }, { individual_id: 'z' }] });
+  assert.deepEqual(entries.map((e) => [e.person.individual_id, e.person.grouped, e.letter]),
+    [['g1', true, 'A'], ['z', true, 'B']]);
+  assert.match(ws.groupsText(sasha), /^Seen as 2 camera groups in this story/);
+  assert.equal(ws.groupsText({ individual_ids: ['z'] }), '');
+  assert.deepEqual(ws.notSameChoices(sasha),
+    [{ a: 'g1', b: 'g2', label: 'group g1aaaaaa and group g2bbbbbb are different people' }]);
+  // A thumbnail-only picture of a linked person is shown from vision-host's thumbs.
+  assert.deepEqual(ws.personPictures(sasha).map((c) => c.url), [`/api/vision/crop-thumbs/${H('a')}`]);
+  // An older server (people only): one row per camera group, never `grouped`.
+  assert.deepEqual(ws.storyPeople({ people: [{ individual_id: 'g1' }] }).map((e) => e.person.grouped), [undefined]);
+});

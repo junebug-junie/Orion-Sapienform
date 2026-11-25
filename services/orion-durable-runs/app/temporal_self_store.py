@@ -16,7 +16,7 @@ import gzip
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Optional
 
 from orion.schemas.temporal_self import (
@@ -345,10 +345,10 @@ class ChronicleStore:
 
 NOW_CANDIDATES_SQL = """
 SELECT event_id, source_kind, occurred_at, label, verdict, related_refs, payload_json, salience, surprise_nats,
-  kind_total
+  source_ref, correlation_id, subject_ref, kind_total
 FROM (
   SELECT e.event_id, e.source_kind, e.occurred_at, e.label, e.verdict, e.related_refs, e.payload_json,
-    e.salience, e.surprise_nats,
+    e.salience, e.surprise_nats, e.source_ref, e.correlation_id, e.subject_ref,
     row_number() OVER (PARTITION BY e.source_kind
                        ORDER BY e.salience DESC NULLS LAST, e.occurred_at DESC, e.event_id) AS rk,
     count(*) OVER (PARTITION BY e.source_kind) AS kind_total
@@ -356,10 +356,24 @@ FROM (
   WHERE e.ingested_at > %(since)s AND e.ingested_at <= %(as_of)s AND e.source_kind <> ALL(%(own)s)
 ) x WHERE rk <= %(per_kind)s
 """
+# Held-concern rows (#3783): other organs' rows in (lo, as_of] whose own ids equal one of the reader's held keys
+# (orion.temporal_self.now.held_lookup), newest first. Exact equality only; build_now re-checks which ref matched.
+NOW_HELD_SQL = """
+SELECT e.event_id, e.source_kind, e.occurred_at, e.label, e.verdict, e.related_refs, e.payload_json,
+  e.salience, e.surprise_nats, e.source_ref, e.correlation_id, e.subject_ref,
+  e.ingested_at <= %(window_lo)s AS before_window
+FROM temporal_self_event e
+WHERE e.ingested_at > %(lo)s AND e.ingested_at <= %(as_of)s AND e.source_kind <> ALL(%(own)s)
+  AND (e.event_id = ANY(%(keys)s) OR e.source_ref = ANY(%(keys)s) OR e.correlation_id = ANY(%(keys)s)
+       OR e.subject_ref = ANY(%(keys)s) OR e.related_refs && %(keys)s::text[])
+ORDER BY e.occurred_at DESC, e.event_id
+LIMIT %(limit)s
+"""
+NOW_ARC_SUBJECTS_SQL = "SELECT arc_id, subject_ref FROM temporal_self_arc WHERE arc_id = ANY(%(ids)s)"
 # Pinned now rows (Prime hunger, integration Part B): by id, other organs' kinds only.
 NOW_BY_ID_SQL = """
 SELECT e.event_id, e.source_kind, e.occurred_at, e.label, e.verdict, e.related_refs, e.payload_json,
-  e.salience, e.surprise_nats
+  e.salience, e.surprise_nats, e.source_ref, e.correlation_id, e.subject_ref
 FROM temporal_self_event e
 WHERE e.event_id = ANY(%(ids)s) AND e.source_kind <> ALL(%(own)s)
 """
@@ -393,7 +407,11 @@ ORDER BY created_at
 HUNGER_CHAT_EVENT_SQL = """
 SELECT event_id FROM temporal_self_event WHERE source_kind = 'chat_turn' AND source_ref = %(ref)s LIMIT 1
 """
-LAST_SHOWN_SQL = "SELECT max(shown_at) AS at FROM experience_shown WHERE reader_organ = %(o)s AND advances_cursor"
+# The organ's cursor (#3498): the cut-off of its newest CLOSED read that advances the cursor. A read is closed by
+# POST /temporal-self/now/use (zero or more cites); an unclosed read (the model never saw it) never moves it, so the
+# next read offers the same rows again. max() over closed rows: closing an older read never moves it backwards.
+LAST_SHOWN_SQL = ("SELECT max(shown_at) AS at FROM experience_shown"
+                  " WHERE reader_organ = %(o)s AND advances_cursor AND closed_at IS NOT NULL")
 INSERT_SHOWN_SQL = """
 INSERT INTO experience_shown (shown_id, reader_organ, reader_run_ref, event_ids, since, shown_at, advances_cursor)
 VALUES (%(shown_id)s, %(reader_organ)s, %(reader_run_ref)s, %(event_ids)s, %(since)s, %(shown_at)s, %(advances_cursor)s)
@@ -402,11 +420,22 @@ SHOWN_BY_ID_SQL = "SELECT shown_id, reader_organ, event_ids, shown_at FROM exper
 # The same row, locked: concurrent cite calls on one shown row are serialized, so the 3-cite cap holds.
 SHOWN_FOR_UPDATE_SQL = SHOWN_BY_ID_SQL + " FOR UPDATE"
 USED_FOR_SHOWN_SQL = "SELECT event_id FROM experience_use WHERE shown_id = %(s)s"
+# Closing a read (#3498): the first close stamps it; a later close of the same row keeps the first time.
+CLOSE_SHOWN_SQL = "UPDATE experience_shown SET closed_at = COALESCE(closed_at, %(at)s) WHERE shown_id = %(s)s"
 INSERT_USE_SQL = """
 INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at)
 VALUES (%(use_id)s, %(event_id)s, %(citing_organ)s, %(citing_ref)s, %(shown_id)s, %(cited_at)s)
 ON CONFLICT (use_id) DO NOTHING
 """
+
+
+def _now_row(r: Any) -> dict:
+    """One temporal_self_event row in build_now's candidate shape (orion.temporal_self.now.build_now)."""
+    return {"event_id": r["event_id"], "source_kind": r["source_kind"], "occurred_at": r["occurred_at"],
+            "label": r["label"], "verdict": r["verdict"], "related_refs": list(r["related_refs"] or []),
+            "payload": r["payload_json"] or {}, "salience": r["salience"], "surprise_nats": r["surprise_nats"],
+            "source_ref": r.get("source_ref"), "correlation_id": r.get("correlation_id"),
+            "subject_ref": r.get("subject_ref")}
 
 
 class ExperienceStore:
@@ -433,11 +462,32 @@ class ExperienceStore:
         out = []
         for r in rows:
             totals[r["source_kind"]] = int(r["kind_total"])
-            out.append({"event_id": r["event_id"], "source_kind": r["source_kind"], "occurred_at": r["occurred_at"],
-                        "label": r["label"], "verdict": r["verdict"], "related_refs": list(r["related_refs"] or []),
-                        "payload": r["payload_json"] or {}, "salience": r["salience"],
-                        "surprise_nats": r["surprise_nats"]})
+            out.append({**_now_row(r), "kind_total": int(r["kind_total"])})
         return out, sum(totals.values())
+
+    async def arc_subjects(self, arc_ids: Iterable[str]) -> dict[str, str]:
+        """arc_id -> subject_ref for the held arcs (#3783), so a row on a held arc's subject counts as held."""
+        ids = sorted({str(i) for i in arc_ids if str(i).strip()})
+        if not ids:
+            return {}
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(NOW_ARC_SUBJECTS_SQL, {"ids": ids})).fetchall()
+        return {str(r["arc_id"]): str(r["subject_ref"]) for r in rows if r["subject_ref"]}
+
+    async def held_candidates(self, *, keys: Iterable[str], lo: datetime, as_of: datetime, own_kinds: Iterable[str],
+                              window_lo: Optional[datetime] = None, limit: int = 50) -> list[dict]:
+        """Other organs' rows in ``(lo, as_of]`` whose own ids equal one of ``keys`` (#3783), newest first; each
+        says whether it landed before the read's own window (``before_window``: ingested at or before ``window_lo``)."""
+        ks = sorted({str(k) for k in keys if str(k).strip()})
+        if not ks:
+            return []
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                rows = await (await conn.execute(NOW_HELD_SQL, {
+                    "keys": ks, "lo": lo, "as_of": as_of, "own": sorted(own_kinds), "limit": int(limit),
+                    "window_lo": window_lo or lo})).fetchall()
+        return [{**_now_row(r), "before_window": bool(r["before_window"])} for r in rows]
 
     async def by_id(self, event_ids: Iterable[str], *, own_kinds: Iterable[str]) -> list[dict]:
         """Rows by event id (other organs' kinds only), in the candidates' shape: a reader's pinned items."""
@@ -446,10 +496,7 @@ class ExperienceStore:
             return []
         async with self._pool.connection() as conn:
             rows = await (await conn.execute(NOW_BY_ID_SQL, {"ids": ids, "own": sorted(own_kinds)})).fetchall()
-        return [{"event_id": r["event_id"], "source_kind": r["source_kind"], "occurred_at": r["occurred_at"],
-                 "label": r["label"], "verdict": r["verdict"], "related_refs": list(r["related_refs"] or []),
-                 "payload": r["payload_json"] or {}, "salience": r["salience"], "surprise_nats": r["surprise_nats"]}
-                for r in rows]
+        return [_now_row(r) for r in rows]
 
     async def hunger_inputs(self, *, lo: datetime, hist_lo: datetime, as_of: datetime, own_kinds: Iterable[str],
                             cap: int, juniper_lo: datetime) -> tuple[list[dict], list[dict], Optional[str]]:
@@ -475,9 +522,11 @@ class ExperienceStore:
                 "shown_id": shown_id, "reader_organ": reader_organ, "reader_run_ref": reader_run_ref,
                 "event_ids": event_ids, "since": since, "shown_at": shown_at, "advances_cursor": advances_cursor})
 
-    async def record_cites(self, shown_id: str, decide: Callable[[dict, list[str]], Any]) -> Any:
+    async def record_cites(self, shown_id: str, decide: Callable[[dict, list[str]], Any],
+                           closed_at: Optional[datetime] = None) -> Any:
         """One transaction: lock the shown row, read the uses already stored for it, let ``decide(shown,
-        already_used)`` (orion.temporal_self.now.record_use) choose, insert its uses. None: no such row."""
+        already_used)`` (orion.temporal_self.now.record_use) choose, insert its uses, and close the read
+        (``closed_at``, first close wins; #3498: this is what moves the organ's cursor). None: no such row."""
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cur:
@@ -491,6 +540,7 @@ class ExperienceStore:
                     rows = [u.model_dump() for u in result.uses]
                     if rows:
                         await cur.executemany(INSERT_USE_SQL, rows)
+                    await cur.execute(CLOSE_SHOWN_SQL, {"s": shown_id, "at": closed_at or datetime.now(timezone.utc)})
         return result
 
     async def rate_inputs(self, lo: datetime, hi: datetime) -> tuple[dict[str, int], list[tuple[str, str, str]], dict[str, int]]:

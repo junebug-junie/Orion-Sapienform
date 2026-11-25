@@ -145,6 +145,12 @@ class PrimeConcernV1(BaseModel):
     # ``salience`` (orion/physiology/event_wants.py source_salience). None = unscored, never 0. Left out of the saved
     # state when None; same rollback rule as event_family (rebuild Hub and durable-runs before orion-mind).
     evidence_salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # A promise concern: the kind of turn that made the promise (orion/prime/handback.py ``TurnWho``, e.g.
+    # "chat_juniper", "curiosity"), set by ``fold_turn_signals``. The take-on check reads it (#3785) instead of
+    # parsing ``text``; a concern saved before this field has None and falls back to the text. A plain str, not the
+    # Literal: a turn kind added later must not stop an older image loading the whole state. Left out of the saved
+    # state when None; same rollback rule as event_family (rebuild Hub and durable-runs before orion-mind).
+    turn_who: Optional[str] = Field(default=None, max_length=50)
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
@@ -156,7 +162,8 @@ class PrimeConcernV1(BaseModel):
     def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A concern with no event saves byte-for-byte as before (a rollback still loads the state).
         out = handler(self)
-        for key in ("event_ref", "event_family", "event_care_promoted", "promise_text", "evidence_salience"):
+        for key in ("event_ref", "event_family", "event_care_promoted", "promise_text", "evidence_salience",
+                    "turn_who"):
             if out.get(key, 0) is None:
                 del out[key]
         return out

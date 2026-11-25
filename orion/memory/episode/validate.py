@@ -62,6 +62,19 @@ MEMORY_ID_NAMESPACE = uuid.UUID("6f1c7b8e-2d0a-4c35-9a51-3e7d9b0c4a21")
 REFERENT_KINDS = frozenset({"person", "event", "place", "service", "file", "pr", "concept", "project"})
 INTERNAL_CHANNELS = frozenset({"reverie", "curiosity", "dream", "journal", "topic_model"})
 JUNIPER_VOICES = frozenset({"juniper_said", "worked_out_together"})
+# Orion's own thought is never put to Juniper to confirm (Juniper 2026-11-24, issue #3840): only
+# Orion knows what Orion thought. A high-stakes memory in this voice is stored ``own_thought``, a
+# state the asker (confirmation.open_cards) never selects; recall renders it as Orion's own view.
+OWN_THOUGHT_VOICE = "orion_thought"
+OWN_THOUGHT_STATE = "own_thought"
+
+
+def initial_confirmation_state(stakes: str, voice: str) -> str:
+    """The state a newly validated memory is stored in. Low stakes: ``auto``. High stakes: asked
+    (``pending_confirmation``), unless it is Orion's own thought (``own_thought``, never asked)."""
+    if stakes != "high":
+        return "auto"
+    return OWN_THOUGHT_STATE if voice == OWN_THOUGHT_VOICE else "pending_confirmation"
 VALID_STAKES_REASONS = frozenset(get_args(StakesReason))
 MIN_STATEMENT_WORDS = 6  # "0 statements of 5 words or fewer" (Stage 1 acceptance 7)
 
@@ -495,7 +508,7 @@ def validate_distillation(
                                       {"referents": imported, "stakes_before": stakes}))
             if stakes == "low":
                 stakes, stakes_reason = "high", UNGROUNDED_NAME_STAKES_LABEL
-        confirmation_state = "pending_confirmation" if stakes == "high" else "auto"
+        confirmation_state = initial_confirmation_state(stakes, voice)
         strength, half_life = STRENGTH_BY_PURPOSE[cand.purpose]
 
         due_after = _parse_dt(cand.due_after) if cand.purpose == "follow_up" else None

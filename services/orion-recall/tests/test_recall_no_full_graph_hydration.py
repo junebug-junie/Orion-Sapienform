@@ -85,7 +85,7 @@ class _FakeFalkorClient:
             if cypher == NODE_BY_ID_CYPHER:
                 return [_node_row("c-juniper", "Juniper", 1)] if params["node_id"] == "c-juniper" else []
             raise AssertionError(f"unexpected read: {cypher[:80]}")
-        if cypher.startswith("MERGE (n:SubstrateNode:"):
+        if cypher.startswith("MERGE (n:SubstrateNode {node_id: $node_id}) "):
             return []
         if cypher == "CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)":
             return []

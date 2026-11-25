@@ -3,7 +3,9 @@
 ``GET /physiology/event-wants`` (app.main). Read-only on ``want_ledger`` and the two v1 source tables:
 
 1. the LATEST decision of every event want (``decision->'want' ? 'event_ref'``, real producers only) in
-   the last ``hours``;
+   the last ``hours``, plus every older one (back ``OPEN_WINDOW_SEARCH_HOURS``) whose window is still open
+   (#3558: a camera ask is decided once and stays open 7 days, so a 24 h ``hours`` dropped it from Prime's
+   frame on day 2 while Juniper could still answer it). An older want with no known window end is not kept;
 2. kept when that decision is ``funded`` and the event has not expired: the want's own window end, else
    ``opened_at`` + the family's ``deferrable_window_s``; a camera ask that is no longer ``open`` has
    expired too (Juniper answered it), and so has one whose card row does not exist (attention patch 4b: the ask
@@ -41,10 +43,18 @@ CURIOSITY_PREFIX = "curiosity_run:"
 FINDING_LABEL_CHARS = 240
 # A finished game sitting (game company patch 4, services/orion-hub/scripts/retro_sitting.py ``_post_event_want``).
 SITTING_PREFIX = "retro_sitting:"
-MAX_HOURS = 72.0
+# How far back the menu searches for a want whose window is still open, whatever ``hours`` says: the
+# longest event window (a camera ask, ``orion_ask.expires_at`` = created + 7 days; live max latest - decided_at
+# 6 d 23:59) plus a day of margin. A want decided before this with a still-open window is not found.
+# Older than ``hours``, only a want with its own ``window.latest`` still ahead is read (family windows are
+# at most 24 h, so a want with no ``latest`` past ``hours`` is not open in practice; menu_from_rows drops it
+# either way). The CASE guards the cast: one malformed ``latest`` must not fail Prime's whole read.
+OPEN_WINDOW_SEARCH_HOURS = 192.0
+MAX_HOURS = OPEN_WINDOW_SEARCH_HOURS
 MAX_LIMIT = 50
 
 LATEST_EVENT_DECISIONS_SQL = """
+SELECT * FROM (
 SELECT DISTINCT ON (want_id) want_id, family, outcome, decided_at, net,
        (decision->>'value_rank')::float AS value_rank,
        decision->'want'->>'event_ref' AS event_ref,
@@ -54,8 +64,12 @@ SELECT DISTINCT ON (want_id) want_id, family, outcome, decided_at, net,
        decision->>'reason' AS reason,
        decision->'warnings' AS warnings
   FROM want_ledger
- WHERE decided_at >= %(since)s AND decision->'want' ? 'event_ref' AND NOT (producer = ANY(%(synthetic)s))
+ WHERE decided_at >= %(search_since)s AND decision->'want' ? 'event_ref' AND NOT (producer = ANY(%(synthetic)s))
  ORDER BY want_id, decided_at DESC
+) latest_decision
+ WHERE decided_at >= %(since)s
+    OR (outcome = 'funded'
+        AND CASE WHEN latest ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN latest::timestamptz END > %(now)s)
 """
 
 READ_LABELS_SQL = "SELECT seed_id, title, url FROM world_pulse_read_seed WHERE seed_id = ANY(%(ids)s)"
@@ -140,9 +154,11 @@ def expires_at(row: Mapping[str, Any], families: Optional[FamiliesConfig]) -> Op
 
 
 def menu_from_rows(rows: Sequence[Mapping[str, Any]], *, labels: Mapping[str, str], gone: set[str],
-                   families: Optional[FamiliesConfig], now: datetime, limit: int) -> FundedEventWantsV1:
+                   families: Optional[FamiliesConfig], now: datetime, limit: int,
+                   since: Optional[datetime] = None) -> FundedEventWantsV1:
     """Pure: the funded, unexpired event wants, highest net first. ``gone``: event refs whose source row
-    says the event is over (an answered ask)."""
+    says the event is over (an answered ask). ``since`` (the ``hours`` bound): a want decided before it is
+    kept only with a known window end still in the future (no end, no proof it is still open)."""
     keep: list[FundedEventWantV1] = []
     without_care: dict[str, Optional[float]] = {}
     for r in rows:
@@ -151,6 +167,9 @@ def menu_from_rows(rows: Sequence[Mapping[str, Any]], *, labels: Mapping[str, st
             continue
         end = expires_at(r, families)
         if end is not None and end <= now:
+            continue
+        decided = _ts(r.get("decided_at"))
+        if since is not None and decided is not None and decided < since and end is None:
             continue
         keep.append(FundedEventWantV1(
             want_id=str(r["want_id"]), family=str(r["family"]), event_ref=ref,
@@ -219,9 +238,11 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
                     limit: int) -> FundedEventWantsV1:
     hours = min(MAX_HOURS, max(0.1, float(hours)))
     limit = min(MAX_LIMIT, max(1, int(limit)))
+    since = now - timedelta(hours=hours)
     async with pool.connection() as conn:
         rows = await (await conn.execute(LATEST_EVENT_DECISIONS_SQL, {
-            "since": now - timedelta(hours=hours), "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
+            "since": since, "search_since": now - timedelta(hours=max(hours, OPEN_WINDOW_SEARCH_HOURS)),
+            "now": now, "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
         refs = [str(r["event_ref"] or "") for r in rows if r["outcome"] == "funded"]
         read_ids = sorted({x[len(READ_PREFIX):] for x in refs if x.startswith(READ_PREFIX)})
         ask_ids = sorted({x[len(ASK_PREFIX):] for x in refs if x.startswith(ASK_PREFIX)})
@@ -267,9 +288,9 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
                 label = finding_label(r["detail"])
                 if label:
                     labels[f"{CURIOSITY_PREFIX}{r['run_id']}"] = label
-    return menu_from_rows(rows, labels=labels, gone=gone, families=families, now=now, limit=limit)
+    return menu_from_rows(rows, labels=labels, gone=gone, families=families, now=now, limit=limit, since=since)
 
 
-__all__ = ["FINISH_LABELS_SQL", "LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "SITTING_LABELS_SQL", "finding_label",
+__all__ = ["FINISH_LABELS_SQL", "LATEST_EVENT_DECISIONS_SQL", "OPEN_WINDOW_SEARCH_HOURS", "OFFICE_LABELS_SQL", "SITTING_LABELS_SQL", "finding_label",
            "sitting_label", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows",
            "menu_payload", "read_menu"]

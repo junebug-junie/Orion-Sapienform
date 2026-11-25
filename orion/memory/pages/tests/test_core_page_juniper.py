@@ -305,3 +305,12 @@ def test_a_number_must_be_in_a_cited_record():
     assert check_page(good, _handles()).ok
     bad = check_page(base + f"Rowan has been her wife for 15 years [{h['person_fact:f-rowan']}].", _handles())
     assert [e.split(":")[0] for e in bad.errors] == ["unbacked_number"]
+
+
+def test_own_thought_is_not_labelled_as_unconfirmed_fact_about_juniper():
+    """Issue #3840: an own thought reads as Orion's own view, not 'not yet confirmed'."""
+    mine = {"memory_id": "m-mine", "purpose": "about_juniper", "confirmation_state": "own_thought",
+            "statement": "I wonder whether Juniper likes the first snow.", "at": T}
+    (src,) = sources_from_rows([], [mine])
+    assert "my own thought, not checked with Juniper" in src.label
+    assert "not yet confirmed" not in src.label

@@ -241,6 +241,7 @@ from orion.prime.thought import (
     apply_answer,
     build_frame,
     event_ids,
+    held_now_refs,
     parse_answer,
     shown_experience_ids,
     shows_now,
@@ -1464,17 +1465,21 @@ class PrimeRuntime(MindLoopRuntime):
         include = ",".join([i for i in (n.experience_id for n in self._shown_needs) if i][:NOW_MAX_PINNED])
         if include:
             params["include"] = include
+        # #3783: what Prime holds, so rows about a held concern rank first. Repeated ``held=`` keys (refs may hold
+        # commas); the reuse check below keys on them too, so a concern change reads a fresh now.
+        held = held_now_refs(self.state)
+        reuse_key = include + "\n" + "\n".join(held)
         clock = self.clock()
         if self._now_unseen is not None:
             u_since, read_at, page = self._now_unseen
-            if (u_since == since and include == self._now_unseen_include
+            if (u_since == since and reuse_key == self._now_unseen_include
                     and (clock - read_at).total_seconds() <= NOW_REUSE_MAX_SEC):
                 logger.info("prime_now_reused shown_id=%s items=%d", page.get("shown_id"), len(page.get("items") or []))
                 return page
             self._now_unseen = None
         if self._thought_id:
             params["run_ref"] = f"{PRIME_IDENTITY.thought_ref}{self._thought_id}"
-        url = f"{base}{NOW_PATH}?{urllib.parse.urlencode(params)}"
+        url = f"{base}{NOW_PATH}?{urllib.parse.urlencode([*params.items(), *(('held', h) for h in held)])}"
         try:
             data = await asyncio.to_thread(self.get_json, url)
         except Exception as exc:  # noqa: BLE001 -- the now never fails a thought
@@ -1488,7 +1493,7 @@ class PrimeRuntime(MindLoopRuntime):
             return None
         logger.info("prime_now_read shown_id=%s items=%d candidates=%s", data["shown_id"], len(data["items"]),
                     data.get("candidates"))
-        self._now_unseen, self._now_unseen_include = (since, clock, data), include
+        self._now_unseen, self._now_unseen_include = (since, clock, data), reuse_key
         return data
 
     def _now_since(self) -> Optional[str]:
@@ -1515,9 +1520,12 @@ class PrimeRuntime(MindLoopRuntime):
         self._now_unseen = None
 
     async def _record_now_use(self, *, shown_id: Optional[str], cites: list[str], thought_id: str) -> str:
-        """POST the thought's experience cites (already only shown ones, at most 3) with the now's shown_id.
-        Returns the outcome for the log. A failure is logged, never raised: the thought already happened."""
-        if not shown_id or not cites:
+        """POST the thought's experience cites (already only shown ones, at most 3, possibly none) with the now's
+        shown_id. Called only once the model answered, so the post closes the read (#3498): a closed read with no
+        cite is "read, cited nothing" in the coverage report, not "never closed". Prime reads with since=, so the
+        close never moves a server cursor (Prime keeps its own, ``_now_seen_as_of``). Returns the outcome for the
+        log ("none" when nothing was cited). A failure is logged, never raised: the thought already happened."""
+        if not shown_id:
             return "none"
         url = f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}{NOW_USE_PATH}"
         body = {"shown_id": shown_id, "citing_ref": f"{PRIME_IDENTITY.thought_ref}{thought_id}", "cites": list(cites)}
@@ -1533,7 +1541,7 @@ class PrimeRuntime(MindLoopRuntime):
                     if isinstance(res, dict) else 0)
         logger.info("prime_now_use thought=%s shown_id=%s cited=%s stored=%d rejected=%d", thought_id, shown_id,
                     ",".join(cites), stored, rejected)
-        return f"stored {stored}/{len(cites)}"
+        return f"stored {stored}/{len(cites)}" if cites else "none"
 
     async def _read_curiosity(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         """Hub's curiosity dashboard (runs) for settling Prime's questions, with the long timeout. Not read for the

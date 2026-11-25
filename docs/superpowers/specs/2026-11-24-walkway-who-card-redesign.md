@@ -311,3 +311,26 @@ no-blind-answers rule holds per group. This
 removes the "Sasha, Sasha" double ask today (148 rows on 97 stories) without the
 one-at-a-time layout. Patch B: the one-at-a-time card and "No, it's ...". Patch
 C: sentence parts table and derived verdict. Patch D: link undo.
+
+## Juniper's answers (2026-11-24)
+
+Juniper approved this design on 2026-11-24 with these answers to the six missing questions:
+
+1. **"No, it's ..."**: a short list of the names Orion knows (most seen first), plus
+   "someone not listed" (type a name) and "I don't know who". Guard: picking a name
+   from the list is one tap with no confirm step, but the card then shows
+   "Changed to X - Undo" for that answer until she moves to the next person.
+2. **"Yes, that's X" does not fill "Right people?"**. Person answers and sentence
+   grades stay separate.
+3. **Sentence parts graded:** people, direction, place. Length is left out.
+4. **Same-name groups not yet linked:** ask on the card ("Orion has another X
+   group. Same person?"). Never link them without asking.
+5. **The 124 "not sure only" stories** go back into the unchecked queue, once.
+6. **"Yes" as a positive training example:** yes. A separate agent builds that in
+   orion-sql-writer and the person model. This card's job is only to keep writing
+   `same` picture verdicts, scoped to the pictures shown, on every "yes" (that
+   builder reads them).
+
+Build plan: Patches A, B, C, D from "Recommended next patch", as stacked PRs.
+Orion's eight correctness questions on this design are each settled in code with a
+test, or ticketed; each patch's PR report lists which.

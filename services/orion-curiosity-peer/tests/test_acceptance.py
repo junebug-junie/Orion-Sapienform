@@ -122,7 +122,7 @@ def test_acceptance_2_budget_refuse_and_soft_nudge() -> None:
         _help(),
         claude=claude,
         observe_claude_limit=lambda: _ClaudeLimit(
-            observed=False, state="unknown", staleness_sec=None
+            observed=True, state="limited", staleness_sec=1.0
         ),
         persist=persisted.append,
     )

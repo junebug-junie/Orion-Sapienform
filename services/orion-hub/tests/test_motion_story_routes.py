@@ -56,7 +56,8 @@ def test_routes_are_mounted_on_the_hub_app() -> None:
     paths = {r.path for r in msr.router.routes}
     assert paths == {"/api/vision/motion-stories", "/api/vision/motion-stories/{story_id}/verdict",
                      "/api/vision/motion-stories/{story_id}/strip/{name}",
-                     "/api/vision/motion-stories/{story_id}/people/{individual_id}"}
+                     "/api/vision/motion-stories/{story_id}/people/{individual_id}",
+                     "/api/vision/motion-stories/{story_id}/persons/{person_key}/not-same"}
 
 
 def test_cant_tell_never_counts_toward_the_gate() -> None:
@@ -439,11 +440,12 @@ async def _individual(pool, iid: str, label=None, kind="person") -> None:
 
 
 async def _walk(pool, i: int, ids, *, name=None, together=None, kind="person", published=True,
-                strip=None, thumbs=(0,)) -> str:
+                strip=None, thumbs=(0,), boxes=None) -> str:
     """``strip``: indexes of the evidence crops saved in the story strip (crop_0..);
-    with any, the strip also has a frame. ``thumbs``: indexes with a vision-host thumb."""
+    with any, the strip also has a frame. ``thumbs``: indexes with a vision-host thumb.
+    ``boxes``: evidence index -> box (default a 2 x 2 box)."""
     sid = f"{i:032x}"
-    ev = [{"crop_id": f"s{i}c{k}", "box": [1, 2, 3, 4], "clipped": False, "individual_id": iid,
+    ev = [{"crop_id": f"s{i}c{k}", "box": (boxes or {}).get(k, [1, 2, 3, 4]), "clipped": False, "individual_id": iid,
            "thumb": THUMB if k in thumbs else None} for k, iid in enumerate(ids)]
     subj = name or ("A dog" if kind == "dog" else "A person")
     await pool.execute(
@@ -934,3 +936,212 @@ def test_clean_why_trims_spaces_and_blank_lines_but_keeps_line_breaks() -> None:
     assert msr.clean_why("  a  b \r\n\n\t c ") == "a b\nc"
     assert msr.clean_why("") == "" and msr.clean_why("   \n ") == ""
     assert msr.clean_why("no\x00 kids\x07") == "no kids"   # NUL would break the jsonb insert
+
+
+# --- one person per linked group (who-card redesign Patch A, 2026-11-24) ------------------------------
+
+
+async def _same(pool, a: str, b: str, verdict: str = "same", ask_id: str = "ask-link") -> None:
+    lo, hi = sorted((a, b))
+    await pool.execute(
+        "INSERT INTO vision_individual_pair_verdict (individual_a, individual_b, verdict, ask_id, decided_at) "
+        "VALUES ($1, $2, $3, $4, now())", lo, hi, verdict, ask_id)
+
+
+@needs_pg
+def test_list_shows_linked_camera_groups_as_one_person_with_each_groups_pictures() -> None:
+    async def body(pool, client):
+        for iid, label in (("ind-sasha1", "Sasha"), ("ind-sasha2", "Sasha"), ("ind-x", "Sasha"), ("ind-anon", None),
+                           ("ind-ann", "Ann"), ("ind-bea", "Bea")):
+            await _individual(pool, iid, label)
+        # sasha1 and sasha2 are joined through ind-x, a group that is not in this story.
+        await _same(pool, "ind-sasha1", "ind-x")
+        await _same(pool, "ind-x", "ind-sasha2")
+        # A link that joins two typed names is a conflict: shown as two people, never one.
+        await _same(pool, "ind-ann", "ind-bea")
+        sid = await _walk(pool, 1, ["ind-sasha1", "ind-sasha1", "ind-sasha2", "ind-anon", "ind-ann", "ind-bea"],
+                          strip=[0, 2, 3, 4], thumbs=(), boxes={2: [0, 0, 100, 200]})
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        assert r.status_code == 200, r.text
+        story = next(s for s in r.json()["stories"] if s["story_id"] == sid)
+        assert len(story["people"]) == 5                                   # kept one more release
+        persons = story["persons"]
+        assert [p["individual_ids"] for p in persons] == [["ind-sasha1", "ind-sasha2"], ["ind-anon"], ["ind-ann"],
+                                                          ["ind-bea"]]
+        sasha = persons[0]
+        assert (sasha["person_key"], sasha["label"], sasha["role"]) == ("ind-sasha1", "Sasha", "walker")
+        # Every group's pictures; the largest box first.
+        assert [c["crop_id"] for c in sasha["pictures"]] == ["s1c2", "s1c0"]
+        assert [b["n"] for b in sasha["boxes"]] == [1, 2, 3]
+        assert [(g["individual_id"], g["picture_crop_ids"]) for g in sasha["groups"]] == [
+            ("ind-sasha1", ["s1c0"]), ("ind-sasha2", ["s1c2"])]
+        assert sasha["links"] == []                     # joined only through ind-x: no direct link here
+        assert persons[1]["links"] == []
+
+    _run(body)
+
+
+@needs_pg
+def test_one_answer_on_a_linked_person_writes_one_row_per_camera_group_on_its_own_pictures() -> None:
+    """Orion's question 2: one card answer writes at most one ask per camera group (max 4), each on
+    that group's SHOWN pictures; "can't see them" writes 'unsure' per group."""
+    published: list = []
+
+    async def body(pool, client):
+        ids = [f"ind-g{i}" for i in range(5)]
+        for iid in ids:
+            await _individual(pool, iid, "Sasha")
+        for a, b in zip(ids, ids[1:]):
+            await _same(pool, a, b)
+        await _individual(pool, "ind-anon")
+        # Five camera groups of one person; the strip saved four crops (crop_0..3): g4 is never shown.
+        sid = await _walk(pool, 1, ids + ["ind-anon"], name="Sasha", strip=[0, 1, 2, 3], thumbs=())
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-g2",
+                              json={"action": "someone_else", "name": "Cora", "group": True})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["person_key"] == "ind-g0" and len(out["ask_ids"]) == 4 and out["skipped_individual_ids"] == []
+        rows = await pool.fetch("SELECT source_kind, source_ref, answer_detail FROM orion_ask ORDER BY source_ref")
+        assert [r["source_ref"] for r in rows] == ids[:4]
+        for k, row in enumerate(rows):
+            d = json.loads(row["answer_detail"])
+            assert row["source_kind"] == "vision_story_person"
+            assert [(p["crop_id"], p["verdict"], p["name"]) for p in d["pictures"]] == [(f"s1c{k}", "different", "Cora")]
+            assert (d["person_key"], d["group_size"], d["story_id"]) == ("ind-g0", 4, sid)
+        # One story verdict, not one per group.
+        assert out["wrong_name_recorded"] is True
+        assert await pool.fetchval("SELECT count(*) FROM vision_motion_story_verdict") == 1
+        # "Can't see them": 'unsure' for each group's shown pictures, again one row per group.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-g0", json={"action": "unsure", "group": True})
+        assert r.status_code == 200 and len(r.json()["ask_ids"]) == 4
+        verdicts = [json.loads(v) for v in await pool.fetchval(
+            "SELECT array_agg(answer_detail::text) FROM orion_ask WHERE answer_detail->>'action' = 'unsure'")]
+        assert sorted(p["verdict"] for d in verdicts for p in d["pictures"]) == ["unsure"] * 4
+        # The unnamed person beside them is still its own person.
+        assert [p["individual_ids"] for p in r.json()["story"]["persons"]][-1] == ["ind-anon"]
+        assert published == []                           # no typed name: no entity event
+
+    _run(body, published)
+
+
+@needs_pg
+def test_answering_a_merged_person_again_writes_no_second_answer_per_group() -> None:
+    """Orion's question 4: after a mid-story link joins two groups, answering the merged person
+    again writes no second vision_individual answer per (story, group)."""
+    published: list = []
+
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Sasha")
+        await _individual(pool, "ind-b", "Sasha")
+        sid = await _walk(pool, 1, ["ind-a", "ind-b"], strip=[0, 1], thumbs=())
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a", json={"action": "confirm", "name": "Sasha"})
+        assert r.status_code == 200 and len(r.json()["ask_ids"]) == 1
+        await _same(pool, "ind-a", "ind-b")             # linked mid-story
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-b",
+                              json={"action": "confirm", "name": "Sasha", "group": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["skipped_individual_ids"] == ["ind-a"] and len(r.json()["ask_ids"]) == 1
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "confirm", "name": "sasha", "group": True})
+        assert r.json()["ask_ids"] == [] and r.json()["skipped_individual_ids"] == ["ind-a", "ind-b"]
+        assert r.json()["skipped_all"] is True
+        counts = await pool.fetch("SELECT source_ref, count(*) AS n FROM orion_ask WHERE source_kind = "
+                                  "'vision_individual' GROUP BY 1 ORDER BY 1")
+        assert [(c["source_ref"], c["n"]) for c in counts] == [("ind-a", 1), ("ind-b", 1)]
+        # A different answer is never skipped.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a", json={"action": "unsure", "group": True})
+        assert len(r.json()["ask_ids"]) == 2
+
+    _run(body, published)
+
+
+@needs_pg
+def test_yes_on_a_linked_person_refuses_two_names_and_names_an_unnamed_group() -> None:
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Sasha")
+        await _individual(pool, "ind-b")
+        await _same(pool, "ind-a", "ind-b")
+        sid = await _walk(pool, 1, ["ind-a", "ind-b"], strip=[0, 1], thumbs=())
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-b",
+                              json={"action": "confirm", "name": "Sasha", "group": True})
+        assert r.status_code == 200 and len(r.json()["ask_ids"]) == 2
+        assert {row["answer"] for row in await pool.fetch("SELECT answer FROM orion_ask")} == {"Sasha"}
+        await pool.execute("UPDATE vision_individual SET label = 'Sam' WHERE individual_id = 'ind-b'")
+        before = await pool.fetchval("SELECT count(*) FROM orion_ask")
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "unsure", "group": True})
+        assert r.status_code == 200                    # two names: shown as two persons, ind-a alone
+        assert len(r.json()["ask_ids"]) == 1
+        await pool.execute("UPDATE vision_individual SET label = 'Sasha' WHERE individual_id = 'ind-b'")
+        await pool.execute("UPDATE vision_individual SET label = 'Other' WHERE individual_id = 'ind-a'")
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-b",
+                              json={"action": "someone_else", "name": "sasha", "group": True})
+        assert (r.status_code, r.json()["detail"]) == (422, "someone_else_takes_another_name")
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == before + 1
+
+    _run(body, [])
+
+
+@needs_pg
+def test_not_the_same_person_writes_her_pair_answer_for_one_direct_link() -> None:
+    """Orion's question 1: a wrong 'same' link hides once linked groups show as one person. The grouped
+    row offers "not the same person?", which writes the existing "same person?" answer, no."""
+    async def body(pool, client):
+        for iid in ("ind-a", "ind-b", "ind-c", "ind-d"):
+            await _individual(pool, iid, "Sasha")
+        await _same(pool, "ind-a", "ind-b", ask_id="ask-typed")
+        sid = await _walk(pool, 1, ["ind-a", "ind-b"], strip=[0, 1], thumbs=())
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        person = r.json()["stories"][0]["persons"][0]
+        assert person["links"] == [{"a": "ind-a", "b": "ind-b"}]
+        url = f"/api/vision/motion-stories/{sid}/persons/{person['person_key']}/not-same"
+        r = await client.post(url, json={"a": "ind-b", "b": "ind-a"})
+        assert r.status_code == 200, r.text
+        # Shown apart at once, before sql-writer writes it over the 'same' row; a second click is the same answer.
+        assert [p["individual_ids"] for p in r.json()["story"]["persons"]] == [["ind-a"], ["ind-b"]]
+        again = await client.post(url, json={"a": "ind-a", "b": "ind-b"})
+        assert again.status_code == 200 and again.json()["already_recorded"] is True
+        assert again.json()["ask_id"] == r.json()["ask_id"]
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == 1
+        row = await pool.fetchrow("SELECT * FROM orion_ask WHERE ask_id = $1", r.json()["ask_id"])
+        assert (row["source_kind"], row["source_ref"], row["answer"], row["status"]) == (
+            "vision_same_individual", "ind-a|ind-b", "different", "answered")
+        from orion.grammar.camera_ask_acts import is_orion_camera_ask
+        assert not is_orion_camera_ask(row["source_kind"], row["evidence_refs"], row["answer_detail"])
+        assert json.loads(row["answer_detail"])["action"] == "not_same"
+        # Not a direct link of this person: refused, nothing written.
+        r = await client.post(url, json={"a": "ind-a", "b": "ind-c"})
+        assert (r.status_code, r.json()["detail"]) == (422, "not_a_direct_link_of_this_person")
+        # Still joined through another path (a-c-b): the pair answer could not split them. Said so plainly.
+        await pool.execute("UPDATE orion_ask SET applied_at = now()")
+        await pool.execute("UPDATE vision_individual_pair_verdict SET decided_at = now() + interval '1 minute'")
+        await _same(pool, "ind-a", "ind-c")
+        await _same(pool, "ind-c", "ind-b")
+        before = await pool.fetchval("SELECT count(*) FROM orion_ask")
+        r = await client.post(url, json={"a": "ind-a", "b": "ind-b"})
+        assert (r.status_code, r.json()["detail"]) == (409, "still_linked")
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == before
+
+    _run(body)
+
+
+@needs_pg
+def test_a_group_answer_on_pictures_the_card_did_not_show_is_refused() -> None:
+    """A link that lands between render and click changes the person's pictures: 409, nothing written."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a", "Sasha")
+        await _individual(pool, "ind-b", "Sasha")
+        sid = await _walk(pool, 1, ["ind-a", "ind-b"], strip=[0, 1], thumbs=())
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        shown = [c["crop_id"] for c in r.json()["stories"][0]["persons"][0]["pictures"]]
+        assert shown == ["s1c0"]
+        await _same(pool, "ind-a", "ind-b")             # linked after the card rendered
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "unsure", "group": True, "crop_ids": shown})
+        assert (r.status_code, r.json()["detail"]) == (409, "pictures_changed")
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask") == 0
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-a",
+                              json={"action": "unsure", "group": True, "crop_ids": ["s1c1", "s1c0"]})
+        assert r.status_code == 200 and len(r.json()["ask_ids"]) == 2
+
+    _run(body, [])

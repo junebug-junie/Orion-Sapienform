@@ -38,6 +38,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orion.memory.episode import confirmation as c  # noqa: E402
+from orion.memory.episode.validate import initial_confirmation_state  # noqa: E402
 
 SQL_DIR = REPO_ROOT / "services" / "orion-sql-db"
 MIGRATIONS = (
@@ -86,7 +87,8 @@ def synth_v3(summary_path: Path = V3_SUMMARY) -> list[dict[str, Any]]:
                     "voice": "orion_thought" if own else "juniper_said", "channel": "chat",
                     "statement": f"synthetic memory {i}.{j} ({key})", "occurred_at": None, "stakes": stakes,
                     "stakes_reason": reason if reason != "-" else None,
-                    "confirmation_state": "pending_confirmation" if stakes == "high" else "auto",
+                    # The validator's rule: an own thought is never asked (issue #3840).
+                    "confirmation_state": initial_confirmation_state(stakes, "orion_thought" if own else "juniper_said"),
                     "strength": 0.9, "half_life_days": 180.0, "last_reinforced_at": T0, "status": "active",
                     "created_at": T0 - timedelta(days=30) + timedelta(days=i, minutes=j),
                 })
@@ -167,6 +169,8 @@ async def run_scenario(admin_dsn: str, rows: list[dict[str, Any]], *, answers: b
             # Source monitoring, counted on the real rendered text (the text itself is not kept).
             "cards_framed_as_juniper_said": sum(1 for r in cards if r["question"].startswith("You told me")),
             "cards_framed_as_orions_own_take": sum(1 for r in cards if "my own take" in r["question"]),
+            # Must be 0 (issue #3840): Orion's own thought is never put to Juniper.
+            "cards_on_orion_thought": sum(1 for r in cards if r["voice"] == "orion_thought"),
             "cards_framed_as_internal_channel": sum(1 for r in cards if "not from anything you told me" in r["question"]),
             "max_open_at_once": max_open,
             "cap_held": max_open <= c.MAX_OPEN_CARDS,

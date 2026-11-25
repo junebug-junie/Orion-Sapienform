@@ -317,6 +317,15 @@ def _edge_hydrate_return_clause(fields: tuple[str, ...]) -> str:
 ### imported at the top of this file and re-exported via __all__.
 
 
+def _observed_later(node: Any, other: Any) -> bool:
+    """True when ``node`` was observed strictly after ``other``; False when either
+    timestamp is missing or the two cannot be compared (naive vs aware)."""
+    try:
+        return node.temporal.observed_at > other.temporal.observed_at
+    except (AttributeError, TypeError):
+        return False
+
+
 def _with_sanitized_metadata(model: Any) -> Any:
     cleaned, _rejected = sanitize_metadata(getattr(model, "metadata", None) or {})
     if cleaned == (getattr(model, "metadata", None) or {}):
@@ -498,6 +507,8 @@ class FalkorSubstrateStore:
         self.hydrate_skipped_unknown_nodes = 0
         self.hydrate_skipped_unknown_edges = 0
         self.hydrate_duplicate_node_identities = 0
+        # #3512: rows the last good scan skipped (see _hydrate_from_durable).
+        self.hydrate_integrity_anomalies: dict[str, int] = {}
         self.identity_durable_lookups_total = 0
         self.identity_durable_hits_total = 0
         if hydrate:
@@ -517,6 +528,10 @@ class FalkorSubstrateStore:
     # partial graph". Floor absorbs nodes written between the scan and the
     # count; the fraction scales with the graph (#3455 incident: 40 of 15,355).
     _NODE_GAP_ALARM_FLOOR = 50
+    # #3512: corrupt rows one scan may skip before the scan counts as broken.
+    _INTEGRITY_ANOMALY_FLOOR = 50
+    _INTEGRITY_ANOMALY_FRACTION = 0.01
+    _INTEGRITY_SAMPLE_SIZE = 5
     _NODE_GAP_ALARM_FRACTION = 0.05
 
     def _scan_pages(self, *, match: str, where: str, alias: str,
@@ -532,9 +547,15 @@ class FalkorSubstrateStore:
         page with only some bad rows, or both texts failing, raises the first
         decode error. The whole page decodes before the cursor check, so a
         page with both faults raises the decode error."""
+        # Sort and limit on the bare id first, then project the page. RETURN
+        # <every property> ... ORDER BY ... LIMIT projects every row past the
+        # cursor before sorting: on orion_substrate_aitown's 202k edges the
+        # first page ran past FalkorDB's 1 s read TIMEOUT ("Query timed out",
+        # #3512, 2026-11-24), and orion_substrate's 80k took ~800 ms. This
+        # form reads the same page in ~540 ms on both.
         query = (f"{match} WHERE {where} AND id({alias}) > $after_id "
-                 f"RETURN {returns}, id({alias}) AS object_id "
-                 "ORDER BY object_id LIMIT $page_size")
+                 f"WITH * ORDER BY id({alias}) LIMIT $page_size "
+                 f"RETURN {returns}, id({alias}) AS object_id ORDER BY object_id")
         bypassed = where in self._plan_cache_bypass
         retried = False
         cursor = -1
@@ -586,9 +607,18 @@ class FalkorSubstrateStore:
                         self._plan_cache_bypass.discard(where)
             if errors:
                 raise errors[0]
+            page_start = cursor
             for row, obj in zip(rows, decoded):
                 object_id = row.get("object_id")
-                if type(object_id) is not int or object_id <= cursor:
+                # Non-decreasing within a page, and past the page's start
+                # cursor. One object read twice in a page is allowed through
+                # (#3512, live 2026-11-24: edge 66265 came back once to its real
+                # target and once through a phantom adjacency entry, so the
+                # scan failed 'nonadvancing' or 'mismatched endpoint' by sort
+                # order). The consumer keeps the copy with valid endpoints and
+                # counts the other; a page that does not move the cursor at all
+                # still fails here, so the scan cannot loop.
+                if type(object_id) is not int or object_id < cursor or object_id <= page_start:
                     raise ValueError("nonadvancing or invalid object cursor")
                 cursor = object_id
                 yield row, obj
@@ -597,8 +627,10 @@ class FalkorSubstrateStore:
         """Stage and validate all pages before replacing the last good cache.
 
         Object IDs are scan cursors, never business identities. Concurrent
-        external mutation can produce a mixed-time view; detected missing
-        endpoints reject the scan. Local writes made during the scan are
+        external mutation can produce a mixed-time view. A corrupt or
+        mixed-time row (duplicate node_id, edge with a missing or mismatched
+        endpoint, duplicate edge_id) is skipped and counted, never fatal, up to
+        an integrity budget; past it the scan is rejected (#3512). Local writes made during the scan are
         journaled and replayed onto the staged cache at swap (see
         ``_scan_journal``), so they never abort it. Legacy rewrite remains a
         best-effort compatibility step after validation, never in read-only mode.
@@ -609,15 +641,39 @@ class FalkorSubstrateStore:
         progress = {"pages": 0, "edge_identity_aliases": 0}
         fresh = InMemorySubstrateGraphStore()
         legacy_nodes, legacy_edges = [], []
+        legacy_twins: list[str] = []
+        rows_seen = 0
         node_ids, edge_ids = set(), set()
 
         duplicate_identities: dict[str, int] = {}
+        anomalies: dict[str, int] = {}
+        anomaly_samples: list[str] = []
+
+        def note_anomaly(kind: str, ref: str) -> None:
+            anomalies[kind] = anomalies.get(kind, 0) + 1
+            if len(anomaly_samples) < self._INTEGRITY_SAMPLE_SIZE:
+                anomaly_samples.append(f"{kind}:{ref}")
 
         def add_node(row, node):
+            nonlocal rows_seen
+            rows_seen += 1
             if node is None or not node.node_id or node.node_id == "None":
                 raise ValueError("invalid or unsupported durable node")
             if node.node_id in node_ids:
-                raise ValueError(f"duplicate node_id: {node.node_id}")
+                # Two durable rows share one node_id (#3512: FalkorDB dropped a
+                # node's type-label bit, so the typed MERGE missed it and minted
+                # a twin). Keep the row writers still touch (newer observed_at);
+                # edges key on node_id, so both rows' edges still land.
+                note_anomaly("duplicate_node_id", node.node_id)
+                if _observed_later(node, fresh.get_node_by_id(node.node_id)):
+                    identity = str(row.get("identity_key") or "") or None
+                    previous_id = fresh.get_node_id_by_identity(identity) if identity else None
+                    fresh.upsert_node(identity_key=identity, node=node)
+                    if previous_id is not None and previous_id != node.node_id:
+                        # Keep the one canonical rule (smallest node_id) for an
+                        # identity this node shares with another node.
+                        fresh.set_identity_canonical(identity, min(previous_id, node.node_id))
+                return
             identity = str(row.get("identity_key") or "") or None
             previous_id = fresh.get_node_id_by_identity(identity) if identity else None
             node_ids.add(node.node_id)
@@ -636,14 +692,22 @@ class FalkorSubstrateStore:
                 fresh.set_identity_canonical(identity, min(previous_id, node.node_id))
 
         def add_edge(row, edge):
+            nonlocal rows_seen
+            rows_seen += 1
             if edge is None:
                 raise ValueError("invalid durable edge")
-            if edge.edge_id in edge_ids:
-                raise ValueError(f"duplicate edge_id: {edge.edge_id}")
             for endpoint in (edge.source, edge.target):
                 node = fresh.get_node_by_id(endpoint.node_id)
                 if node is None or node.node_kind != endpoint.node_kind:
-                    raise ValueError(f"missing or mismatched endpoint: {endpoint.node_id}")
+                    # #3512: one edge read back twice, once through a phantom
+                    # adjacency entry pointing at an unrelated node of another
+                    # kind. Also an edge written after the node pass read its
+                    # endpoint. Skip the edge, never the whole graph.
+                    note_anomaly("bad_endpoint_edge", f"{edge.edge_id}->{endpoint.node_id}")
+                    return
+            if edge.edge_id in edge_ids:
+                note_anomaly("duplicate_edge_id", edge.edge_id)
+                return
             identity = str(row.get("identity_key") or self._edge_identity(edge))
             previous_id = fresh.get_edge_id_by_identity(identity)
             if previous_id is not None:
@@ -682,6 +746,15 @@ class FalkorSubstrateStore:
             ):
                 if node.node_kind not in DURABLE_NODE_KINDS:
                     raise ValueError("unsupported legacy node kind")
+                if node.node_id in node_ids:
+                    # A legacy payload row next to a native node with the same
+                    # node_id: the native row is the truth. The stale payload
+                    # must neither win the cache nor be upserted over the
+                    # native node (the 2026-07-18 clobber); it is only deleted.
+                    rows_seen += 1
+                    note_anomaly("legacy_payload_twin", node.node_id)
+                    legacy_twins.append(node.node_id)
+                    continue
                 add_node(row, node)
                 legacy_nodes.append(row)
             def decode_native_edge(row):
@@ -708,6 +781,21 @@ class FalkorSubstrateStore:
             ):
                 add_edge(row, edge)
                 legacy_edges.append(row)
+            # A few corrupt rows are skipped and counted; many mean the scan
+            # itself is broken (a poisoned plan shifting columns makes every
+            # edge's endpoint kind wrong), and an edgeless cache must not read
+            # as a good refresh.
+            # The floor alone would let a small graph whose every edge is bad
+            # pass, so more than half the rows bad also fails.
+            anomaly_total = sum(anomalies.values())
+            budget = max(self._INTEGRITY_ANOMALY_FLOOR, self._INTEGRITY_ANOMALY_FRACTION * rows_seen)
+            budget = min(budget, rows_seen / 2)
+            if anomaly_total > budget:
+                raise ValueError(
+                    f"integrity anomalies over budget: {anomaly_total} > {budget:.0f} "
+                    f"({', '.join(f'{k}={v}' for k, v in sorted(anomalies.items()))}; "
+                    f"sample: {'; '.join(anomaly_samples)})"
+                )
             # Replay and swap are one atomic step under _cache_lock: every
             # local write since the scan began is in the journal, and no new
             # one can land until the swap is done, so the swapped cache holds
@@ -742,6 +830,7 @@ class FalkorSubstrateStore:
                 pages_read=progress["pages"],
                 last_successful_refresh_at=self._last_successful_refresh_at,
                 reason=str(exc), edge_identity_aliases=progress["edge_identity_aliases"],
+                integrity_anomalies=dict(anomalies),
             )
             # Failed scan: the kept cache is the last good one, so its own
             # skipped count is the right one to subtract.
@@ -760,6 +849,14 @@ class FalkorSubstrateStore:
                 sum(count - 1 for count in duplicate_identities.values()),
                 "; ".join(f"{key} x{count}" for key, count in sample),
             )
+        self.hydrate_integrity_anomalies = dict(anomalies)
+        if anomalies:
+            logger.warning(
+                "falkor_substrate_hydrate_integrity_anomalies graph=%s %s sample=%s",
+                self._cfg.graph_name,
+                " ".join(f"{kind}={count}" for kind, count in sorted(anomalies.items())),
+                "; ".join(anomaly_samples),
+            )
         self.hydrate_skipped_unknown_nodes = skipped["nodes"]
         self.hydrate_skipped_unknown_edges = skipped["edges"]
         if skipped["nodes"] or skipped["edges"]:
@@ -775,10 +872,16 @@ class FalkorSubstrateStore:
             last_successful_refresh_at=finished,
             edge_identity_aliases=progress["edge_identity_aliases"],
             duplicate_node_identities=len(duplicate_identities),
+            integrity_anomalies=dict(anomalies),
         )
         self._record_node_count_gap(skipped["nodes"])
         self._maybe_log_hydrate_stats()
         if not getattr(self._client, "read_only", False):
+            for node_id in legacy_twins:
+                try:
+                    self._delete_orphaned_legacy_node_duplicate(node_id)
+                except Exception as exc:  # noqa: BLE001 - retried on the next refresh
+                    logger.warning("falkor_substrate_legacy_twin_delete_failed node_id=%s error=%s", node_id, exc)
             self._migrate_legacy_payload_nodes(legacy_nodes)
             self._migrate_legacy_payload_edges(legacy_edges)
 
@@ -831,13 +934,14 @@ class FalkorSubstrateStore:
         logger.info(
             "falkor_substrate_hydrate_stats graph=%s ok_total=%d failed_total=%d replayed_writes_total=%d "
             "duplicate_identities=%d identity_durable_lookups=%d identity_durable_hits=%d "
-            "plan_cache_retries=%d plan_cache_recovered=%d node_count_gap=%s",
+            "plan_cache_retries=%d plan_cache_recovered=%d node_count_gap=%s integrity_anomalies=%d",
             self._cfg.graph_name, self.hydrate_ok_total, self.hydrate_failed_total,
             self.hydrate_replayed_writes_total, getattr(self, "hydrate_duplicate_node_identities", 0),
             getattr(self, "identity_durable_lookups_total", 0), getattr(self, "identity_durable_hits_total", 0),
             getattr(self, "hydrate_plan_cache_retries_total", 0),
             getattr(self, "hydrate_plan_cache_recovered_total", 0),
             getattr(self, "last_node_count_gap", None),
+            sum(getattr(self, "hydrate_integrity_anomalies", {}).values()),
         )
 
     @staticmethod
@@ -941,13 +1045,17 @@ class FalkorSubstrateStore:
             with self._cache_lock:
                 self._cache.upsert_node(identity_key=identity_key, node=node)
             try:
-                # Rewrite to native properties. upsert_node()'s MERGE keys on
-                # (SubstrateNode:<type-label> {node_id}) -- a label pattern
-                # this legacy row (labeled SubstrateNode only, no type label
-                # yet) can never itself satisfy. So the write always lands on
-                # a *different*, already-migrated node (or creates a fresh
-                # one) instead of converting this row in place. Confirmed
-                # live (2026-07-18): this left a permanent orphaned duplicate
+                # Rewrite to native properties. Until #3512 upsert_node()'s
+                # MERGE keyed on (SubstrateNode:<type-label> {node_id}), a
+                # pattern this legacy row (SubstrateNode only) never matched,
+                # so the write landed on a *different* node (or created one).
+                # It now keys on (SubstrateNode {node_id}), which converts a
+                # lone legacy row in place but would also match BOTH rows of a
+                # legacy + canonical pair and strip payload_json from both,
+                # leaving a durable twin. So the legacy twin of an existing
+                # canonical node is deleted FIRST, then the upsert writes this
+                # row's data onto the canonical node. Confirmed
+                # live (2026-07-18): the old order left a permanent orphaned duplicate
                 # for every node this path ever touched -- the orphaned row's
                 # payload_json got re-parsed and re-clobbered the canonical
                 # node's real data on every subsequent hydrate, forever
@@ -959,8 +1067,8 @@ class FalkorSubstrateStore:
                 # the legacy one is gone -- confirmed live, one relationship
                 # existed as 4 near-identical copies (one per source/target
                 # duplicate-row combination).
-                self.upsert_node(identity_key=identity_key, node=node)
                 self._delete_orphaned_legacy_node_duplicate(node.node_id)
+                self.upsert_node(identity_key=identity_key, node=node)
                 logger.info(
                     "falkor_substrate_legacy_node_migrated node_id=%s identity_key=%s",
                     node.node_id,
@@ -974,17 +1082,14 @@ class FalkorSubstrateStore:
                 )
 
     def _delete_orphaned_legacy_node_duplicate(self, node_id: str) -> None:
-        """Remove any *other* SubstrateNode sharing `node_id` that still
-        carries a legacy payload_json, after the canonical node has just
-        been migrated (see the comment in `_migrate_legacy_payload_nodes`).
+        """Remove any SubstrateNode sharing `node_id` that still carries a
+        legacy payload_json, but only when a canonical (native, no
+        payload_json) node with that `node_id` already exists. Runs BEFORE the
+        migration upsert (see the comment in `_migrate_legacy_payload_nodes`).
 
-        `upsert_node()`'s type-labeled MERGE can never match the un-migrated
-        legacy row itself, so that row would otherwise never be touched by
-        the migration write and would persist forever. The canonical node
-        this method runs after has already had `payload_json` removed by
-        `upsert_node()`'s own SET clause, so this can never match/delete it
-        -- only a genuinely orphaned duplicate matches
-        `payload_json IS NOT NULL` at this point. `DETACH DELETE` also
+        A lone legacy row (no canonical twin) is left alone here; the upsert
+        that follows converts it in place. The canonical node never matches
+        `payload_json IS NOT NULL`, so it is never deleted. `DETACH DELETE` also
         removes any relationships still attached to the orphaned row, which
         is what cleans up the cascaded duplicate-edge side effect described
         above without needing separate edge-dedup logic.
@@ -999,6 +1104,8 @@ class FalkorSubstrateStore:
         silently swallowed under a `..._migrated` success log line.
         """
         self._client.graph_query(
+            "MATCH (c:SubstrateNode {node_id: $node_id}) WHERE c.payload_json IS NULL "
+            "WITH count(c) AS canonical WHERE canonical > 0 "
             "MATCH (n:SubstrateNode {node_id: $node_id}) "
             "WHERE n.payload_json IS NOT NULL "
             "DETACH DELETE n",
@@ -1227,10 +1334,19 @@ class FalkorSubstrateStore:
         match_assignments = _set_assignments(
             "n", params, skip={"node_id"} | skip_encoded_keys | TICK_OWNED_NODE_PROPERTIES
         )
+        # MERGE on SubstrateNode + node_id alone (the indexed identity), then
+        # set the type label. A typed MERGE pattern also requires the type
+        # label to match, so it minted a second node with the same node_id
+        # whenever the existing one lacked that label: the bare placeholder
+        # an edge MERGE creates, or a node whose label bit FalkorDB dropped
+        # (#3512, live 2026-11-24: aitown node 49919 read Concept from
+        # labels() but was absent from the Concept label scan, so every write
+        # since landed on twin 50246 and hydrate failed on 'duplicate node_id').
         cypher = (
-            f"MERGE (n:SubstrateNode:{label} {{node_id: $node_id}}) "
+            "MERGE (n:SubstrateNode {node_id: $node_id}) "
             f"ON CREATE SET {create_assignments} "
             f"ON MATCH SET {match_assignments} "
+            f"SET n:{label} "
             "REMOVE n.payload_json "
             # Return what the graph now holds, so the cache stores the durable
             # truth: on ON MATCH the graph kept values (pressure, dormancy,

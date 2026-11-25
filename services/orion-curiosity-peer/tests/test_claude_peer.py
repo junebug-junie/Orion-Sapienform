@@ -431,11 +431,15 @@ def test_default_claude_gate_reads_the_configured_transcript_root(monkeypatch, t
     assert brief.status == "ok"
 
 
-def test_unmounted_transcript_root_refuses_unobserved(tmp_path) -> None:
-    """Real meter over an empty root reads unobserved → fail closed."""
+def test_unmounted_transcript_root_tries_claude(tmp_path) -> None:
+    """Real meter over an empty root reads unobserved. Since #3655 that is an
+    idle account, not a refusal: the hire reaches Claude once (11-19..23 live:
+    13 hires refused `claude_budget_unobserved` while nobody used Claude)."""
+    calls = {"claude": 0}
 
     def claude(*_a: Any, **_k: Any) -> str:
-        raise AssertionError("claude must not spend on an unobserved meter")
+        calls["claude"] += 1
+        return '{"summary": "idle account answered"}'
 
     brief = handle_help_request(
         _help(),
@@ -443,15 +447,13 @@ def test_unmounted_transcript_root_refuses_unobserved(tmp_path) -> None:
         claude=claude,
         persist=lambda _b: None,
     )
-    assert brief.status == "refused_budget"
-    assert brief.refusal_reason.endswith("[claude_budget_unobserved]")
-
+    assert calls == {"claude": 1}
+    assert brief.status == "ok"
 
 
 def test_real_meter_over_a_fresh_transcript_lets_claude_run(tmp_path) -> None:
     """End-to-end default gate: a mounted transcript tree with a fresh message
-    reads `clear`, so the hire reaches Claude (the 2026-11-14..16 failure was
-    the opposite: no mount → unobserved → refused)."""
+    reads `clear`, so the hire reaches Claude."""
     from datetime import datetime, timezone
 
     project = tmp_path / "-mnt-scripts-proj"

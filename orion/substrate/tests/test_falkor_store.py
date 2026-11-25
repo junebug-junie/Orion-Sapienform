@@ -111,7 +111,8 @@ def test_falkor_upsert_concept_uses_native_cypher_properties():
     cypher, params = client.calls[-1]
     _assert_no_payload_json_sor(cypher, params)
     assert "REMOVE n.payload_json" in cypher
-    assert "MERGE (n:SubstrateNode:Concept {node_id: $node_id})" in cypher
+    assert cypher.startswith("MERGE (n:SubstrateNode {node_id: $node_id}) ")
+    assert "SET n:Concept " in cypher
     assert "n.label = $label" in cypher
     assert "n.promotion_state = $promotion_state" in cypher
     assert "n.salience = $salience" in cypher
@@ -261,7 +262,8 @@ def test_falkor_upsert_evidence_uses_native_cypher_properties():
     cypher, params = client.calls[-1]
     _assert_no_payload_json_sor(cypher, params)
     assert "REMOVE n.payload_json" in cypher
-    assert "MERGE (n:SubstrateNode:Evidence {node_id: $node_id})" in cypher
+    assert cypher.startswith("MERGE (n:SubstrateNode {node_id: $node_id}) ")
+    assert "SET n:Evidence " in cypher
     assert "n.evidence_type = $evidence_type" in cypher
     assert "n.content_ref = $content_ref" in cypher
     assert params["node_id"] == "evidence-native-alpha"
@@ -1559,7 +1561,8 @@ def test_falkor_upsert_entity_uses_native_cypher_properties():
     store.upsert_node(identity_key="entity:athena", node=_entity_node())
 
     cypher, params = client.calls[-1]
-    assert "MERGE (n:SubstrateNode:Entity {node_id: $node_id})" in cypher
+    assert cypher.startswith("MERGE (n:SubstrateNode {node_id: $node_id}) ")
+    assert "SET n:Entity " in cypher
     assert "n.entity_type = $entity_type" in cypher
     assert "n.aliases_json = $aliases_json" in cypher
     assert params["node_kind"] == "entity"

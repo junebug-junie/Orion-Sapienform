@@ -144,8 +144,8 @@ def test_kickoff_read_uses_the_server_cursor_and_persists_the_shown_row_on_the_d
     assert now is not None and now.shown_id == "shown1" and len(now.items) == 2
     (req,) = seen
     assert req.url.path == "/temporal-self/now"
-    # No explicit since: the endpoint reads from curiosity's last look and moves that cursor (an explicit
-    # since would be an inspection read that never moves it).
+    # No explicit since: the endpoint reads from curiosity's cursor, which the turn-end close moves (#3498; an
+    # explicit since would be an inspection read that never moves it).
     assert dict(req.url.params) == {"organ": "curiosity", "run_ref": "run1"}
     assert db["rows"]["run1"] == ("shown1", json.dumps(["visual_run:p1", "prediction_surprise:x:7"]))
 
@@ -179,7 +179,22 @@ def test_turn_end_posts_at_most_three_cites_with_the_persisted_shown_id_from_ano
                        {"shown_id": "shown1", "citing_ref": "curiosity_run:run1", "cites": ["a", "b", "c"]})]
 
 
-def test_no_cites_or_no_shown_row_posts_nothing_and_a_failed_post_never_raises():
+def test_a_turn_with_text_and_no_cites_closes_the_read_with_no_cites():
+    """#3498: the model ran and cited nothing: the read is closed with an empty cite list ("read, cited
+    nothing"), which moves curiosity's cursor past it."""
+    db, posted = {"rows": {"run1": ("shown1", json.dumps(["a"]))}}, []
+
+    def handler(req):
+        posted.append(json.loads(req.content))
+        return httpx.Response(200, json={"shown_id": "shown1", "citing_organ": "curiosity", "uses": [],
+                                         "rejected_not_shown": [], "rejected_over_cap": []})
+
+    assert asyncio.run(_reader(db, handler).record_turn_cites("run1", "no cites here")) is not None
+    assert posted == [{"shown_id": "shown1", "citing_ref": "curiosity_run:run1", "cites": []}]
+
+
+def test_no_text_or_no_shown_row_posts_nothing_and_a_failed_post_never_raises():
+    """No text: the model never answered (a refusal, a timeout), so the read stays open and is offered again."""
     calls = []
 
     def handler(req):
@@ -187,7 +202,9 @@ def test_no_cites_or_no_shown_row_posts_nothing_and_a_failed_post_never_raises()
         return httpx.Response(500, text="boom")
 
     db = {"rows": {"run1": ("shown1", ["a"])}}
-    assert asyncio.run(_reader(db, handler).record_turn_cites("run1", "no cites here")) is None
+    assert asyncio.run(_reader(db, handler).record_turn_cites("run1", "")) is None
+    assert asyncio.run(_reader(db, handler).record_turn_cites("run1", None)) is None
+    assert asyncio.run(_reader(db, handler).record_turn_cites("run1", "   ")) is None
     assert asyncio.run(_reader({"rows": {}}, handler).record_turn_cites("run9", "[experience:a]")) is None
     assert calls == []
     assert asyncio.run(_reader(db, handler).record_turn_cites("run1", "[experience:a]")) is None

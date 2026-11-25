@@ -139,7 +139,8 @@ def test_an_organ_may_not_hold_a_claim_and_its_exemption(real, tmp_path):
 
 def test_a_stale_channel_entry_fails(real):
     inp = planted(real)
-    inp.registry["exempt_channels"] = {"orion:no:such:channel": "why"}
+    # Keep the real exemptions: replacing them would unregister a channel added on this branch.
+    inp.registry["exempt_channels"] = {**(inp.registry.get("exempt_channels") or {}), "orion:no:such:channel": "why"}
     assert seam.check(inp) == ["channel 'orion:no:such:channel' is named in config/integration/organs.yaml "
                                "but does not exist; remove it."]
 

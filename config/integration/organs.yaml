@@ -200,4 +200,5 @@ exempt_families:
   execution_dispatch.substrate: "dispatch ladder retired 2026-11-07 (ladder retirement PR 6); no grammar_acts row for this actor ever (live, 2026-11-15)"
 exempt_workflows:
   harness.echo_smoke: "a hand-triggered seam smoke for the durable-run -> harness step path; not an organ's output"
-exempt_channels: {}
+exempt_channels:
+  "orion:heartbeat:seat:rollup": "telemetry, not experience: a 5-minute per-seat sum of the heartbeat's routed grammar atoms, stored for the field-demon replay (scripts/demon_network_replay.py, issue #3886); no organ reads it at runtime and it carries no content of its own"

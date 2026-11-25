@@ -797,6 +797,7 @@ from orion.schemas.causal_geometry import (
     CausalGeometrySnapshotV1,
 )
 from orion.schemas.bus_traffic import BusTrafficHopV1, BusTrafficRollupV1
+from orion.schemas.heartbeat_seat_rollup import HeartbeatSeatRollupV1
 from orion.schemas.brain_frame import (
     BrainEdgeSampleV1,
     BrainNodeSampleV1,
@@ -1555,6 +1556,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CausalGeometrySnapshotV1": CausalGeometrySnapshotV1,
     "BusTrafficHopV1": BusTrafficHopV1,
     "BusTrafficRollupV1": BusTrafficRollupV1,
+    "HeartbeatSeatRollupV1": HeartbeatSeatRollupV1,
     "BrainRegionV1": BrainRegionV1,
     "BrainSpotlightV1": BrainSpotlightV1,
     "BrainNodeSampleV1": BrainNodeSampleV1,
@@ -2096,6 +2098,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "BusTrafficRollupV1": SchemaRegistration(
         model=BusTrafficRollupV1,
         kind="bus.traffic.rollup.v1",
+    ),
+    "HeartbeatSeatRollupV1": SchemaRegistration(
+        model=HeartbeatSeatRollupV1,
+        kind="heartbeat.seat.rollup.v1",
     ),
     "GraphWriteIntentV1": SchemaRegistration(
         model=GraphWriteIntentV1,

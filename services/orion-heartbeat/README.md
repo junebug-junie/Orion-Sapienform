@@ -142,6 +142,44 @@ rebuild.
 Heartbeat subscribes to the same channel, so its own atoms come back; they
 are skipped before routing (`events_skipped_self` on `/health`).
 
+### Seat rollup (2026-11-25, #3886)
+
+`grammar_events` keeps about 3 days. The field-demon replay
+(`scripts/demon_network_replay.py`) needs 14-28 days of seat history. So the
+heartbeat also keeps a running sum per seat per 5-minute bucket
+(`app/seat_rollup.py`) and publishes it when the bucket closes:
+
+- Channel `orion:heartbeat:seat:rollup`, kind `heartbeat.seat.rollup.v1`
+  (`orion/schemas/heartbeat_seat_rollup.py`), 5 messages per bucket (one
+  per seat). orion-sql-writer stores each in `heartbeat_seat_rollup_5m`
+  (insert-only, `services/orion-sql-db/manual_migration_heartbeat_seat_rollup_5m_v1.sql`).
+- `level_sum` is the summed `route_atom` level of the seat's atoms whose
+  `emitted_at` falls in the bucket: the same value the replay computes from
+  `grammar_events`. `atom_count` counts those atoms. `skipped_count` counts
+  the seat's atoms its input rule skipped. Sums use `math.fsum`, so they do
+  not depend on arrival order.
+- Absence reads as unknown, never zero. A bucket the heartbeat did not hear
+  has no rows. The start bucket, every bucket between losing and regaining
+  the subscription, and every bucket a silence of more than
+  `HEARTBEAT_SEAT_ROLLUP_SILENCE_GAP_SEC` touches, is `partial=true`. The
+  replay treats partial buckets as missing. A seat with no atoms in a
+  complete bucket gets a real 0 row.
+- An atom stamped in an already-published bucket is dropped and counted
+  (`seat_rollup.late_atoms_dropped` and `late_by_bucket` on `/health`), as
+  are atoms stamped more than one bucket ahead and repeated event ids.
+- Every row carries `routing_version`, a hash of the routing rules and level
+  code (`routing.routing_version()`). The replay does not mix sums made under
+  other rules with today's recompute.
+- The replay reads the rollup first and `grammar_events` only for buckets
+  with no rollup rows; it labels each bucket's source in `results.json`.
+- Exact-match check: `evals/seat_rollup_match.py --mode replay` (any time)
+  pushes a window of ledger atoms through the real service path and compares
+  every bucket x seat with the replay recompute using `==`.
+  `--mode table` does the same against the stored rows after deploy.
+
+Telemetry, not experience: the channel is in `exempt_channels` in
+`config/integration/organs.yaml`.
+
 ### Why nothing reaches the field
 
 No field channel, substrate reducer or prior was added. Checked against the
@@ -322,6 +360,9 @@ deploying a change):
 | `HEARTBEAT_ABSORB_QUEUE_MAXSIZE` | `10000` | Bound on the message-intake→absorb queue; sustained overflow drops-and-counts (`events_dropped_queue_full`) rather than blocking intake or growing unbounded. |
 | `HEARTBEAT_VERDICT_ATOMS_ENABLED` | `true` | Publish the `heartbeat.h1:` grammar trace (see "What heartbeat emits"). |
 | `HEARTBEAT_VERDICT_SUMMARY_INTERVAL_SEC` | `3600.0` | Summary atom cadence. |
+| `HEARTBEAT_SEAT_ROLLUP_ENABLED` | `true` | Publish the 5-minute seat rollup (see "Seat rollup"). |
+| `HEARTBEAT_SEAT_ROLLUP_SILENCE_GAP_SEC` | `60.0` | A silence on `orion:grammar:event` longer than this marks the buckets it touches partial. A backstop for a hung subscription: bus and biometrics really pause together for 30-60 s a few times a day, and those pauses are data. |
+| `HEARTBEAT_SEAT_ROLLUP_FLUSH_GRACE_SEC` | `120.0` | A bucket is published this long after it ends. A later atom for it is dropped and counted (`late_atoms_dropped`, `late_by_bucket`). |
 
 **Verdict bands** (`app/substrate/reconstruction.py`) are percentiles of
 heartbeat's own 48 h output (2026-09-01). On 7 days of live AST/HOT samples

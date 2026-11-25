@@ -28,6 +28,7 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:vision:crops:sql-write` | `vision.crop.observation.v1` | `vision_crop_observation` (one row per crop, dedicated handler) |
 | `orion:vision:unresolved:sql-write` | `vision.unresolved.v1` | `VisionUnresolvedSQL` (`vision_unresolved`) |
 | `orion:bus:traffic:rollup` | `bus.traffic.rollup.v1` | `BusTrafficRollupSQL` (`bus_traffic_rollup_5m`, insert-only; producer orion-bus-mirror) |
+| `orion:heartbeat:seat:rollup` | `heartbeat.seat.rollup.v1` | `HeartbeatSeatRollupSQL` (`heartbeat_seat_rollup_5m`, insert-only; producer orion-heartbeat) |
 
 **Action outcome persistence:** `action.outcome.emit.v1` (produced by `orion-spark-concept-induction` after an autonomous readonly fetch) is projected into `action_outcomes` (PK `action_id`, idempotent upsert). `orion-cortex-exec` reads it back per-subject for chat-stance action feedback. DDL is applied on boot (`app/main.py` lifespan) and also lives in `services/orion-sql-db/manual_migration_action_outcomes_v1.sql`.
 

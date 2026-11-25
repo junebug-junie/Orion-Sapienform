@@ -41,6 +41,7 @@ from app.models import (
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
     BusTrafficRollupSQL,
+    HeartbeatSeatRollupSQL,
     ChatHistoryLogSQL,
     AitownChatHistoryLogSQL,
     ChatGptLogSQL,
@@ -195,6 +196,7 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.causal_geometry import CausalGeometrySnapshotV1
 from orion.schemas.bus_traffic import BusTrafficRollupV1
+from orion.schemas.heartbeat_seat_rollup import HeartbeatSeatRollupV1
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.thought import ThoughtEventV1
@@ -299,6 +301,7 @@ INSERT_ONLY_MODELS = {
     MindRunSQL,
     CausalGeometrySnapshotSQL,
     BusTrafficRollupSQL,
+    HeartbeatSeatRollupSQL,
     EquilibriumServiceTransitionSQL,
     VisionUnresolvedSQL,
 }
@@ -544,6 +547,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "BusTrafficRollupSQL": (BusTrafficRollupSQL, BusTrafficRollupV1),
+    "HeartbeatSeatRollupSQL": (HeartbeatSeatRollupSQL, HeartbeatSeatRollupV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
     "ThoughtDecisionSQL": (ThoughtDecisionSQL, ThoughtEventV1),
     # schema_cls=None: harness-governor already validated each of the four

@@ -11,10 +11,24 @@ Raw counts would be useless for the clockwork seats (biometrics and bus emit at 
 so their count is flat).
 
 Values become time-of-day residuals (``whole_body_structure.tod_residuals``), then 3 levels per
-seat. ``grammar_events`` keeps about 3 days, so the profile rests on 1-2 earlier days, not 14.
+seat.
 
-Reads ``grammar_events`` with ``docker exec orion-athena-sql-db psql``. Writes results.json to
---out and prints a summary. Aggregates only; no content leaves the database.
+Sources (issue #3886). ``grammar_events`` keeps about 3 days. orion-heartbeat now also writes the
+same per-seat value for every closed 5-minute bucket to ``heartbeat_seat_rollup_5m`` (one row per
+seat per bucket, kept). The replay reads the rollup first and uses ``grammar_events`` only for
+buckets the rollup has no rows for. Each bucket is labelled with its source:
+
+- ``rollup``: all 5 seats from complete rollup rows of one node, made under today's routing rules;
+- ``grammar_events``: recomputed from the ledger, because the rollup has no usable rows for it
+  (none, partial, a seat missing, two nodes, or other routing rules) and the ledger still has it;
+- ``rollup_partial``: rollup rows exist, but the heartbeat was not listening for the whole bucket
+  (or a seat row is missing, or two nodes wrote it), and the ledger no longer has it. Missing;
+- ``rollup_other_routing``: complete rollup rows made under other routing rules
+  (``routing_version``), and the ledger no longer has it. Missing unless --any-routing-version;
+- ``none``: neither source covers the bucket. Missing.
+
+Reads both tables with ``docker exec orion-athena-sql-db psql``. Writes results.json to --out and
+prints a summary. Aggregates only; no content leaves the database.
 """
 from __future__ import annotations
 
@@ -23,7 +37,9 @@ import json
 import os
 import subprocess
 import sys
+import math
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,7 +59,7 @@ from orion.substrate import born_machine as bm  # noqa: E402
 from orion.substrate import demon  # noqa: E402
 from orion.substrate import whole_body_structure as wbs  # noqa: E402
 
-LABEL = "PREVIEW (per-service seats, ~3 days; not the stable-mode organs)"
+LABEL = "PREVIEW (per-service seats; not the stable-mode organs)"
 BUCKET = 300
 LAGS = (1, 3, 6, 12)
 N_NULL = 20
@@ -51,6 +67,10 @@ NULL_GUARD = 24  # 2 h: above the largest lag (1 h). The 3 h default does not fi
 TRAIN_FRACTION = 2 / 3
 PIPELINE = [[0, 2, 3, 4], [1]]  # hub, exec, bus, harness | biometrics (#3795)
 DB_CONTAINER = "orion-athena-sql-db"
+ROLLUP_TABLE = "heartbeat_seat_rollup_5m"
+SOURCES = ("rollup", "grammar_events", "rollup_partial", "rollup_other_routing", "none")
+# Clockwork seats: biometrics (site 1) and bus (site 3) tick every ~11-16 s.
+CLOCKWORK_SITES = (1, 3)
 
 
 def _psql(sql: str) -> list[list[str]]:
@@ -75,27 +95,29 @@ def _routed_roles() -> tuple[list[str], dict[str, list[str]]]:
     return open_services, listed
 
 
-def load() -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+def grammar_sql(where_extra: str = "") -> str:
+    """The ledger query: one row per routed-service atom, bucketed by emitted_at."""
     open_services, listed = _routed_roles()
     clauses = [f"source_service in ({','.join(repr(s) for s in open_services)})"]
     for svc, roles in listed.items():
         clauses.append(f"(source_service = '{svc}' and event_json->'atom'->>'semantic_role' in ({','.join(repr(r) for r in roles)}))")
-    sql = (
+    return (
         "select floor(extract(epoch from emitted_at) / 300)::bigint, source_service, "
         "event_json->'atom'->>'semantic_role', event_json->'atom'->>'atom_type', "
         "coalesce(event_json->'atom'->>'salience', ''), coalesce(event_json->'atom'->>'confidence', ''), "
         "coalesce(event_json->'atom'->>'uncertainty', '') "
-        "from grammar_events where event_kind = 'atom_emitted' and (" + " or ".join(clauses) + ")"
+        "from grammar_events where event_kind = 'atom_emitted' and (" + " or ".join(clauses) + ")" + where_extra
     )
-    rows = _psql(sql)
-    if not rows:
-        raise SystemExit("demon_network_replay: no routed seat atoms in grammar_events")
-    b0 = min(int(r[0]) for r in rows)
-    b1 = max(int(r[0]) for r in rows)
-    level = np.zeros((b1 - b0 + 1, len(routing.SEAT_ORDER)))
-    count = np.zeros_like(level)
-    stats = {"atoms_read": len(rows), "skipped": {}, "unroutable": 0}
+
+
+def aggregate_grammar_rows(rows) -> tuple[dict[tuple[int, int], tuple[float, int]], dict]:
+    """(bucket, site) -> (summed route_atom level, atom count), from ledger rows shaped like
+    ``grammar_sql``. Levels are summed with math.fsum (exactly rounded, so order-independent):
+    the heartbeat's rollup uses the same sum, so the two match exactly, not just closely."""
+    levels: dict[tuple[int, int], list[float]] = {}
+    stats: dict = {"atoms_read": 0, "skipped": {}, "unroutable": 0}
     for b, svc, role, atype, sal, conf, unc in rows:
+        stats["atoms_read"] += 1
         atom = {"atom_type": atype, "semantic_role": role}
         for key, val in (("salience", sal), ("confidence", conf), ("uncertainty", unc)):
             if val != "":
@@ -108,21 +130,136 @@ def load() -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
         except (routing.UnroutableOrganError, routing.UnroutableAtomTypeError, ValueError, TypeError):
             stats["unroutable"] += 1
             continue
-        level[int(b) - b0, a.site_index] += a.level
-        count[int(b) - b0, a.site_index] += 1
-    idx = np.arange(b0, b1 + 1)
-    # The clockwork seats tick every ~11-16 s. A bucket with no biometrics or no bus atom at all is
-    # an outage of the ledger or the emitter, not calm: mark the whole bucket missing.
-    outage = (count[:, 1] == 0) | (count[:, 3] == 0)
+        levels.setdefault((int(b), a.site_index), []).append(a.level)
+    return {k: (math.fsum(v), len(v)) for k, v in levels.items()}, stats
+
+
+def _rollup_rows() -> list[list[str]]:
+    """(bucket, node, site_index, level_sum, atom_count, partial, routing_version) per stored row. Empty when
+    the table does not exist yet (before the first deploy)."""
+    if _psql(f"select to_regclass('{ROLLUP_TABLE}') is not null") != [["t"]]:
+        return []
+    return _psql(
+        "select floor(extract(epoch from bucket_start) / 300)::bigint, node, site_index, "
+        f"level_sum, atom_count, partial, routing_version from {ROLLUP_TABLE}"
+    )
+
+
+def build_series(
+    grammar: dict[tuple[int, int], tuple[float, int]],
+    rollup_rows,
+    n_seats: int = len(routing.SEAT_ORDER),
+    *,
+    current_version: str | None = None,
+    any_version: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    """Merge the two sources onto one 5-minute grid. Returns level, count, bucket index, the source
+    label per bucket (see module docstring), and stats. Missing buckets are NaN, never 0.
+
+    A rollup bucket is usable when all seats have one complete row from one node, made under the
+    current routing rules (``current_version``; ``any_version`` accepts older rules). An unusable
+    bucket inside the ledger's range takes the ledger recompute instead; outside it, it is missing
+    and labelled with why."""
+    current_version = current_version or routing.routing_version()
+    rollup: dict[int, dict[int, list[tuple[str, float, int, bool, str]]]] = {}
+    for b, node, site, level_sum, atom_count, partial, version in rollup_rows:
+        rollup.setdefault(int(b), {}).setdefault(int(site), []).append(
+            (str(node), float(level_sum), int(atom_count), str(partial) in ("t", "true", "True", "1"), str(version))
+        )
+    g_buckets = sorted({b for b, _ in grammar})
+    all_buckets = g_buckets + sorted(rollup)
+    if not all_buckets:
+        raise SystemExit("demon_network_replay: no seat rows in the rollup or grammar_events")
+    b0, b1 = min(all_buckets), max(all_buckets)
+    g0, g1 = (g_buckets[0], g_buckets[-1]) if g_buckets else (None, None)
+    n = b1 - b0 + 1
+    level = np.full((n, n_seats), np.nan)
+    count = np.zeros((n, n_seats))
+    source = np.full(n, "none", dtype=object)
+    stats = {"multi_node_buckets": 0, "rollup_refilled_from_ledger": 0, "rollup_versions": {}}
+    for t in range(n):
+        b = b0 + t
+        r = rollup.get(b)
+        unusable = None
+        if r is not None:
+            for rows in r.values():
+                for row in rows:
+                    stats["rollup_versions"][row[4]] = stats["rollup_versions"].get(row[4], 0) + 1
+            if any(len(rows) > 1 for rows in r.values()):
+                stats["multi_node_buckets"] += 1
+                unusable = "rollup_partial"
+            elif len(r) != n_seats or any(rows[0][3] for rows in r.values()):
+                unusable = "rollup_partial"
+            elif not any_version and any(rows[0][4] != current_version for rows in r.values()):
+                unusable = "rollup_other_routing"
+            if unusable is None:
+                source[t] = "rollup"
+                for site, rows in r.items():
+                    _node, lv, c, _p, _v = rows[0]
+                    level[t, site], count[t, site] = lv, c
+                continue
+        if g0 is not None and g0 <= b <= g1:
+            if unusable is not None:
+                stats["rollup_refilled_from_ledger"] += 1
+            source[t] = "grammar_events"
+            for site in range(n_seats):
+                lv, c = grammar.get((b, site), (0.0, 0))
+                level[t, site], count[t, site] = lv, c
+            # The first and last ledger buckets are partial (retention cut, still filling).
+            if b in (g0, g1):
+                level[t] = np.nan
+        elif unusable is not None:
+            source[t] = unusable
+    # A bucket with no biometrics or no bus atom at all is an outage of the ledger or the
+    # emitter, not calm: mark the whole bucket missing (both sources).
+    outage = np.zeros(n, dtype=bool)
+    for site in CLOCKWORK_SITES:
+        outage |= count[:, site] == 0
+    outage &= (source == "rollup") | (source == "grammar_events")
     level[outage] = np.nan
-    # The first and last buckets are partial.
-    level[0] = np.nan
-    level[-1] = np.nan
-    stats["outage_buckets"] = int(outage.sum())
-    stats["buckets"] = len(idx)
-    stats["counts_per_bucket_median"] = dict(zip(routing.SEAT_ORDER, np.median(count, axis=0).tolist()))
-    stats["count_cv"] = dict(zip(routing.SEAT_ORDER, (count.std(0) / np.maximum(count.mean(0), 1e-9)).round(3).tolist()))
-    return level, count, idx, stats
+    idx = np.arange(b0, b1 + 1)
+    finite = np.all(np.isfinite(level), axis=1)
+    inside = np.flatnonzero(finite)
+    stats.update({
+        "buckets": int(n),
+        "outage_buckets": int(outage.sum()),
+        "source_buckets": {k: int((source == k).sum()) for k in SOURCES},
+        # Missing buckets between the first and last usable one: each one cuts the scored run
+        # (the replay scores the longest finite run).
+        "holes_inside_span": int((~finite[inside[0]:inside[-1] + 1]).sum()) if len(inside) else 0,
+        "source_spans": source_spans(source, idx),
+    })
+    return level, count, idx, source, stats
+
+
+def source_spans(source: np.ndarray, idx: np.ndarray) -> list[dict]:
+    """Run-length list of (first bucket, last bucket, source), as UTC times."""
+    spans: list[dict] = []
+    for t in range(len(source)):
+        if spans and spans[-1]["source"] == source[t]:
+            spans[-1]["last"] = _iso(idx[t])
+            spans[-1]["buckets"] += 1
+        else:
+            spans.append({"source": str(source[t]), "first": _iso(idx[t]), "last": _iso(idx[t]), "buckets": 1})
+    return spans
+
+
+def _iso(bucket: int) -> str:
+    return datetime.fromtimestamp(int(bucket) * BUCKET, timezone.utc).isoformat()
+
+
+def load(any_version: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    grammar, gstats = aggregate_grammar_rows(_psql(grammar_sql()))
+    rows = _rollup_rows()
+    version = routing.routing_version()
+    level, count, idx, source, stats = build_series(grammar, rows, current_version=version, any_version=any_version)
+    stats = {**gstats, "rollup_rows_read": len(rows), "routing_version": version, **stats}
+    # Over usable buckets only: missing and partial buckets would pull these down.
+    used = count[np.all(np.isfinite(level), axis=1)]
+    if len(used):
+        stats["counts_per_bucket_median"] = dict(zip(routing.SEAT_ORDER, np.median(used, axis=0).tolist()))
+        stats["count_cv"] = dict(zip(routing.SEAT_ORDER, (used.std(0) / np.maximum(used.mean(0), 1e-9)).round(3).tolist()))
+    return level, count, idx, source, stats
 
 
 def longest_finite_run(x: np.ndarray) -> tuple[int, int]:
@@ -147,14 +284,19 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--seed", type=int, default=3837)
     ap.add_argument("--n-null", type=int, default=N_NULL)
+    ap.add_argument("--any-routing-version", action="store_true",
+                    help="also use rollup rows made under other heartbeat routing rules (labelled in stats)")
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
     t0 = time.time()
     names = list(routing.SEAT_ORDER)
-    raw, count, idx, stats = load()
+    raw, count, idx, source, stats = load(any_version=args.any_routing_version)
     res = wbs.tod_residuals(raw, idx, min_days=1)
     lo, hi = longest_finite_run(res)
+    if hi - lo < 2:
+        raise SystemExit("demon_network_replay: no run of complete buckets to score")
     x, raw_run, idx_run = res[lo:hi], raw[lo:hi], idx[lo:hi]
+    run_sources = Counter(str(v) for v in source[lo:hi])
     first = datetime.fromtimestamp(int(idx_run[0]) * BUCKET, timezone.utc).isoformat()
     last = datetime.fromtimestamp(int(idx_run[-1]) * BUCKET, timezone.utc).isoformat()
     refusal = demon.refusal_reason(raw_run, names)
@@ -168,7 +310,10 @@ def main() -> int:
         "seed": args.seed,
         "load": stats,
         "scored_span": {"first": first, "last": last, "rows": int(len(x)),
-                        "hours": round(len(x) / 12, 1)},
+                        "hours": round(len(x) / 12, 1),
+                        # Which table each scored row came from (issue #3886).
+                        "rows_by_source": dict(run_sources),
+                        "source_spans": source_spans(source[lo:hi], idx_run)},
         "refusal_reason_raw": refusal,
         "lags_steps": list(LAGS),
     }
@@ -263,6 +408,7 @@ def main() -> int:
     (args.out / "results.json").write_text(json.dumps(out, indent=2) + "\n")
 
     print(LABEL)
+    print(f"sources over the scored run: {dict(run_sources)}")
     print(f"scored {first} .. {last}: {len(x)} rows; skill: train {train_rows}, test {errs.whole.shape[0]}; "
           f"lattice: test {obs.n_test}; hygiene gate passed")
     for c, k in enumerate(LAGS):

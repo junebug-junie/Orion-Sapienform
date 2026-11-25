@@ -498,6 +498,9 @@ SYNC_PREFIXES = (
     # Bus traffic rollup (orion-bus-mirror, 2026-11-13). The mirror's .env was not visited
     # and no MIRROR_ prefix was synced, so the default run added nothing.
     "MIRROR_TRAFFIC_",
+    # Heartbeat seat rollup (orion-heartbeat, 2026-11-25, #3886). The heartbeat's .env was not
+    # visited and no HEARTBEAT_ prefix was synced, so the default run added nothing.
+    "HEARTBEAT_SEAT_ROLLUP_",
     # Substrate dynamics tick (orion-substrate-runtime): propagation decay mode
     # (2026-11-03) matched no prefix, so the default run added nothing.
     "SUBSTRATE_DYNAMICS_",
@@ -622,6 +625,8 @@ DEFAULT_SERVICES = (
     "orion-room-companion",
     # Bus traffic rollup (MIRROR_TRAFFIC_*, 2026-11-13). Not visited before.
     "orion-bus-mirror",
+    # Heartbeat seat rollup (HEARTBEAT_SEAT_ROLLUP_*, 2026-11-25). Not visited before.
+    "orion-heartbeat",
     "orion-memory-crystallizer",
     "orion-memory-consolidation",
     "orion-recall",

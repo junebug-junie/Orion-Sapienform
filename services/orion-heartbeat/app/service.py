@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.codec import OrionCodec
 from orion.grammar.publish import publish_grammar_event
+from orion.schemas.heartbeat_seat_rollup import (
+    HEARTBEAT_SEAT_ROLLUP_CHANNEL,
+    HEARTBEAT_SEAT_ROLLUP_KIND,
+    HeartbeatSeatRollupV1,
+)
+
+from .seat_rollup import SeatRollupAccumulator, parse_emitted_epoch
 
 from .settings import settings
 from .substrate.ensemble import EnsembleConfig, EnsembleH1ResultV1, EnsembleSubstrate
@@ -27,6 +37,7 @@ from .substrate.routing import (
     catalog_grammar_producers,
     input_rule,
     route_atom,
+    routing_version,
 )
 from .substrate.verdict_atoms import (
     MEAN_RATIO_MEANING,
@@ -44,6 +55,12 @@ _GRAMMAR_EVENT_KIND = "grammar.event.v1"  # orion/bus/channels.yaml's
 # registry, not guessed.
 _MAX_UNROUTED_SOURCE_KEYS = 32  # bound on the lifetime per-producer counter
 _MAX_COUNTER_KEYS = 64  # bound on the per-reason / per-role input counters
+# Seat rollup (app/seat_rollup.py): how often the flush loop looks for closed
+# buckets, and how many seat rows it holds for retry while the bus refuses
+# publishes (12 buckets x 5 seats = 1 h).
+SEAT_ROLLUP_FLUSH_CHECK_SEC = 10.0
+SEAT_ROLLUP_MAX_PENDING = 12 * 5
+SEAT_ROLLUP_PUBLISH_TIMEOUT_SEC = 5.0
 
 
 def _bump(counter: dict[str, int], key: str, limit: int = _MAX_COUNTER_KEYS) -> None:
@@ -159,6 +176,32 @@ class HeartbeatService(BaseChassis):
         self.verdict_atoms_published = 0
         self.verdict_atoms_publish_failed = 0
         self.last_verdict_atom: dict[str, Any] | None = None
+        # Five-minute per-seat rollup (issue #3886). None when disabled.
+        now = time.time()
+        self.routing_version = routing_version()
+        self.seat_rollup: Optional[SeatRollupAccumulator] = (
+            SeatRollupAccumulator(
+                node=settings.node_name or "unknown",
+                seats=SEAT_ORDER,
+                started_at_epoch=now,
+                routing_version=self.routing_version,
+                silence_gap_sec=settings.seat_rollup_silence_gap_sec,
+            )
+            if settings.seat_rollup_enabled
+            else None
+        )
+        # When the heartbeat last stopped hearing orion:grammar:event: construction, or the end of
+        # the previous _run (the chassis restarts _run after a bus drop). Every bucket from here
+        # to the next subscribe is partial.
+        self._rollup_unsubscribed_at: float = now
+        self._rollup_subscribed = False
+        self._seat_rollup_pending: deque[HeartbeatSeatRollupV1] = deque(maxlen=SEAT_ROLLUP_MAX_PENDING)
+        self.seat_rollup_published = 0
+        self.seat_rollup_publish_failed = 0
+        self.seat_rollup_dropped_pending_full = 0
+        # Atoms whose emitted_at was missing or unparseable: bucketed by receipt time instead.
+        self.seat_rollup_emitted_at_fallback = 0
+        self.last_seat_rollup: dict[str, Any] | None = None
 
     def latest_h1_dict(self) -> dict[str, Any] | None:
         if self.latest_h1 is None:
@@ -215,6 +258,7 @@ class HeartbeatService(BaseChassis):
                 s for s in self.events_skipped_organ_by_source
                 if self.catalog_producers and s not in self.catalog_producers and s != "other"
             ),
+            "seat_rollup": self._seat_rollup_stats(),
             "verdict_atoms": {
                 "enabled": settings.verdict_atoms_enabled,
                 "published": self.verdict_atoms_published,
@@ -287,6 +331,7 @@ class HeartbeatService(BaseChassis):
         except SkippedInputError as exc:
             self.events_skipped_input += 1
             _bump(self.events_skipped_input_by_reason, exc.reason)
+            self._rollup_observe(atom, site_index=ORGAN_SITE_MAP[source_service], level=None)
             return
         except UnroutableAtomTypeError:
             self.events_skipped_atom_type += 1
@@ -316,6 +361,10 @@ class HeartbeatService(BaseChassis):
             )
             return
 
+        # Before the queue: the rollup counts what the heartbeat routes, also
+        # when the absorb queue is full (the replay counts those atoms too).
+        self._rollup_observe(atom, site_index=assignment.site_index, level=assignment.level)
+
         try:
             self._absorb_queue.put_nowait(assignment)
             self.events_queued += 1
@@ -329,6 +378,11 @@ class HeartbeatService(BaseChassis):
 
     async def _handle_grammar_message(self, payload_dict: dict[str, Any]) -> None:
         self.events_seen += 1
+        if self.seat_rollup is not None:
+            try:
+                self.seat_rollup.observe_receipt(time.time())
+            except Exception as exc:  # noqa: BLE001 - the rollup never blocks routing
+                logger.warning("heartbeat_seat_rollup_receipt_failed err=%s", exc)
         if payload_dict.get("event_kind") != "atom_emitted":
             return
         atom = payload_dict.get("atom")
@@ -340,7 +394,136 @@ class HeartbeatService(BaseChassis):
         # so _handle_atom_payload has a single argument to work with.
         atom = dict(atom)
         atom["_provenance"] = payload_dict.get("provenance") or {}
+        # The seat rollup buckets by the event's emitted_at (the same column
+        # grammar_events is bucketed by) and dedupes on event_id.
+        atom["_emitted_at"] = payload_dict.get("emitted_at")
+        atom["_event_id"] = payload_dict.get("event_id")
         self._handle_atom_payload(atom)
+
+    def _rollup_observe(self, atom: dict[str, Any], *, site_index: int, level: Optional[float]) -> None:
+        """Count one routed (level given) or skipped (level None) atom in the seat rollup. Fail-open."""
+        rollup = self.seat_rollup
+        if rollup is None:
+            return
+        try:
+            now = time.time()
+            emitted = parse_emitted_epoch(atom.get("_emitted_at"))
+            if emitted is None:
+                self.seat_rollup_emitted_at_fallback += 1
+                emitted = now
+            event_id = atom.get("_event_id")
+            event_id = str(event_id) if event_id else None
+            if level is None:
+                outcome = rollup.observe_skip(
+                    site_index=site_index, emitted_epoch=emitted, now_epoch=now, event_id=event_id
+                )
+            else:
+                outcome = rollup.observe_atom(
+                    site_index=site_index, level=level, emitted_epoch=emitted, now_epoch=now, event_id=event_id
+                )
+            if outcome == "late":
+                bucket = int(emitted // 300) * 300
+                if rollup.late_by_bucket.get(bucket) == 1:  # once per bucket
+                    logger.warning(
+                        "heartbeat_seat_rollup_late_atom bucket_start=%s lag_sec=%.1f -- the stored row for "
+                        "this bucket undercounts it",
+                        datetime.fromtimestamp(bucket, timezone.utc).isoformat(), now - emitted,
+                    )
+        except Exception as exc:  # noqa: BLE001 - the rollup never blocks routing
+            logger.warning("heartbeat_seat_rollup_observe_failed err=%s", exc)
+
+    def _rollup_mark_subscribed(self) -> None:
+        """Called once the subscription is open: the span since the heartbeat last stopped hearing
+        the channel was blind, so its buckets are partial. Fail-open."""
+        self._rollup_subscribed = True
+        if self.seat_rollup is None:
+            return
+        try:
+            self.seat_rollup.mark_blind(self._rollup_unsubscribed_at, time.time())
+        except Exception as exc:  # noqa: BLE001 - the rollup never blocks the subscriber
+            logger.warning("heartbeat_seat_rollup_mark_blind_failed err=%s", exc)
+
+    def _seat_rollup_stats(self) -> dict[str, Any]:
+        rollup = self.seat_rollup
+        return {
+            "enabled": rollup is not None,
+            "channel": HEARTBEAT_SEAT_ROLLUP_CHANNEL,
+            "open_buckets": len(rollup) if rollup is not None else 0,
+            "published": self.seat_rollup_published,
+            "publish_failed": self.seat_rollup_publish_failed,
+            "pending": len(self._seat_rollup_pending),
+            "dropped_pending_full": self.seat_rollup_dropped_pending_full,
+            # Atoms stamped in an already-published bucket (or before start), more than one
+            # bucket in the future, or repeated in a bucket: not added to any row.
+            "late_atoms_dropped": rollup.late if rollup is not None else 0,
+            "late_by_bucket": (
+                {datetime.fromtimestamp(b, timezone.utc).isoformat(): n for b, n in sorted(rollup.late_by_bucket.items())}
+                if rollup is not None
+                else {}
+            ),
+            "future_atoms_dropped": rollup.future if rollup is not None else 0,
+            "duplicate_atoms_ignored": rollup.duplicates if rollup is not None else 0,
+            "emitted_at_fallback": self.seat_rollup_emitted_at_fallback,
+            "routing_version": self.routing_version,
+            "last": self.last_seat_rollup,
+        }
+
+    def _seat_rollup_envelope(self, event: HeartbeatSeatRollupV1) -> BaseEnvelope:
+        return BaseEnvelope(
+            kind=HEARTBEAT_SEAT_ROLLUP_KIND,
+            source=ServiceRef(
+                name=settings.service_name, version=settings.service_version, node=settings.node_name
+            ),
+            payload=event.model_dump(mode="json"),
+        )
+
+    async def _flush_seat_rollup_once(self, now_epoch: float) -> int:
+        """Move closed buckets into the pending queue and publish them oldest first. Returns the
+        number published. Fail-open: a publish error leaves the rest queued for the next tick. The
+        queue is bounded (SEAT_ROLLUP_MAX_PENDING), so a long bus outage drops the oldest rows --
+        a missing row reads as unknown, never as zero."""
+        rollup = self.seat_rollup
+        if rollup is None:
+            return 0
+        pending = self._seat_rollup_pending
+        for event in rollup.flush_closed(now_epoch, grace_sec=settings.seat_rollup_flush_grace_sec):
+            if pending.maxlen is not None and len(pending) == pending.maxlen:
+                self.seat_rollup_dropped_pending_full += 1
+                logger.warning("heartbeat_seat_rollup_pending_full dropping rollup_id=%s", pending[0].rollup_id)
+            pending.append(event)
+        published = 0
+        while pending:
+            event = pending[0]
+            try:
+                await asyncio.wait_for(
+                    self.bus.publish(HEARTBEAT_SEAT_ROLLUP_CHANNEL, self._seat_rollup_envelope(event)),
+                    timeout=SEAT_ROLLUP_PUBLISH_TIMEOUT_SEC,
+                )
+            except Exception as exc:  # noqa: BLE001 - incl. timeout; retried on the next tick
+                self.seat_rollup_publish_failed += 1
+                logger.warning(
+                    "heartbeat_seat_rollup_publish_failed rollup_id=%s pending=%d err=%s",
+                    event.rollup_id, len(pending), exc,
+                )
+                break
+            pending.popleft()
+            published += 1
+            self.seat_rollup_published += 1
+            self.last_seat_rollup = {
+                "rollup_id": event.rollup_id,
+                "level_sum": event.level_sum,
+                "atom_count": event.atom_count,
+                "partial": event.partial,
+            }
+        return published
+
+    async def _seat_rollup_loop(self) -> None:
+        while not self._stop.is_set():
+            await asyncio.sleep(SEAT_ROLLUP_FLUSH_CHECK_SEC)
+            try:
+                await self._flush_seat_rollup_once(time.time())
+            except Exception as exc:  # noqa: BLE001 - must not kill the loop
+                logger.warning("heartbeat_seat_rollup_flush_failed err=%s", exc)
 
     async def _absorb_worker_loop(self) -> None:
         """Drains _absorb_queue, applying each real atom to every trajectory
@@ -513,8 +696,13 @@ class HeartbeatService(BaseChassis):
         h1_task = asyncio.create_task(self._h1_loop(), name="heartbeat-h1-loop")
         absorb_task = asyncio.create_task(self._absorb_worker_loop(), name="heartbeat-absorb-worker")
         decay_task = asyncio.create_task(self._decay_loop(), name="heartbeat-decay-loop")
+        tasks = [h1_task, absorb_task, decay_task]
+        if self.seat_rollup is not None:
+            # The open bucket is not published on shutdown: it is partial.
+            tasks.append(asyncio.create_task(self._seat_rollup_loop(), name="heartbeat-seat-rollup"))
         try:
             async with self.bus.subscribe(settings.channel_grammar_event) as pubsub:
+                self._rollup_mark_subscribed()
                 async for msg in self.bus.iter_messages(pubsub):
                     if self._stop.is_set():
                         break
@@ -538,6 +726,11 @@ class HeartbeatService(BaseChassis):
                     except Exception as exc:  # noqa: BLE001 - one bad event must not kill the subscriber
                         logger.warning("heartbeat_handle_failed err=%s", exc)
         finally:
+            # Only a real subscription's end starts a new blind span; a failed subscribe attempt
+            # must not move the start of the span that is already running.
+            if self._rollup_subscribed:
+                self._rollup_subscribed = False
+                self._rollup_unsubscribed_at = time.time()
             # Drain whatever's already queued before cancelling the absorb
             # worker -- correct shutdown behavior (finish absorbing real
             # events already accepted rather than silently dropping them),
@@ -551,9 +744,9 @@ class HeartbeatService(BaseChassis):
                 logger.warning(
                     "heartbeat_absorb_queue_drain_timeout size=%d", self._absorb_queue.qsize()
                 )
-            for task in (h1_task, absorb_task, decay_task):
+            for task in tasks:
                 task.cancel()
-            for task in (h1_task, absorb_task, decay_task):
+            for task in tasks:
                 try:
                     await task
                 except asyncio.CancelledError:

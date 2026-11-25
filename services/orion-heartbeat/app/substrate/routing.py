@@ -28,7 +28,11 @@ up in the audit instead of silently gating.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
+import inspect
 import math
+import textwrap
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Mapping, Optional
 
@@ -377,3 +381,39 @@ def route_atom(*, source_service: str, atom: Mapping[str, Any]) -> SiteAssignmen
         source_service=source_service,
         semantic_role=role,
     )
+
+
+def _fn_shape(fn: Callable[..., Any]) -> str:
+    """The function's code as an AST dump: comments, docstring and line numbers do not count,
+    so a comment edit does not change the routing version, but any change in logic does."""
+    try:
+        node = ast.parse(textwrap.dedent(inspect.getsource(fn))).body[0]
+    except (OSError, TypeError, SyntaxError, IndexError):
+        return f"{getattr(fn, '__name__', fn)}:nosource"
+    body = getattr(node, "body", [])
+    if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        node.body = body[1:]
+    return ast.dump(node)
+
+
+def routing_version() -> str:
+    """Short hash of everything that decides a seat's level: the seat map, the operator map, the
+    per-(service, role) rule kinds and level functions, the constants, and the code of the level
+    functions and route_atom. Rule reason strings do not count. Stored on every seat rollup row
+    (issue #3886) so a reader never mixes sums made under different rules."""
+    parts = [
+        repr(SEAT_ORDER),
+        repr(sorted(ORGAN_SITE_MAP.items())),
+        repr(sorted(ATOM_TYPE_OPERATOR_KIND.items())),
+        repr((PRESENCE_LEVEL, ABS_Z_CALM_FLOOR, ABS_Z_SATURATION)),
+    ]
+    fns: dict[str, Callable[..., Any]] = {}
+    for key, rule in sorted(SERVICE_DEFAULT_RULES.items()) + sorted(ROLE_RULES.items()):
+        name = rule.level_fn.__name__ if rule.level_fn is not None else ""
+        parts.append(f"{key}|{rule.kind}|{name}")
+        if rule.level_fn is not None:
+            fns[name] = rule.level_fn
+    for fn in (_num, _clamp01, *[fns[k] for k in sorted(fns)], input_rule, route_atom):
+        parts.append(_fn_shape(fn))
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:12]

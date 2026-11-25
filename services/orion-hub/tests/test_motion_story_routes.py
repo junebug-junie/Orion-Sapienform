@@ -33,6 +33,8 @@ WALKWAY_MIGRATIONS = [REPO_ROOT / "services" / "orion-sql-db" / f"manual_migrati
     "walkway_camera_v1", "walkway_privacy_v2", "vision_confirm_asks_v1", "vision_ask_names_v1")]
 # vision_crop_observation.individual_id: the late individual links (2026-10-20).
 SPLIT_MIGRATION = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_vision_split_v1.sql"
+# Sentence parts and their answers (who-card Patch C).
+PARTS_MIGRATION = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_vision_motion_story_parts_v1.sql"
 needs_pg = pytest.mark.skipif(not ADMIN_DSN, reason="ORION_MEMORY_EPISODE_TEST_DATABASE_URL not set")
 
 
@@ -58,7 +60,7 @@ def test_routes_are_mounted_on_the_hub_app() -> None:
                      "/api/vision/motion-stories/{story_id}/strip/{name}",
                      "/api/vision/motion-stories/{story_id}/people/{individual_id}",
                      "/api/vision/motion-stories/{story_id}/persons/{person_key}/not-same",
-                     "/api/vision/known-names"}
+                     "/api/vision/known-names", "/api/vision/motion-stories/{story_id}/parts"}
 
 
 def test_cant_tell_never_counts_toward_the_gate() -> None:
@@ -152,7 +154,7 @@ def _run(body, published=None):
             for f in WALKWAY_MIGRATIONS:
                 await pool.execute(f.read_text())
             for st in (_statements(MIGRATION.read_text()) + _statements(MIGRATION_V2.read_text())
-                       + _statements(SPLIT_MIGRATION.read_text())):
+                       + _statements(SPLIT_MIGRATION.read_text()) + _statements(PARTS_MIGRATION.read_text())):
                 await pool.execute(st)   # CONCURRENTLY: one statement at a time
             app = FastAPI()
             app.include_router(msr.router)
@@ -1232,3 +1234,147 @@ def test_a_group_answer_on_pictures_the_card_did_not_show_is_refused() -> None:
         assert r.status_code == 200 and len(r.json()["ask_ids"]) == 2
 
     _run(body, [])
+
+
+# --- the sentence graded in parts (who-card redesign Patch C, 2026-11-24) -------------------------------
+
+
+async def _parts(pool, sid: str, parts, source: str = "composer") -> None:
+    await pool.execute("INSERT INTO vision_motion_story_parts (story_id, parts, rules_version, source) "
+                       "VALUES ($1, $2, 1, $3)", sid, list(parts), source)
+
+
+async def _queue(client) -> set:
+    r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false", "unchecked_only": "true"})
+    return {s["story_id"] for s in r.json()["stories"]}
+
+
+@needs_pg
+def test_parts_come_from_the_stored_record_never_from_the_prose() -> None:
+    """Orion's question 7: the parts a story has are what was recorded when it was composed. This
+    sentence SAYS "right to left on the walkway", but its record says only "people": that is all the
+    card offers. A story with no record yet offers no parts (409), not a guess from its words."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a")
+        sid = await _walk(pool, 1, ["ind-a"], strip=[0], thumbs=())
+        bare = await _walk(pool, 2, ["ind-a"], strip=[0], thumbs=())
+        await _parts(pool, sid, ["people"])
+        r = await client.get("/api/vision/motion-stories", params={"checkable_only": "false"})
+        got = {s["story_id"]: s["parts"] for s in r.json()["stories"]}
+        assert got[sid] == {"stated": ["people"], "recorded_by": "composer", "answers": {}}
+        assert got[bare] == {"stated": None, "answers": {}}
+        r = await client.post(f"/api/vision/motion-stories/{sid}/parts", json={"part": "direction", "verdict": "yes"})
+        assert (r.status_code, r.json()["detail"]) == (422, "part_not_in_sentence")
+        r = await client.post(f"/api/vision/motion-stories/{bare}/parts", json={"part": "people", "verdict": "yes"})
+        assert (r.status_code, r.json()["detail"]) == (409, "parts_not_recorded")
+        r = await client.post(f"/api/vision/motion-stories/{sid}/parts", json={"part": "length", "verdict": "yes"})
+        assert r.status_code == 422                            # length is not graded (Juniper's answer 3)
+
+    _run(body)
+
+
+@needs_pg
+def test_a_half_graded_story_stays_unchecked_and_the_tally_says_who_wrote_each_verdict() -> None:
+    """Orion's question 5: nothing is written until every stated part is answered, so a half-graded story
+    stays unchecked and moves no count; the tally counts old-button and part-made verdicts apart, and the
+    gate numbers are the same 50 / 80% / 0."""
+    async def body(pool, client):
+        await _individual(pool, "ind-a")
+        old = await _walk(pool, 1, ["ind-a"], strip=[0], thumbs=())
+        new = await _walk(pool, 2, ["ind-a"], strip=[0], thumbs=())
+        both = await _walk(pool, 3, ["ind-a"], strip=[0], thumbs=())
+        for sid in (old, new, both):
+            await _parts(pool, sid, ["people", "direction", "place"])
+        await client.post(f"/api/vision/motion-stories/{old}/verdict", json={"verdict": "right"})
+        r = await client.post(f"/api/vision/motion-stories/{new}/parts", json={"part": "people", "verdict": "yes"})
+        assert r.status_code == 200, r.text
+        assert r.json()["story_verdict"] is None and r.json()["story"]["verdict"] is None
+        t = r.json()["tally"]
+        assert (t["checked"], t["right"], t["half_graded"]) == (1, 1, 1)
+        assert t["by_source"] == {"button": {"right": 1}}
+        assert new in await _queue(client) and old not in await _queue(client)
+        await client.post(f"/api/vision/motion-stories/{new}/parts", json={"part": "direction", "verdict": "no"})
+        r = await client.post(f"/api/vision/motion-stories/{new}/parts", json={"part": "place", "verdict": "yes"})
+        assert r.json()["story_verdict"] == "wrong_motion" and r.json()["story"]["verdict"] == "wrong_motion"
+        assert new not in await _queue(client)
+        # People no AND direction no: the wrong name wins (it must never hide behind a wrong motion).
+        for part, v in (("place", "no"), ("direction", "no"), ("people", "no")):
+            r = await client.post(f"/api/vision/motion-stories/{both}/parts", json={"part": part, "verdict": v})
+        assert r.json()["story_verdict"] == "wrong_name"
+        t = r.json()["tally"]
+        assert t["by_source"] == {"button": {"right": 1}, "parts": {"wrong_motion": 1, "wrong_name": 1}}
+        assert (t["checked"], t["right"], t["wrong_name"], t["half_graded"]) == (3, 1, 1, 0)
+        assert t["gate"] == {"min_checked": 50, "min_right": 0.8, "max_wrong_names": 0, "passed": False}
+        # Re-grading changes the verdict in the open: the inherited count drops, the part count rises.
+        for part in ("people", "direction", "place"):
+            r = await client.post(f"/api/vision/motion-stories/{old}/parts", json={"part": part, "verdict": "yes"})
+        assert r.json()["tally"]["by_source"] == {"parts": {"right": 1, "wrong_motion": 1, "wrong_name": 1}}
+        # A can't-tell part with no "no": the story is can't tell, never right.
+        third = await _walk(pool, 4, ["ind-a"], strip=[0], thumbs=())
+        await _parts(pool, third, ["people"])
+        r = await client.post(f"/api/vision/motion-stories/{third}/parts", json={"part": "people", "verdict": "cant_tell"})
+        assert r.json()["story_verdict"] == "cant_tell" and r.json()["tally"]["cant_tell"] == 1
+
+    _run(body)
+
+
+@needs_pg
+def test_a_name_correction_is_a_wrong_name_at_gate_time_and_undoing_it_drops_the_auto_part() -> None:
+    """Orion's question 6: the gate's zero-wrong-names rule reads the correction ledger, not only the
+    story verdict: "right people? yes" after her correction does not hide it. Undoing the correction
+    (her later answer says the written name is right) removes the automatic "people = no"."""
+    async def body(pool, client):
+        await _individual(pool, "ind-maya", "Maya")
+        sid = await _walk(pool, 1, ["ind-maya"], name="Maya", strip=[0], thumbs=())
+        await _parts(pool, sid, ["people", "direction"])
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
+                              json={"action": "someone_else", "name": "Cora"})
+        assert r.status_code == 200 and r.json()["wrong_name_recorded"] is True
+        detail = json.loads(await pool.fetchval("SELECT answer_detail FROM orion_ask WHERE ask_id = $1",
+                                                r.json()["ask_id"]))
+        assert detail["corrects_story_name"] is True
+        auto = await pool.fetchrow("SELECT verdict, source, ask_id FROM vision_motion_story_part_verdict "
+                                   "WHERE story_id = $1 AND part = 'people'", sid)
+        assert tuple(auto) == ("no", "name_correction", r.json()["ask_id"])
+        # Her own answer to the people part replaces the automatic one; the story then derives "right"...
+        await client.post(f"/api/vision/motion-stories/{sid}/parts", json={"part": "direction", "verdict": "yes"})
+        r = await client.post(f"/api/vision/motion-stories/{sid}/parts", json={"part": "people", "verdict": "yes"})
+        assert r.json()["story_verdict"] == "right"
+        # ...but the gate still counts the wrong name: the correction is her latest answer about Maya here.
+        t = r.json()["tally"]
+        assert (t["wrong_name"], t["wrong_name_from_corrections"], t["right"]) == (1, 1, 0)
+        assert t["gate"]["passed"] is False
+
+    _run(body, [])
+
+
+@needs_pg
+def test_undoing_a_name_correction_removes_the_automatic_people_no() -> None:
+    async def body(pool, client):
+        await _individual(pool, "ind-maya", "Maya")
+        sid = await _walk(pool, 1, ["ind-maya"], name="Maya", strip=[0], thumbs=())
+        await _parts(pool, sid, ["people", "direction"])
+        await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "someone_else"})
+        assert await pool.fetchval("SELECT count(*) FROM vision_motion_story_part_verdict "
+                                   "WHERE source = 'name_correction'") == 1
+        assert (await client.get("/api/vision/motion-stories")).json()["tally"]["wrong_name_from_corrections"] == 1
+        # "Yes, that's Maya" on the same person: the correction is undone.
+        r = await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya",
+                              json={"action": "confirm", "name": "Maya"})
+        assert r.status_code == 200, r.text
+        assert await pool.fetchval("SELECT count(*) FROM vision_motion_story_part_verdict") == 0
+        assert r.json()["tally"]["wrong_name_from_corrections"] == 0
+        # Her own people answer is never removed by an undo.
+        await client.post(f"/api/vision/motion-stories/{sid}/parts", json={"part": "people", "verdict": "no"})
+        await client.post(f"/api/vision/motion-stories/{sid}/people/ind-maya", json={"action": "unsure"})
+        assert await pool.fetchval("SELECT source FROM vision_motion_story_part_verdict WHERE part='people'") == "juniper"
+
+    _run(body, [])
+
+
+def test_parts_migration_passes_the_post_pull_auto_apply_filter() -> None:
+    from orion.sql_migration_drift import auto_apply_refusals
+
+    sql = PARTS_MIGRATION.read_text()
+    assert auto_apply_refusals(sql) == []
+    assert sql.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-hub"

@@ -47,7 +47,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
-from orion.vision.motion_story_gate import gate_passed, tally_from_counts
+from orion.vision.motion_story_gate import gate_passed, gate_verdicts_sql, tally_from_counts
 from orion.vision.walkway_rollup import (
     CaptionRow,
     HourInputs,
@@ -392,11 +392,8 @@ class DbReader:
                     "SELECT max(rules_version) AS v FROM vision_motion_story WHERE published AND clean", {})[0]["v"]
                 if version is None:
                     return tally_from_counts({}, 0, None)
-                rows = self._rows(
-                    "SELECT CASE WHEN v.cant_tell THEN 'cant_tell' ELSE v.verdict END AS verdict, count(*) AS n, "
-                    "count(*) FILTER (WHERE s.name_label IS NOT NULL) AS named "
-                    "FROM vision_motion_story_verdict v JOIN vision_motion_story s ON s.story_id = v.story_id "
-                    "WHERE s.published AND s.clean AND s.rules_version = :v GROUP BY 1", {"v": version})
+                # The shared gate count: an active name correction counts as a wrong name (who-card Patch C).
+                rows = self._rows(gate_verdicts_sql(":v"), {"v": version})
         except Exception as exc:  # stories tables missing or unreadable: the gate is closed
             logger.info("vision_rollup_story_gate_unreadable error=%s", type(exc).__name__)
             return tally_from_counts({}, 0, None)

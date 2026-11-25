@@ -796,3 +796,91 @@ def test_crop_insert_with_and_without_the_frame_columns(pg) -> None:
     finally:
         _apply_edges_migration(pg)
         vcp._frame_columns.update(present=None, checked_at=0.0)
+
+
+# --- the parts each sentence states (who-card redesign Patch C, 2026-11-24) -----------------------------
+#
+# Orion's question 7: which parts a story has is recorded when its sentence is composed and stored with
+# it (vision_motion_story_parts), never parsed back from the prose; stories written before are derived
+# once from their stored facts; and a change to the wording or the parts must bump RULES_VERSION.
+
+# RULES_VERSION -> fingerprint of everything that decides what a sentence claims. Changing any of it
+# without bumping RULES_VERSION fails here: bump it (a new tally starts) and add the new fingerprint.
+SENTENCE_FINGERPRINTS = {1: "fafc5b7a73bd698996f9a3d6ecafb848eaa12bc5e3c59467ebf6eef8a205a8f5"}
+
+
+def _sentence_fingerprint() -> str:
+    import hashlib
+    import inspect
+    import json
+
+    src = "".join(inspect.getsource(f) for f in (vm.sentence_for, vm.sentence_parts, vm.companion_phrase,
+                                                   vm.direction_phrase, vm.zone_phrase))
+    src += json.dumps([sorted(vm.VERBS.items()), sorted(vm.NOUNS.items()), sorted(vm.PLURALS.items()),
+                       sorted(vm.STILL_CLASSES), vm.OUTSIDE, list(vm.SENTENCE_PARTS)])
+    return hashlib.sha256(src.encode()).hexdigest()
+
+
+def test_changing_what_a_sentence_claims_bumps_the_rules_version() -> None:
+    assert SENTENCE_FINGERPRINTS.get(vm.RULES_VERSION) == _sentence_fingerprint(), (
+        "The sentence wording or its parts changed: bump RULES_VERSION in app/vision_motion.py (Juniper's "
+        "part answers on the old wording must not vouch for the new) and add the new fingerprint here.")
+
+
+def test_sentence_parts_follow_what_the_sentence_says() -> None:
+    assert vm.sentence_parts(kind="person", sc="walking", lat=1, dep=0, zp=["walkway"]) == (
+        "people", "direction", "place")
+    assert vm.sentence_parts(kind="person", sc="standing", lat=1, dep=1, zp=["porch"]) == ("people", "place")
+    assert vm.sentence_parts(kind="person", sc="walking", lat=0, dep=0, zp=[]) == ("people",)
+    assert vm.sentence_parts(kind="person", sc=None, lat=1, dep=0, zp=[vm.OUTSIDE]) == ("people", "place")
+    assert set(vm.SENTENCE_PARTS) == {"people", "direction", "place"}       # Juniper: no length
+    from orion.vision.motion_story_gate import PARTS
+    assert tuple(PARTS) == vm.SENTENCE_PARTS
+
+
+def test_every_built_story_records_the_parts_its_sentence_states() -> None:
+    (s,) = [x for x in stories(walker()) if x.published]
+    assert s.parts == ("people", "direction", "place")
+    assert "left to right" in s.sentence and " on the " in s.sentence
+    assert "parts" not in vl.story_params(s)                    # its own table, never a story column
+
+
+def _parts_table(engine) -> None:
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE vision_motion_story_parts"))
+
+
+@needs_pg
+def test_the_cycle_stores_parts_when_it_writes_a_story_and_derives_older_ones_once(pg) -> None:
+    from sqlalchemy import text
+
+    _parts_table(pg)
+    _insert_crops(pg, walker("a"))
+    cfg = vl.LoopConfig(initial_lookback_sec=600, clean_since=T0 - timedelta(hours=1))
+    summary = vl.run_one_motion_cycle(postgres_uri=PG, cfg=cfg, zones_by_stream={"walkway": ZONES},
+                                      now=T0 + timedelta(seconds=200))
+    assert summary["published"] == 1
+    with pg.begin() as conn:
+        rows = conn.execute(text("SELECT p.parts, p.source, p.rules_version, s.sentence FROM vision_motion_story_parts p "
+                                 "JOIN vision_motion_story s USING (story_id)")).fetchall()
+        assert [(list(r[0]), r[1], r[2]) for r in rows] == [(["people", "direction", "place"], "composer", 1)]
+        # A story written before parts were recorded: derived once from its stored facts (not its words).
+        conn.execute(text(
+            "INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, detection_count, "
+            "speed_class, dir_lateral, dir_depth, zone_path, published, clean, sentence, crop_ids, evidence, "
+            "rules_version) VALUES ('old', 'walkway', 'person', :t, :t, 3, 'standing', 1, 0, ARRAY['porch'], true, "
+            "true, 'A person walked left to right on the porch (words never read).', ARRAY['x'], '[]'::jsonb, 1)"),
+            {"t": T0})
+        conn.execute(text(
+            "INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, detection_count, "
+            "speed_class, dir_lateral, dir_depth, zone_path, published, clean, sentence, crop_ids, evidence, "
+            "rules_version) VALUES ('older-rules', 'walkway', 'person', :t, :t, 3, 'walking', 1, 0, ARRAY[]::text[], "
+            "true, true, 'x', ARRAY['y'], '[]'::jsonb, 0)"), {"t": T0})
+    with pg.begin() as conn:
+        assert vl.backfill_story_parts(conn) == 1
+        assert vl.backfill_story_parts(conn) == 0              # once
+        got = conn.execute(text("SELECT parts, source FROM vision_motion_story_parts WHERE story_id='old'")).one()
+        assert (list(got[0]), got[1]) == (["people", "place"], "derived")   # standing: no direction said
+        assert conn.execute(text("SELECT count(*) FROM vision_motion_story_parts WHERE story_id='older-rules'")).scalar() == 0

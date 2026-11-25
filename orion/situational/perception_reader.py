@@ -30,7 +30,7 @@ from orion.situational.street_material import (
     split_caption_sql,
     street_caption_line,
 )
-from orion.vision.motion_story_gate import gate_passed, tally_from_counts
+from orion.vision.motion_story_gate import gate_passed, gate_verdicts_sql, tally_from_counts
 from orion.vision.walkway_rollup import LIVING_KINDS, count_range, local_midnight, split_note, window_peak
 
 logger = logging.getLogger(__name__)
@@ -625,11 +625,9 @@ STREET_STORY_CHARS = 160
 _STREET_STORY_VERSION_SQL = text(
     "SELECT max(rules_version) AS v FROM vision_motion_story WHERE published AND clean"
 )
-_STREET_STORY_VERDICTS_SQL = text(
-    "SELECT CASE WHEN v.cant_tell THEN 'cant_tell' ELSE v.verdict END AS verdict, count(*) AS n "
-    "FROM vision_motion_story_verdict v JOIN vision_motion_story s ON s.story_id = v.story_id "
-    "WHERE s.published AND s.clean AND s.rules_version = :v GROUP BY 1"
-)
+# The shared gate count (who-card Patch C): a story under an active name correction counts as a
+# wrong name whatever its verdict says (the person-correction ledger, read at gate time).
+_STREET_STORY_VERDICTS_SQL = text(gate_verdicts_sql(":v"))
 _STREET_STORIES_SQL = text(
     "SELECT story_id, started_at, sentence, together_story_ids FROM vision_motion_story "
     "WHERE stream_id = :stream_id AND published AND clean AND rules_version = :v "

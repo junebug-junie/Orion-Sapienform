@@ -1167,7 +1167,7 @@ def personality_choice(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEvent
     meta = _json(row.get("meta")) or {}
     if not isinstance(meta, Mapping):
         meta = {}
-    declined = bool(meta.get("declined_all"))
+    declined = meta.get("declined_all") is True
     n = meta.get("alternatives")
     excerpt = " ".join(str(row.get("excerpt") or "").split()) or "a choice"
     where = ""

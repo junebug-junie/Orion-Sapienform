@@ -610,6 +610,7 @@ def test_personality_choice_is_one_folded_prime_choice():
                                   "meta": json.dumps({**meta, "alternatives": 3, "declined_all": True})})
     assert waits.verdict == "declined_all"
     assert waits.label == 'Prime waits instead of acting (declined all 3 options); folded into my leaning "patience"'
+    assert S.personality_choice({**row, "meta": {**meta, "declined_all": "true"}}).verdict == "chose"  # only a real bool
     assert S.personality_choice({**row, "lane": "reading"}) is None  # only Prime's choices are this organ's
     assert S.personality_choice({**row, "created_at": None}) is None
 
@@ -620,4 +621,7 @@ def test_patch7a_labels_fall_back_to_plain_words_without_a_stored_label():
     assert now_label("personality_choice", "", "declined_all", {"declined_all": True}) == (
         "Prime declined every option [declined_all]")
     assert now_label("intention_close", "", None, {"concern_id": "d8db"}) == "intention d8db closed"
+    assert now_label("intention_close", "", None, {}) == "an intention closed"  # never "None"
+    assert now_label("personality_choice", "", "chose", {}) == "Prime made a choice [chose]"
+    assert now_label("personality_choice", "", "chose", {"alternatives": 4}) == "Prime chose one of 4 options"  # verdict word already in it
 

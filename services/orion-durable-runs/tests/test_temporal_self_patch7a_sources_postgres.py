@@ -90,6 +90,12 @@ async def seed(pool) -> None:
         # closed after the window: read by the next window, not this one
         ("act_take4", "prime", "make", "intention:dddddddddddddddd", LO + timedelta(hours=4), HI + timedelta(minutes=1),
          1.0, "carried", 0.01),
+        # expired: opened 3 d 2 h before the window (inside the 73 h take horizon), closed in it with no outcome
+        ("act_expired", "prime", "make", "intention:eeeeeeeeeeeeeeee", LO - timedelta(days=3, hours=2),
+         LO + timedelta(hours=6), None, None, None),
+        # closed before the window though opened inside the slack: the previous window's
+        ("act_before", "prime", "make", "intention:ffffffffffffffff", LO - timedelta(days=1),
+         LO - timedelta(minutes=1), 1.0, "carried", 0.01),
         # another Prime make act: not an intention
         ("act_other", "prime", "make", "concern:x", LO + timedelta(hours=1), LO + timedelta(hours=1, seconds=3),
          1.0, "made", 0.01),
@@ -133,7 +139,8 @@ def test_patch7a_reads_return_only_window_rows_through_their_adapters():
         await seed(pool)
         _, events = await SourceReader(pool, TZ).read(LO, HI, ticks=False, kinds=KINDS)
         by_id = {e.event_id: e for e in events}
-        assert set(by_id) == {"intention_close:act_take1", "intention_close:act_take2", "day_letter:2026-11-24",
+        assert set(by_id) == {"intention_close:act_take1", "intention_close:act_take2", "intention_close:act_expired",
+                              "day_letter:2026-11-24",
                               "personality_choice:ev-prime", "personality_choice:ev-prime-early"}
         carried = by_id["intention_close:act_take1"]
         assert carried.verdict == "produced" and carried.related_refs == [
@@ -142,6 +149,8 @@ def test_patch7a_reads_return_only_window_rows_through_their_adapters():
         assert carried.payload["run_outcome"] == "completed" and carried.payload["surprise_nats"] == 0.11
         refused = by_id["intention_close:act_take2"]
         assert refused.verdict == "not_produced" and not any(r.startswith("durable_run:") for r in refused.related_refs)
+        expired = by_id["intention_close:act_expired"]
+        assert expired.verdict == "not_produced" and expired.label == "intention not carried"
         letter = by_id["day_letter:2026-11-24"]
         assert letter.label == "wrote the letter for 2026-11-24, carrying 2 threads; first: first thread"
         assert letter.related_refs == ["durable_run:orion-day-2026-11-24-1", "orion_day_letter:2026-11-24#thread0",

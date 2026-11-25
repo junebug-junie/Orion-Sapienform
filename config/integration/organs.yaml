@@ -192,6 +192,9 @@ organs:
   personality:
     # personality_choice (integration patch 7a, #3429): one experience per Prime choice the personality loop
     # folded (personality_evidence lane prime), with the leaning it joined. No magnitude: salience NULL.
+    # Live, every Prime choice is a prime/infer act, so a fold repeats that act's prime_thought ~10-20 min later. Kept
+    # on purpose (spec A1: one per choice point; the fold, and the leaning it joined, is the new fact). Both carry the
+    # same act:<act_id> ref, so a reader can tell them apart from the same thought.
     temporal_sources: [personality_choice]
     reads_now: null
     exempt_read: "choices are made by Prime; the personality loop folds them and reads no other organ (design call, #3457)"

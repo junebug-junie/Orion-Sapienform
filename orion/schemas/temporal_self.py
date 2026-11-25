@@ -115,7 +115,7 @@ TemporalSourceKind = Literal[
     # Orion's now, patch 1 (docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md
     # A1): experiences only. No arc folds them (arcs._fold_event falls through); they are read back
     # through GET /temporal-self/now. The spec's other three (intention_close, day_letter,
-    # personality_choice) are patch 7 and are not named here until a reader exists.
+    # personality_choice) landed in patch 7a, below.
     # one finished reading: a closed hub.world_pulse_read act on the act ledger (grammar_acts)
     "reading_turn",
     # one scored exceedance forecast (orion-prediction prediction_exceedance), with its surprisal

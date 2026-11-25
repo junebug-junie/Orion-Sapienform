@@ -158,6 +158,6 @@ docker logs orion-athena-harness-governor 2>&1 | grep DOCKER_DOOR_CANARY
 
 ## PR link
 
-(this PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3982
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

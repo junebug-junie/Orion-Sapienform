@@ -446,6 +446,42 @@ def test_only_the_clean_synchronized_main_checkout_writes(world, spoil, fragment
     assert world.run([a], dry_run=True) == 0
 
 
+def _origin_moves_ahead(w, tmp_path):
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", "-b", "main", str(tmp_path / "origin.git"), str(other)], check=True,
+                   capture_output=True)
+    _git(other, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "merged")
+    _git(other, "push", "-q", "origin", "main")
+    _git(w.repo, "fetch", "-q", "origin", "main")
+
+
+def test_a_pinned_run_applies_after_origin_moved_ahead(world, tmp_path):
+    """#3880: a PR merged while the post-pull run waited; main still equals the run's pin, which is
+    behind origin/main. The applier writes (same rule as safe_docker_build.sh), unpinned it refuses."""
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    pin = subprocess.run(["git", "-C", str(world.repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    _origin_moves_ahead(world, tmp_path)
+    assert world.run([a]) == 2 and "is not origin/main" in world.lines[0]
+    world.env["ORION_DEPLOY_PINNED_HEAD"] = pin
+    assert world.run([a]) == 0, world.lines
+    assert len(world.called()) == 1
+
+
+def test_a_pin_main_has_left_or_origin_never_had_is_refused(world, tmp_path):
+    a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
+    pin = subprocess.run(["git", "-C", str(world.repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    _git(world.repo, "commit", "-q", "--allow-empty", "-m", "local only")  # main moved past the pin
+    world.env["ORION_DEPLOY_PINNED_HEAD"] = pin
+    assert world.run([a]) == 2 and "is not the run's pinned head" in world.lines[0]
+    local = subprocess.run(["git", "-C", str(world.repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                           check=True).stdout.strip()
+    world.env["ORION_DEPLOY_PINNED_HEAD"] = local  # equals main, but origin never had it
+    assert world.run([a]) == 2 and "not in origin/main's history" in world.lines[0]
+    assert world.called() == []
+
+
 def test_a_linked_worktree_never_writes(world, tmp_path):
     a = world.add("manual_migration_a.sql", HDR + "CREATE TABLE ta (id int);")
     wt = tmp_path / "wt"

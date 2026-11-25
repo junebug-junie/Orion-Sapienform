@@ -408,6 +408,7 @@ def test_a_merge_during_the_lock_wait_keeps_the_pin(tmp_path: Path) -> None:
     assert h.head() == started_on  # main itself did not move
     assert rebuilt == ["svc-a"]
     assert set(pins.read_text().split()) == {started_on}
+    assert h.state_lines()[0] == started_on
 
 
 def test_main_moving_during_the_lock_wait_is_rejudged(tmp_path: Path) -> None:
@@ -434,4 +435,5 @@ def test_main_moving_during_the_lock_wait_is_rejudged(tmp_path: Path) -> None:
         holder.kill()
         holder.wait()
     assert done.returncode == 0, done.stdout + done.stderr
+    assert "LOCK_WAIT" in h.log.read_text()
     assert set(pins.read_text().split()) == {h.head()}

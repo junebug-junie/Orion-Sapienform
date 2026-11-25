@@ -175,11 +175,13 @@ else
     fi
 fi
 
-# The pin is taken before the lock wait (above). If main itself moved while we
-# waited (a later pull), that later pull's own run deploys it: re-judge from now.
+# The pin is taken before the lock wait (above). Re-judge from now when main
+# itself moved while we waited (a later pull), or when there is no pin yet (the
+# fetch before the wait failed, or main was behind): a main that was stale before
+# the wait cannot become in sync without HEAD moving, so this never pins a stale main.
 if [ -n "${PIN_HEAD_BEFORE_WAIT:-}" ]; then
     _now_head=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
-    if [ "$_now_head" != "$PIN_HEAD_BEFORE_WAIT" ]; then
+    if [ "$_now_head" != "$PIN_HEAD_BEFORE_WAIT" ] || [ -z "$ORION_DEPLOY_PINNED_HEAD" ]; then
         ORION_DEPLOY_PINNED_HEAD="$(in_sync_head)"
     fi
 fi

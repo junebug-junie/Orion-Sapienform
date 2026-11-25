@@ -208,7 +208,11 @@ All runs use `/mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest -p no:cac
 
 ```text
 orion/prime                         branch: 395 passed   main: 384 passed  (+11 new: test_prime_attention_line.py)
-services/orion-mind/tests           branch: 461 passed   (+6 new: test_prime_attention_schema_loop.py)
+services/orion-mind/tests           branch (worktree): 461 passed (+6 new: test_prime_attention_schema_loop.py)
+                                    main (primary checkout): 450 passed, 5 failed -- env-sensitive, not this patch:
+                                    test_http_contract x3 / test_projection_starvation x2 read the primary checkout's
+                                    real .env (a live LLM: 'meaningful_synthesis' != 'fallback_contract_only'); the
+                                    same 5 pass in the worktree, which has no .env
 orion/substrate/tests/test_attention_self_model.py   passed (unchanged module)
 .github/workflows/orion-static-gates.yml, every run step, local: 42/42 OK
 scripts/check_integration_seam.py --require-base:

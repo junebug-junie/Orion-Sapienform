@@ -133,7 +133,7 @@ def pr_info(ref: str, *, cwd: str | Path = REPO_ROOT, timeout: float = 10.0, rep
     """``gh pr view`` for a PR number, URL or branch (``repo``: ``-R owner/name``). None when there is no
     PR (or no gh)."""
     args = (["gh", "pr", "view"] + ([ref] if ref else []) + (["-R", repo] if repo else [])
-            + ["--json", "number,url,title,files,headRefName"])
+            + ["--json", "number,url,title,files,headRefName"])   # files carry path, additions, deletions
     out = _run(args, cwd=cwd, timeout=timeout)
     if not out:
         return None
@@ -207,9 +207,11 @@ def diff_path(chunk: str) -> str:
     return m.group(2) if m else ""
 
 
-def pr_diff(number: int, *, cwd: str | Path = REPO_ROOT, timeout: float = 10.0) -> str | None:
+def pr_diff(number: int, *, cwd: str | Path = REPO_ROOT, timeout: float = 10.0,
+            files: list[dict[str, Any]] | None = None) -> str | None:
     """The PR's code diff for Orion: a file list, then the diff of every non-spec, non-noise file.
-    None when gh cannot give it or nothing is left."""
+    None when gh cannot give it or nothing is left. ``files`` (``gh pr view`` files): every code file
+    with its +/- counts goes at the top, so a diff Hub cuts (it keeps the head) still names every file."""
     out = _run(["gh", "pr", "diff", str(int(number)), "--color", "never"], cwd=cwd, timeout=timeout)
     if not out:
         return None
@@ -217,6 +219,11 @@ def pr_diff(number: int, *, cwd: str | Path = REPO_ROOT, timeout: float = 10.0) 
     if not diff.strip():
         return None
     head = f"gh pr diff {int(number)} (design spec files are attached separately)"
+    listed = [f for f in (files or []) if isinstance(f, dict) and f.get("path") and not SPEC_GLOB_RE.match(str(f["path"]))]
+    if listed:
+        head += "\nFiles changed:\n" + "\n".join(
+            f"  {f['path']} (+{int(f.get('additions') or 0)} -{int(f.get('deletions') or 0)})" for f in listed[:100])
+        head += f"\n  ... and {len(listed) - 100} more" if len(listed) > 100 else ""
     if skipped:
         head += f"; generated, lock or binary files not shown: {', '.join(skipped[:20])}"
         head += f" and {len(skipped) - 20} more" if len(skipped) > 20 else ""
@@ -237,7 +244,7 @@ def build_pr_message(pr: dict[str, Any], *, session_id: str, worktree: str = "",
             specs.append({"path": path, "text": text})
     number = int(pr["number"])
     code = code_paths(pr)
-    diff = pr_diff(number, cwd=worktree or repo, timeout=diff_timeout) if code else None
+    diff = pr_diff(number, cwd=worktree or repo, timeout=diff_timeout, files=list(pr.get("files") or [])) if code else None
     note = (note or "").strip()
     if not specs and not diff and not note and not code:
         return None
@@ -271,11 +278,14 @@ def send(message: dict[str, Any], *, timeout: float = 6.0) -> dict[str, Any]:
     return request("POST", "/api/session-threads/message", message, timeout=timeout)
 
 
-def reply(thread_id: str, body: str, *, session_id: str, timeout: float = 6.0) -> dict[str, Any]:
+def reply(thread_id: str, body: str, *, session_id: str, timeout: float = 6.0, waiver: bool = False) -> dict[str, Any]:
+    """A session turn on ``thread_id``. ``waiver``: the draft gate's record of a waived review (meta.waiver)."""
     ident = identity(session_id)
-    return send({"thread_id": thread_id, "session_id": session_id, "session_name": session_name(ident["worktree"]),
-                 "worktree": ident["worktree"], "branch": ident["branch"], "title": "reply", "body": body},
-                timeout=timeout)
+    message = {"thread_id": thread_id, "session_id": session_id, "session_name": session_name(ident["worktree"]),
+               "worktree": ident["worktree"], "branch": ident["branch"], "title": "reply", "body": body}
+    if waiver:
+        message["waiver"] = True
+    return send(message, timeout=timeout)
 
 
 def pending(*, session_id: str, branch: str, timeout: float = 2.0) -> list[dict[str, Any]]:

@@ -55,6 +55,9 @@ class MessageBody(BaseModel):
     spec: List[SpecFile] = Field(default_factory=list, max_length=20)
     # A reply on an existing thread (scripts/orion_session_thread.py reply --thread ID).
     thread_id: Optional[str] = Field(default=None, max_length=64)
+    # The draft gate's record that Orion's review was waived (ORION_ALLOW_PR_READY=1): stored as
+    # meta.waiver, labelled as a waiver in Orion's prompt, never counted as an answer.
+    waiver: bool = False
 
 
 class DeliveredBody(BaseModel):
@@ -104,7 +107,8 @@ async def post_message(request: Request, body: MessageBody) -> dict:
         result = await loop.intake(
             session_id=body.session_id, session_name=body.session_name, worktree=body.worktree, branch=body.branch,
             pr_number=body.pr_number, pr_url=body.pr_url, title=body.title, body=body.body,
-            spec=[s.model_dump() for s in body.spec], thread_id=(body.thread_id or "").strip() or None)
+            spec=[s.model_dump() for s in body.spec], thread_id=(body.thread_id or "").strip() or None,
+            waiver=body.waiver)
     except store.IntakeRefused as exc:
         raise HTTPException(status_code=429 if exc.too_many else 422, detail=str(exc)) from exc
     if result is None:

@@ -75,15 +75,26 @@ def test_no_row_a_failed_read_and_a_malformed_row_read_absent_with_why():
 
 
 def test_no_winner_and_field_only_rows():
-    no_winner = row({"broadcast_selected_open_loop_id": None, "broadcast_selected_description": None,
-                     "field_salient_target_ids": []})
-    assert "nothing won attention this tick" in attention_schema_line(no_winner, now=NOW)
+    # The live no-winner shape: still tagged bottom_up_salience, confidence the empty-coalition constant 0.3.
+    base = {"broadcast_selected_open_loop_id": None, "broadcast_selected_description": None, "confidence": 0.3}
+    line = attention_schema_line(row({**base, "field_salient_target_ids": []}), now=NOW)
+    assert line == ("read 5 min ago: nothing won attention this tick; no loop won, so nothing was chosen; "
+                    "confidence n/a (nothing won)")
+    line = attention_schema_line(row(base), now=NOW)
+    assert line.startswith("read 5 min ago: most salient in the field: node:prediction.room, world:reading")
+    assert "salience alone chose it" not in line and "0.30" not in line
     field_only = row({"attention_reason": "field_salience_only", "broadcast_selected_open_loop_id": None,
                       "broadcast_selected_description": None, "confidence": None})
     line = attention_schema_line(field_only, now=NOW)
     assert "most salient in the field: node:prediction.room, world:reading" in line
     assert "only field salience was read" in line and "confidence unknown" in line
     assert "no attention data" in attention_schema_line(row({"attention_reason": "no_data"}), now=NOW)
+
+
+def test_a_row_dated_in_the_future_reads_absent():
+    assert attention_schema_line(row(age_sec=-120), now=NOW) == (
+        "(absent: the latest schema reading is dated in the future)")
+    assert attention_schema_line(row(age_sec=-30), now=NOW).startswith("read 0 min ago")
 
 
 def test_an_iso_string_time_is_read():

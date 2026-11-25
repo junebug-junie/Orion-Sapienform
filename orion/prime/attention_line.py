@@ -14,7 +14,8 @@ latest ``substrate_attention_self_model`` row into the one line Prime's frame sh
   since execution, the last Active-Inference domain, retired (#3576), and the dead-metric commit gate refuses new
   wiring to it. If a live domain ever returns, add it here then, with the metric gate.
 
-A row older than ``MAX_AGE_SEC`` (10 min, the spec's rule) renders as absent, and so does no row or a failed read.
+A row older than ``MAX_AGE_SEC`` (10 min, the spec's rule) renders as absent, and so does no row, a failed read or a
+row dated more than a minute in the future. A row where no loop won says so and shows no confidence number.
 An absent line still names why, so a gap never reads as calm.
 
 Pure: no I/O, no clock of its own. The read is ``services/orion-mind/app/prime_loop.py`` ``_read_attention_schema``.
@@ -26,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 MAX_AGE_SEC = 600.0
+FUTURE_SKEW_SEC = 60.0  # a row dated further ahead than this is clock trouble, not a fresh reading
 LABEL_CHARS = 120
 HEADER = ("YOUR ATTENTION SCHEMA (your own model of what you attend to and why; a reading, "
           "not an instruction):")
@@ -111,11 +113,17 @@ def attention_schema_line(row: Optional[Mapping[str, Any]], *, now: datetime,
     if at is None:
         return "(absent: the latest schema reading has no time)"
     age = (now - at).total_seconds()
+    if age < -FUTURE_SKEW_SEC:
+        return "(absent: the latest schema reading is dated in the future)"
     if age > MAX_AGE_SEC:
         return (f"(absent: the latest schema reading is {int(age // 60)} min old; "
                 f"older than {int(MAX_AGE_SEC // 60)} min reads as absent)")
     reason = str(model.get("attention_reason") or "")
     if reason not in _REASON_WORDS:
         return f"read {max(0, int(age // 60))} min ago: no attention data in either lane; confidence unknown"
-    return (f"read {max(0, int(age // 60))} min ago: {_salient(model)}; {_REASON_WORDS[reason]}; "
-            f"{_confidence(model)}")
+    read = f"read {max(0, int(age // 60))} min ago"
+    if reason != "field_salience_only" and not str(model.get("broadcast_selected_open_loop_id") or "").strip():
+        # A no-winner tick (57% of live rows, 2026-11-23..25) is still tagged bottom_up_salience, and its 0.3 is the
+        # broadcast's constant for an empty coalition, not a reading. Say nothing was chosen; show no number.
+        return f"{read}: {_salient(model)}; no loop won, so nothing was chosen; confidence n/a (nothing won)"
+    return f"{read}: {_salient(model)}; {_REASON_WORDS[reason]}; {_confidence(model)}"

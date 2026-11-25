@@ -1,6 +1,7 @@
 # Why Orion's self-reflection turns into plumbing, and the one fix at the source
 
-Status: DESIGN, proposal mode. Nothing here is built. Juniper approved writing this design on 2026-11-25.
+Status: DESIGN, approved. Juniper approved writing this design on 2026-11-25 and answered the Missing questions
+the same day ("hit it with defaults", below). Patch 1 (the door) is implemented on branch `feat/self-question-door`.
 Date: 2026-11-25. Refs: #3435 (dressing eval), #3437 (finding register), #3503 (event wants), #3442 (inquiry
 manager), #3177 (outreach door policy), #3205 (consult before Juniper), #3736 / #3814 (reverie questions),
 #2986 (self-study into curiosity), #2156 (sense of self).
@@ -335,6 +336,19 @@ does not change (Non-goals; Missing question 4).
    philosophical; with only your questions, 83% (19 of 23), but Orion stops writing its own self-questions.
    This design keeps Orion's questions behind the door. Is that the trade you want?
 
+### Juniper's answers (2026-11-25: "hit it with defaults")
+
+1. **Route.** Orion's operational questions are ROUTED to the investigate line (a self focus request when
+   the one focus slot is free); otherwise they are kept and visible, not dug. Not dropped.
+2. **v2.** The door uses judge prompt v2 (`orion/curiosity/register.py`, pinned), plus the after-sitting
+   demote check against dressing.
+3. **A hand-labelled anchor.** The judge's anchor becomes a set of about 100 items that Juniper labels by
+   hand. Until she has labelled it, the frozen 10-20 fixture stays the agreement check. Patch 1 ships the
+   unlabelled set (balanced across lines and organs, local data only; kept outside the repo because it
+   holds Orion's own writing) and the script that scores the judge against it once labelled
+   (`scripts/analysis/judge_anchor_set.py build|score`). No outside model labels or pre-labels it.
+4. **Keep Orion's voice.** Orion's own self-questions stay in self-inquiry, behind the door.
+
 ## Proposed schema / API changes
 
 What this section says: the question pool gets a door. Nothing new is published on the bus. No new table.
@@ -386,6 +400,10 @@ separate column. Header: `-- ORION-MIGRATION-REQUIRED-BY: orion-hub`.
 
 The 88 existing Orion rows: a one-time read-then-write pass judges them and sets `door`. Snapshot first to
 `/tmp/self-question-door-backfill/` (88 rows, far under the backfill limits), progress log, report.
+As built: the pass is a script Juniper runs after deploy (`scripts/self_question_door_backfill.py --apply`).
+It snapshots the rows, sets `door = 'held'` on them (its only write), and the Hub door loop then judges them
+with the same judge path as every new question; the script monitors and writes the report. One judge path,
+not two.
 
 ### The shared measure across organs (read-only eval, no new table)
 

@@ -228,6 +228,8 @@ No new ledger, no new store, no new status words.
 
 ## Missing questions (for Juniper)
 
+ANSWERED 2026-11-25: Juniper took all three defaults (24 h horizon everywhere; 3 failed episodes, floor 0.2; say keeps juniper_replied only).
+
 1. Horizon for `output_used`: 24 h for every family, or per family (look 6 h, make 24 h)?
    Recommendation: 24 h everywhere first. Fit per family later from when cites actually land.
 2. Goal discount rule: 3 failed episodes in 24 h, floor 0.2. OK as the starting prior?

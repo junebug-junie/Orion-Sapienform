@@ -77,7 +77,9 @@ ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
 #                        a 0, or void (not graded) when Juniper wrote no chat turn
 #                        inside it. SHADOW until #3531: no grader, track record or
 #                        learner reads these acts (promise_acts.SHADOW_ACT_SIGNALS).
-ActSignal = Literal["juniper_replied", "artifact_produced", "juniper_answered", "promise_kept"]
+# output_used (act consequence bets, docs/superpowers/specs/2026-11-25-act-consequence-bets-design.md):
+# another organ used this act's output by the horizon; graded by orion/grammar/output_used.py.
+ActSignal = Literal["juniper_replied", "artifact_produced", "juniper_answered", "promise_kept", "output_used"]
 
 # Who supplied an act's outcome.
 ActOutcomeSource = Literal["producer", "resolver", "expired"]

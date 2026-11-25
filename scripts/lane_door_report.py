@@ -19,8 +19,13 @@ Then a verdict per lane. READY TO ENFORCE needs, for the last ``--streak-days`` 
 row, each day present in the log (a missing day is unknown, never zero) with:
   unleased = 0, invalid = 0, leased > 0, and with --dsn: every leased call's id found in gpu_pool_events
   and the number of distinct lease ids within --max-gap-pct (default 1 %) of the gateway's count. The gateway
-  writes one llm_call_usage row per lease, but a call sent again under the same lease reaches the door twice,
-  so raw leased calls overcount (#3919); they stay in the table for information. Calls an enforcing door
+  writes one llm_call_usage row per gateway request (bucketed by its own close time, ``recorded_at``). Two
+  benign mismatches remain (#3919): a Strata JSON retry re-sends under the same lease (the door logs it twice;
+  counting distinct lease ids nets it out, raw leased calls stay in the table for information), and a context
+  overflow gives the lease back and re-leases, up to 3 times per request (one gateway row, several distinct
+  leases, possibly on another lane; NOT netted out, so a lane with overflows can still read a small gap).
+  Counting distinct ids also hides a caller replaying a real lease id; the door guards against accidental
+  bypass, not an adversary. Calls an enforcing door
   already refused are listed, not counted against the lane (they never reached the engine).
 Without --dsn the verdict says the lease join was not run.
 
@@ -127,9 +132,11 @@ def join_db(report: dict[str, dict[str, Day]], dsn: str) -> None:
                                 (ids[i:i + 5000],))
                     found.update(r[0] for r in cur.fetchall())
                 d.unmatched_leases = len(set(ids) - found)
+                # recorded_at = the gateway's close time (indexed), closest to the door's end-of-call ts;
+                # created_at is the sql-writer's insert time and can slip a call ending near 00:00Z into D+1.
                 cur.execute("SELECT count(*) FROM llm_call_usage WHERE pool_role = %s "
-                            "AND created_at >= (%s::date)::timestamp AT TIME ZONE 'UTC' "
-                            "AND created_at < (%s::date + 1)::timestamp AT TIME ZONE 'UTC'", (lane, day, day))
+                            "AND recorded_at >= (%s::date)::timestamp AT TIME ZONE 'UTC' "
+                            "AND recorded_at < (%s::date + 1)::timestamp AT TIME ZONE 'UTC'", (lane, day, day))
                 d.gateway_calls = int(cur.fetchone()[0])
 
 

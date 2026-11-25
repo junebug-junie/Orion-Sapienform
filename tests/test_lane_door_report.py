@@ -127,7 +127,8 @@ def test_a_call_sent_again_under_one_lease_does_not_open_a_gap():
     assert ok, why
 
 
-def test_a_lease_the_gateway_never_recorded_still_opens_a_gap():
+def test_more_distinct_leases_than_gateway_rows_still_opens_a_gap():
+    """A made-up extra lease, or (benign, not netted out) a context-overflow re-lease: one gateway row, two leases."""
     lines = [_line(d, lease=f"L-{d}") for d in _days(15, 7)] + [_line("2026-11-17", lease="L-extra")]
     report, _ = rep.aggregate(lines)
     for d in report["chat"].values():

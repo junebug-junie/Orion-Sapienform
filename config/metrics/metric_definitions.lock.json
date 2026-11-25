@@ -2,9 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 748,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 1,
+    "change_count": 4,
+    "high_severity_count": 2,
     "changes": [
+      "high   routing_changed metric://bus_channel/orion-attention-runtime/orion:memory:goals:proposed (declared_consumers: \u2026n', 'orion-substrate-run\u2026 -> \u2026n', 'orion-sql-writer', 'orion-substrate-run\u2026)",
       "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:event (declared_consumers: \u2026an', 'orion-sql-writer', 'orion-thought', 'o\u2026 -> \u2026an', 'orion-thought', 'o\u2026)",
       "medium added metric://bus_channel/orion-gpu-pool/orion:stream:gpu_pool:event",
       "medium added metric://bus_channel/orion-sql-writer/orion:stream:gpu_pool:event:dlq"
@@ -457,6 +458,7 @@
       "declared_consumers": [
         "*",
         "orion-spark-concept-induction",
+        "orion-sql-writer",
         "orion-substrate-runtime",
         "orion-world-pulse"
       ],

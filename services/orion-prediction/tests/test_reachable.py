@@ -216,9 +216,73 @@ def test_calibration_bins_cover_every_row():
     assert sum(b["n"] for b in R.calibration(rows)) == len(rows)
 
 
+def _hub_leads(days: int, seed: int = 0):
+    """Juniper looks at the Hub on most days, late in an hour; a message to Orion follows some of those
+    looks in the next hour, never otherwise (cold hours exist: most looks have no message)."""
+    rng = np.random.default_rng(seed)
+    msgs, hub = [], []
+    for d in range(days):
+        for _ in range(int(rng.integers(1, 3))):
+            t = T0 + timedelta(days=d, hours=int(rng.integers(14, 23)), minutes=int(rng.integers(45, 55)))
+            hub += [t + timedelta(minutes=k) for k in range(int(rng.integers(2, 6)))]
+            if rng.random() < 0.4:
+                msgs.append(R.hour_floor(t) + timedelta(hours=1, minutes=int(rng.integers(0, 50))))
+    return sorted(msgs), sorted(set(hub))
+
+
+def test_hub_minutes_at_or_after_origin_change_nothing():
+    msgs, hub = _hub_leads(40)
+    origin = T0 + timedelta(days=41, hours=10)
+    a = R.forecast(msgs, origin, hub=hub, hub_since=T0)
+    b = R.forecast(msgs, origin, hub=hub + [origin, origin + timedelta(minutes=1), origin + timedelta(minutes=70)],
+                   hub_since=T0)
+    assert a == b and not a["features"]["hub_lt15m"]
+
+
+def test_hub_windows_are_half_open_on_minute_start():
+    origin = T0 + timedelta(days=41, hours=10)
+    f = lambda m: R.forecast([T0], origin, hub=[origin - timedelta(minutes=m)], hub_since=T0)["features"]  # noqa: E731
+    assert f(1)["hub_lt15m"] and f(15)["hub_lt15m"] and not f(15)["hub_15_60m"]
+    assert f(16)["hub_15_60m"] and not f(16)["hub_lt15m"]
+    assert f(60)["hub_15_60m"] and not f(61)["hub_15_60m"] and not f(61)["hub_lt15m"]
+    both = R.forecast([T0], origin, hub=[origin - timedelta(minutes=m) for m in (5, 30)], hub_since=T0)["features"]
+    assert both["hub_lt15m"] and not both["hub_15_60m"]        # 15-60 excludes the last 15
+
+
+def test_hours_before_the_hub_sensor_read_unknown_not_not_looking():
+    msgs, hub = _hub_leads(40)
+    origin = T0 + timedelta(days=41, hours=10)
+    since = T0 + timedelta(days=20)
+    early = [o for o in hub if o >= since]
+    before = R.forecast(msgs, since + timedelta(minutes=30), hub=early, hub_since=since)
+    assert before["features"]["hub_unknown"] and not before["features"]["hub_lt15m"]
+    after = R.forecast(msgs, origin, hub=early, hub_since=since)
+    assert not after["features"]["hub_unknown"]
+    # no sensor at all: every hour unknown, hub features off
+    none = R.forecast(msgs, origin, hub=hub, hub_since=None)
+    assert none["features"]["hub_unknown"] and not none["features"]["hub_15_60m"]
+    # the pre-sensor stretch is kept in training (not masked) but cannot teach "not looking": messages
+    # there with no hub rows must not drag the hub lift below what the sensor-era data alone shows
+    busy = early + [origin - timedelta(minutes=5)]
+    with_unknown = R.forecast(msgs, origin, hub=busy, hub_since=since)
+    as_not_looking = R.forecast(msgs, origin, hub=busy, hub_since=T0 - timedelta(days=200))
+    assert with_unknown["p"] > as_not_looking["p"]
+
+
+def test_hub_attention_raises_p_in_cold_hours():
+    msgs, hub = _hub_leads(60)
+    origin = T0 + timedelta(days=61, hours=20)        # 14:00 Denver: awake, cold (no message for a day)
+    quiet = R.forecast(msgs, origin, hub=hub, hub_since=T0)
+    looking = R.forecast(msgs, origin, hub=hub + [origin - timedelta(minutes=10)], hub_since=T0)
+    assert quiet["state_bucket"] >= R.COLD_BUCKET and looking["state_bucket"] == quiet["state_bucket"]
+    assert looking["features"]["hub_lt15m"] and not quiet["features"]["hub_lt15m"]
+    assert looking["p"] > 3 * quiet["p"]
+
+
 class _Store:
-    def __init__(self, msgs):
+    def __init__(self, msgs, hub=(), hub_since=None):
         self.msgs, self.rows = msgs, {}
+        self.hub, self.hub_since = list(hub), hub_since
 
     def juniper_messages(self, start, end):
         return [m for m in self.msgs if start <= m < end]
@@ -228,6 +292,12 @@ class _Store:
 
     def juniper_typing_coverage(self, start, end):
         return [(start, end)]
+
+    def juniper_hub_minutes(self, start, end):
+        return [m for m in self.hub if start <= m < end]
+
+    def juniper_hub_since(self):
+        return self.hub_since
 
     def reachable_exists(self, origin):
         return any(r["origin"] == origin for r in self.rows.values())
@@ -254,7 +324,9 @@ class _Store:
 
 def test_tick_issues_once_per_hour_only_early_and_settles_after_grace():
     o = datetime(2026, 11, 10, 3, 0, tzinfo=timezone.utc)
-    store = _Store([o - timedelta(minutes=30), o + timedelta(minutes=20)])
+    store = _Store([o - timedelta(minutes=30), o + timedelta(minutes=20)],
+                   hub=[o - timedelta(hours=3), o - timedelta(minutes=40), o + timedelta(minutes=1)],
+                   hub_since=o - timedelta(days=2))
     rc = R.Reachable(store)
     assert rc.tick(o + timedelta(minutes=2))["issued"] == "reachable:2026-11-10T03"
     assert rc.tick(o + timedelta(minutes=5))["issued"] is None              # already issued
@@ -266,6 +338,8 @@ def test_tick_issues_once_per_hour_only_early_and_settles_after_grace():
     assert row["happened"] is True and row["n_in_window"] == 1
     # the 03:00 forecast saw only the 02:30 message
     assert row["n_messages"] == 1 and row["state_bucket"] == 0
+    # ... and the 02:20 Hub minute (15-60 min back), not the 03:01 one
+    assert row["features"]["hub_15_60m"] and not row["features"]["hub_lt15m"] and not row["features"]["hub_unknown"]
     live = rc.live(o + timedelta(hours=1, minutes=12))
     assert live["current"]["served_p"] > 0 and live["grade"]["all"]["vs_baseline"] is None
 

@@ -337,8 +337,15 @@ jobs:
       - name: No direct circe LLM worker address outside the GPU pool (port gate)
         run: python scripts/check_circe_worker_refs.py
 
-      - name: Port gate, dead env key tool and circe firewall script tests
-        run: python -m pytest tests/test_check_circe_worker_refs.py tests/test_report_dead_env_keys.py tests/test_circe_llm_port_gate.py -q -p no:cacheprovider
+      # Leased lane callers (#3921): a committed eval/script that calls a model goes through
+      # orion/evals/leased_llm.py (operator hold + gateway), or is a reviewed gateway caller. Catches
+      # the bare `--url` shape the address gate above cannot see; the lane door refuses it once it
+      # enforces.
+      - name: Committed model callers are leased or gateway callers (lane door)
+        run: python scripts/check_leased_lane_callers.py
+
+      - name: Port gate, leased caller gate, dead env key tool and circe firewall script tests
+        run: python -m pytest tests/test_check_circe_worker_refs.py tests/test_check_leased_lane_callers.py tests/test_report_dead_env_keys.py tests/test_circe_llm_port_gate.py -q -p no:cacheprovider
 
       # Hub frontend unit tests. These are plain `node:test` files with no DOM,
       # no network and no service dependencies -- as static as anything else in

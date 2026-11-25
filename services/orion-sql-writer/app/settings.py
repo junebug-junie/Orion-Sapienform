@@ -48,6 +48,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "bus.traffic.rollup.v1": "BusTrafficRollupSQL",
     "heartbeat.seat.rollup.v1": "HeartbeatSeatRollupSQL",
+    "memory.field_goals.proposed.v1": "FieldGoalProvenanceLogSQL",
     "spark.telemetry": "SparkTelemetrySQL",
     "spark.state.snapshot.v1": "SparkTelemetrySQL",
     "cognition.trace": "CognitionTraceSQL",
@@ -273,6 +274,7 @@ class Settings(BaseSettings):
             "orion:causal_geometry:snapshot",
             "orion:bus:traffic:rollup",
             "orion:heartbeat:seat:rollup",
+            "orion:memory:goals:proposed",
             "orion:substrate:dev_economics_ledger",
             "orion:substrate:doc_semantic_drift","orion:substrate:juniper_affective_state",
             "orion:affectgpt:assessment",
@@ -1128,6 +1130,11 @@ class Settings(BaseSettings):
         # channel llm_call_usage stays empty while the gateway publishes).
         if "orion:llm:call:usage" not in channels:
             channels.append("orion:llm:call:usage")
+        # Same guarantee, same reason (memory.field_goals.proposed.v1 is a code-default route,
+        # #3924; without the channel field_goal_provenance_log stays empty while the attention
+        # runtime keeps proposing goals).
+        if "orion:memory:goals:proposed" not in channels:
+            channels.append("orion:memory:goals:proposed")
         # Same guarantee, same reason (claude.tool.call.v1 is a code-default route; without the channel
         # claude_tool_call_log stays empty while the broker publishes and Hub's audit reads nothing).
         if "orion:claude:tool:audit" not in channels:

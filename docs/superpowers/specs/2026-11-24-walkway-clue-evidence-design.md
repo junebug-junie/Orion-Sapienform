@@ -133,7 +133,20 @@ For comparison the stroller clue is ~30:1 against a regular per sighting. So
 clothes and hair are NOT wired into guesses. Re-run the eval as albums grow or the
 season changes; a phrase needs a clear per-person lead before it is considered.
 
-### Patch 2 (original plan): a clue list per person, read from pictures
+### Patch 2 (original plan, SUPERSEDED 2026-11-25): a clue list per person, read from pictures
+
+Kept as history; nothing below was built. Superseded by the measurements above:
+strollers and dogs are detector boxes (no reader needed); clothes and hair
+(`puffy_jacket`, `shorts`, `ponytail`, hair colour) are OFF the candidate list
+until a re-run shows a per-person lead. There is no `clues.yaml`, no
+`clue_read.py`, no `person_clue` table.
+
+Which bar decides (2026-11-25): a clue is usable for identity only when it gives
+a per-person lead over the street (weight of evidence for detector clues, AUC for
+phrase reads, per passage, with n and uncertainty stated). The "80% read
+accuracy" bar below is a read-quality check only: necessary, never sufficient,
+and it needs a labelled set that does not exist. A clue that reads well but
+gives no lead is dropped; a clue that gives a lead with poor reads is not trusted.
 
 - `orion/person_model/clues.yaml` (committed, generic): the clue kinds that
   can be read, each with its text prompts, the same way the age read works.
@@ -225,8 +238,12 @@ Patch 3 adds `clues` to the guess dict that the Hub reads.
 - Dangerous failure: two people who share clues (same dog, same jacket) get
   merged in guesses. Guard: the band cap, and her "not them" answers still
   block a name for that cluster.
-- Off switch: `clue_evidence_enabled` in `PersonModelConfig` (ships on, per
-  house rule); off = today's guesses exactly.
+- Off switch: `VISION_PERSON_CLUE_VETO_ENABLED` (`clue_veto_enabled` in
+  `PersonModelConfig`; ships on); off = today's guesses exactly. It also turns
+  itself off for a cycle when camera priors fail to load or the clue query
+  fails (fail open: guesses as without it); the cycle summary then carries
+  `person_clue_veto_error`, while a cycle that found nothing shows
+  `person_clue_vetoes: 0` with no error key. Both live only in logs today (#3904).
 - Patch 1 is additive facts; removing a fact on the People page undoes it.
 
 ## Acceptance checks

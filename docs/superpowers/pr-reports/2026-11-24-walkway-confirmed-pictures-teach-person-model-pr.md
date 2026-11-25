@@ -134,7 +134,17 @@ confirmed pictures (real Postgres); flag off -> rows revoked, old album
 
 ## Evals run
 
-EVAL_PLACEHOLDER
+```text
+evals/run_person_recognition_eval.py --live (read-only), two arms:
+with the new examples, and with --no-picture-same.
+NOT COMPLETED: both arms ran in parallel (~20 cores each) and were stopped
+after ~80 minutes without output. Before/after recognition is UNVERIFIED.
+Follow-up: #3867 (run one arm at a time overnight; pass = 0 wrong accepts,
+same or more correct accepts, fewer "no album").
+
+Live check after deploy (2026-11-24 23:43Z): 8 active picture_same rows in
+vision_person_exemplar; sql-writer tick log: person_picture_same_exemplars: 8.
+```
 
 ## Docker/build/smoke checks
 
@@ -146,7 +156,26 @@ main and a person-model tick logs person_picture_same_exemplars > 0.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A code-review subagent found nothing material. Minor findings:
+
+- Finding: a picture no longer in any group counted as a group of its own, so
+  one walk-past looked like several groups.
+  - Fix: `regroup_confirmed_orphans` puts it back in the group she confirmed
+    it in.
+  - Evidence: Postgres test asserts the orphan's group is the original group.
+- Finding: a confirmed picture that moved into a group with another name
+  would mix two people.
+  - Fix: skipped (`picture_same_moved`).
+  - Evidence: `test_a_picture_now_in_a_group_with_another_name_teaches_nothing`.
+- Finding: the database test did not cover dedupe with names in different
+  capitals.
+  - Fix: added a "same" on a "not them" picture and an "Is this X?" yes row.
+  - Evidence: 83 passed against real Postgres.
+- Finding: an older "different" answer overrides a newer "same" one.
+  - Not fixed here: it changes the "different is never a positive" rule.
+    Filed #3854 (needs Juniper).
+- Finding: the eval's version comparison does not cover an album change.
+  - Covered by the two-arm eval; not completed, see #3867.
 
 ## Restart required
 
@@ -168,10 +197,10 @@ scripts/safe_docker_build.sh orion-sql-writer up -d --build
 - Severity: low. Concern: `MODEL_VERSION` is unchanged (scoring did not
   change, only the album), so the eval's McNemar comparison against the
   previous stored row does not trigger. The before/after arms above stand in.
-- Issues opened / closed: none.
+- Issues opened: #3854 (newer "same" cannot override older "different"), #3867 (verify-live eval). Closed: none.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3847
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

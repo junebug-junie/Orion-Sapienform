@@ -317,8 +317,11 @@ Every hour: "will Juniper send Orion a message in the next hour?" (`app/reachabl
 `docs/superpowers/specs/2026-11-10-juniper-reachable-forecast-design.md`). Issued in the first 10 min
 of the hour from data before it, settled 10 min after the hour ends from `chat_message`
 (`role = 'user'`, outside `orion_*` sessions). Served model: ridge logistic on hours since her last
-message, her clock rules (asleep 03-08, weekend mornings, evenings, Mondays) and whether she typed to
-Claude Code recently (`juniper_affective_state_log`). Each of her rules starts as a prior on its
+message, her clock rules (asleep 03-08, weekend mornings, evenings, Mondays), whether she typed to
+Claude Code recently (`juniper_affective_state_log`) and whether she had the Hub open and in view in
+the 15 min / 15-60 min before the hour (`hub_attention_minute`, any client; her rule "looking at the Hub
+means reachable"). Hours before the Hub sensor's first minute read `hub_unknown` and still train the
+rest; a Hub that is down reads as "not looking" (she cannot look at it). Each of her rules starts as a prior on its
 coefficient and moves with the data; that model is always served. The state model alone and the base
 rate are graded beside it. Graded per local day against a recency-weighted
 base rate, for all hours and cold hours (no message in the prior 3 h), as a loss gap, its standard
@@ -327,6 +330,11 @@ error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
 
 Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than base overall
 (P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
+
+Hub attention (2026-11-25, #3578), replay over the 14 full days the sensor covered, Hub vs no Hub on the
+same origins: all hours -0.028 loss/day (se 0.021, P 0.90), cold hours -0.013 (se 0.011, P 0.87); last 7
+days -0.054 (P 0.97) and -0.027 (P 0.95). The first sign of cold-hour skill. Fitted: Hub in the last
+15 min +1.29 log-odds, 15-60 min +0.68.
 
 ## Act chain: what will Orion do in the next 15 minutes? (`GET /act-chain`, family B)
 

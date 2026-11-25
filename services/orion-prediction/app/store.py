@@ -861,6 +861,18 @@ class PostgresStore:
                          "WHERE window_until > %s AND window_since < %s ORDER BY window_since", (start, end))
         return [(r["a"], r["b"]) for r in rows]
 
+    def juniper_hub_minutes(self, start: datetime, end: datetime) -> list[datetime]:
+        """Start times of minutes Juniper had the Hub open and in view, in ``[start, end)``, any client.
+        hub_attention_minute is written by orion-hub (#3179); read-only here."""
+        rows = self._all("SELECT DISTINCT minute AS t FROM hub_attention_minute WHERE minute >= %s AND minute < %s "
+                         "ORDER BY minute", (start, end))
+        return [r["t"] for r in rows]
+
+    def juniper_hub_since(self) -> datetime | None:
+        """First minute the Hub attention sensor recorded (None = no rows yet)."""
+        rows = self._all("SELECT min(minute) AS t FROM hub_attention_minute")
+        return rows[0]["t"] if rows else None
+
     def reachable_exists(self, origin: datetime) -> bool:
         return bool(self._all("SELECT 1 FROM prediction_reachable_forecast WHERE origin = %s", (origin,)))
 

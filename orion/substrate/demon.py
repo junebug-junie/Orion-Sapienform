@@ -27,10 +27,13 @@ No alpha line anywhere (Juniper's rule): every readout is a point estimate with 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Mapping, Sequence
+import math
+from dataclasses import dataclass, field
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
+
+from orion.substrate import born_machine
 
 BUCKET_MINUTES = 5
 DEFAULT_WINDOW = 288  # 24 h of 5-minute buckets
@@ -159,12 +162,26 @@ class RollingErrors:
     cuts: Mapping[str, np.ndarray]
     block: int  # origins per refit (bootstrap block length)
     skipped: tuple[tuple[int, str], ...] = ()  # (refit end row, reason), never scored
+    # Set only by ``network_rolling_errors``: the VAR(1) forecast scored the same way as the
+    # network (log-loss, bits), and the lag of each column. Var1 errors leave both as None and
+    # their column j is lag j + 1.
+    linear: np.ndarray | None = None
+    lags: tuple[int, ...] | None = None
 
     @property
     def baseline(self) -> np.ndarray:
-        """Per-origin errors of the baseline that wins (lower total MSE) at each k."""
-        use_clock = self.clock.sum(axis=0) <= self.persistence.sum(axis=0)
-        return np.where(use_clock[None, :], self.clock, self.persistence)
+        """Per-origin errors of the baseline that wins (lower total loss) at each k.
+
+        Candidates: clock and persistence, plus linear when it is set (network errors).
+        """
+        return _best_of(self.clock, self.persistence, self.linear)
+
+
+def _best_of(*candidates: np.ndarray | None) -> np.ndarray:
+    """Per column, the candidate with the lowest total. Ties go to the earlier one."""
+    stack = np.stack([c for c in candidates if c is not None])  # (C, m, K)
+    pick = np.argmin(stack.sum(axis=1), axis=0)  # (K,)
+    return np.take_along_axis(stack, pick[None, None, :].repeat(stack.shape[1], axis=1), axis=0)[0]
 
 
 def rolling_errors(
@@ -278,7 +295,10 @@ def bootstrap_horizon(
 ) -> HorizonEstimate:
     """Horizon with a moving-block bootstrap over origins (block = one refit's origins)."""
     rng = rng if rng is not None else np.random.default_rng()
-    stacked = np.stack([errors.whole, errors.clock, errors.persistence])  # (3, m, K)
+    if errors.lags is not None and tuple(errors.lags) != tuple(range(1, len(errors.lags) + 1)):
+        raise ValueError(f"bootstrap_horizon: lags {errors.lags} are not 1..K, so columns are not steps")
+    base = [errors.clock, errors.persistence] + ([errors.linear] if errors.linear is not None else [])
+    stacked = np.stack([errors.whole, *base])  # (1 + baselines, m, K)
     m = stacked.shape[1]
     block = max(1, min(errors.block, m))
     n_blocks = int(np.ceil(m / block))
@@ -287,9 +307,8 @@ def bootstrap_horizon(
     for b in range(n_boot):
         starts = rng.integers(0, m - block + 1, size=n_blocks)
         idx = (starts[:, None] + np.arange(block)[None, :]).ravel()[:m]
-        w, c, p = stacked[:, idx]
-        use_clock = c.sum(axis=0) <= p.sum(axis=0)
-        s = skill_curve(w, np.where(use_clock[None, :], c, p))
+        w, *bs = stacked[:, idx]
+        s = skill_curve(w, _best_of(*bs))
         steps[b] = horizon_steps(s)
         positive += s > 0
     point = skill_curve(errors.whole, errors.baseline)
@@ -363,22 +382,26 @@ def cut_cost_vs_null(
     step: int = DEFAULT_STEP,
     horizon: int = DEFAULT_HORIZON,
     guard: int = DEFAULT_NULL_GUARD,
+    errors_fn: Callable[..., RollingErrors] | None = None,
 ) -> CutCost:
     """Observed cut cost over the whole series, and the same cost on ``n_null`` shifted copies.
 
     Each null copy keeps at least 75% of the rows (``DEFAULT_NULL_SPAN_FRACTION``), so the null
-    is scored on most of the same hours as the observed cost.
+    is scored on most of the same hours as the observed cost. ``errors_fn`` defaults to the
+    VAR(1) ``rolling_errors``; pass ``network_rolling_errors`` to score the trained network, which
+    then refits its chain on every shifted copy.
     """
     rng = rng if rng is not None else np.random.default_rng()
+    rolling_errors_fn = errors_fn if errors_fn is not None else rolling_errors
     kw = dict(window=window, step=step, horizon=horizon)
-    errs = rolling_errors(x, partitions={"cut": partition}, **kw)
+    errs = rolling_errors_fn(x, partitions={"cut": partition}, **kw)
     observed = cut_cost_curve(errs, "cut")
     base = errs.baseline
     h_whole = horizon_steps(skill_curve(errs.whole, base))
     h_cut = horizon_steps(skill_curve(errs.cuts["cut"], base))
     null = np.stack([
         cut_cost_curve(
-            rolling_errors(time_shift_null(x, guard=guard, rng=rng), partitions={"cut": partition}, **kw),
+            rolling_errors_fn(time_shift_null(x, guard=guard, rng=rng), partitions={"cut": partition}, **kw),
             "cut",
         )
         for _ in range(n_null)
@@ -444,3 +467,540 @@ def _check_partition(partition: Partition, n: int) -> None:
     flat = sorted(int(i) for part in partition for i in part)
     if flat != list(range(n)) or any(len(part) == 0 for part in partition):
         raise ValueError(f"partition {partition!r} does not cover organs 0..{n - 1} exactly once")
+
+
+# --- Network forecaster (spec 2026-11-24 rev 3: the demon's model is a trained tensor network) ---
+#
+# Each organ is cut into 3 levels (low, usual, high) at the training window's terciles. The input
+# is the same as for Var1: residuals against each organ's 14-day time-of-day profile
+# (``whole_body_structure.tod_residuals``, which only looks at earlier days). So "usual" means
+# "usual for this time of day", and the tercile edges never see a scored row.
+#
+# One Born machine per lag k is trained on (levels at t, levels at t+k), with each organ's now and
+# later sites next to each other: o1(t), o1(t+k), o2(t), o2(t+k), ... The forecast for organ i is
+# the exact conditional p(later_i | now_A), with A every organ (the whole model) or only the part
+# that holds i (a cut).
+#
+# Score: log-loss in bits, summed over organs. This is the log-loss twin of the summed squared
+# error Var1 uses. Scoring each organ's own forecast (not the joint "later" vector) keeps a cut
+# from being charged for noise the parts share at the same instant: no part's past can carry that,
+# with or without coupling.
+
+N_LEVELS = 3
+# Every forecast (network, clock, persistence, linear) is mixed with this much of the uniform
+# 3-level guess, so a level a model rules out costs a finite amount. Same floor for all models.
+PROB_FLOOR = 1e-3
+
+
+def tercile_edges(z: np.ndarray) -> np.ndarray:
+    """(n, 2) level edges: the 1/3 and 2/3 quantiles of each column. Training rows only."""
+    return np.quantile(np.asarray(z, dtype=float), [1 / 3, 2 / 3], axis=0).T
+
+
+def to_levels(z: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """0 = low, 1 = usual, 2 = high, per value."""
+    z = np.asarray(z, dtype=float)
+    return ((z > edges[:, 0]).astype(np.int64) + (z > edges[:, 1]).astype(np.int64))
+
+
+def _floored(p: np.ndarray) -> np.ndarray:
+    return (1.0 - PROB_FLOOR) * p + PROB_FLOOR / N_LEVELS
+
+
+def _bits(probs: np.ndarray, levels: np.ndarray) -> np.ndarray:
+    """-log2 p(observed level), summed over organs. probs (m, n, 3), levels (m, n) -> (m,)."""
+    p = np.take_along_axis(_floored(probs), levels[:, :, None], axis=2)[:, :, 0]
+    return -np.log2(p).sum(axis=1)
+
+
+_erf = np.vectorize(math.erf, otypes=[float])
+
+
+def _normal_cdf(z: np.ndarray) -> np.ndarray:
+    return 0.5 * (1.0 + _erf(np.asarray(z, dtype=float) / np.sqrt(2.0)))
+
+
+def gaussian_level_probs(mean: np.ndarray, var: np.ndarray, edges: np.ndarray) -> np.ndarray:
+    """A Gaussian forecast integrated into the 3 levels. mean (m, n), var (n,) -> (m, n, 3)."""
+    sd = np.sqrt(np.maximum(np.asarray(var, dtype=float), 1e-12))
+    c1 = _normal_cdf((edges[:, 0] - mean) / sd)
+    c2 = _normal_cdf((edges[:, 1] - mean) / sd)
+    return np.stack([c1, np.clip(c2 - c1, 0.0, None), 1.0 - c2], axis=2)
+
+
+def _pairs(levels: np.ndarray, k: int) -> np.ndarray:
+    """(T-k, 2n) training samples, sites interleaved: o1(t), o1(t+k), o2(t), o2(t+k), ..."""
+    now, later = levels[:-k], levels[k:]
+    out = np.empty((len(now), 2 * levels.shape[1]), dtype=np.int64)
+    out[:, 0::2] = now
+    out[:, 1::2] = later
+    return out
+
+
+@dataclass
+class NetworkForecaster:
+    """Trained chains (one per lag) plus the three baselines, all on one training window."""
+
+    lags: tuple[int, ...]
+    edges: np.ndarray  # (n, 2), on the standardized training window
+    machines: dict[int, born_machine.BornMachine]
+    selections: dict[int, born_machine.Selection]
+    # (n, 3) level shares over the training window. The input is already a time-of-day residual,
+    # so these are "the usual level for this time of day"; they are not split by hour.
+    clock: np.ndarray
+    stay: dict[int, np.ndarray]  # lag -> (n,) share of training pairs whose level did not change
+    # lag -> (mean, A_k, per-organ forecast variance): the direct lag-k linear model
+    # (``lag_k_model``) on the level-coded training window. Direct, like the network's one chain
+    # per lag, so "network beats linear" at k > 1 is not "direct beats iterated".
+    linear: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]
+    level_means: np.ndarray  # (n, 3): mean standardized value of each level, training window
+    _tables: dict = field(default_factory=dict, repr=False)  # (k, part, organ) -> table, on use
+
+    @property
+    def n(self) -> int:
+        return int(self.edges.shape[0])
+
+    def _table(self, k: int, part: tuple[int, ...], organ: int) -> np.ndarray:
+        key = (k, part, organ)
+        if key not in self._tables:
+            self._tables[key] = born_machine.conditional_table(
+                self.machines[k], [2 * a for a in part], [2 * organ + 1]
+            )
+        return self._tables[key]
+
+    def network_probs(self, now: np.ndarray, k: int, partition: Partition | None = None) -> np.ndarray:
+        """p(later_i | now_A) for every organ i, with A the part that holds i. (m, n) -> (m, n, 3).
+
+        Every factor comes from the one trained chain for lag k. A cut does not refit anything.
+        """
+        now = np.asarray(now, dtype=np.int64)
+        partition = partition if partition is not None else [list(range(self.n))]
+        _check_partition(partition, self.n)
+        out = np.empty((len(now), self.n, N_LEVELS))
+        for part in partition:
+            part_t = tuple(sorted(int(a) for a in part))
+            idx = tuple(now[:, a] for a in part_t)
+            for i in part_t:
+                out[:, i, :] = self._table(k, part_t, i)[idx]
+        return out
+
+    def clock_probs(self, m: int) -> np.ndarray:
+        return np.broadcast_to(self.clock[None], (m, self.n, N_LEVELS)).copy()
+
+    def persistence_probs(self, now: np.ndarray, k: int) -> np.ndarray:
+        """The level stays with the training stay share; otherwise either other level, equally."""
+        stay = self.stay[k]
+        out = np.broadcast_to(((1.0 - stay) / 2.0)[None, :, None], (len(now), self.n, N_LEVELS)).copy()
+        np.put_along_axis(out, np.asarray(now)[:, :, None], np.broadcast_to(stay[None, :, None], (len(now), self.n, 1)), axis=2)
+        return out
+
+    def linear_probs(self, now: np.ndarray, k: int) -> np.ndarray:
+        """The linear (Gaussian) lag-k forecast integrated into the same 3 levels, from the same
+        3-level "now" the network sees (each level coded as its training-window mean).
+
+        Same input for both models, so "network beats linear" measures the model class, not the
+        input resolution. (Fed the full-resolution values instead, the linear model beat the
+        network on true VAR(1) data by ~5% only because it knew more about "now".)
+        """
+        coded = np.take_along_axis(self.level_means[None], np.asarray(now)[:, :, None], axis=2)[:, :, 0]
+        mean, Ak, var = self.linear[k]
+        return gaussian_level_probs(mean + (coded - mean) @ Ak.T, var, self.edges)
+
+
+def fit_network(
+    z_train: np.ndarray,
+    *,
+    lags: Sequence[int],
+    bond_dims: Sequence[int] = born_machine.BOND_DIMS,
+    max_sweeps: int = born_machine.DEFAULT_SWEEPS,
+) -> NetworkForecaster:
+    """Fit the chains and baselines on a standardized (T, n) training window."""
+    z_train = np.asarray(z_train, dtype=float)
+    lags = tuple(int(k) for k in lags)
+    if min(lags) < 1 or z_train.shape[0] <= max(lags) + 4:
+        raise ValueError(f"fit_network: {z_train.shape[0]} rows is too few for lags {lags}")
+    edges = tercile_edges(z_train)
+    levels = to_levels(z_train, edges)
+    n = z_train.shape[1]
+    clock = np.stack([np.bincount(levels[:, i], minlength=N_LEVELS) for i in range(n)]).astype(float)
+    clock /= clock.sum(axis=1, keepdims=True)
+    level_means = np.zeros((n, N_LEVELS))
+    for i in range(n):
+        for lvl in range(N_LEVELS):
+            hit = levels[:, i] == lvl
+            # An empty level (tied edges) gets its nearest edge as its code.
+            level_means[i, lvl] = z_train[hit, i].mean() if hit.any() else edges[i, min(lvl, 1)]
+    coded = np.take_along_axis(level_means, levels.T, axis=1).T
+    machines, selections, stay, linear = {}, {}, {}, {}
+    for k in lags:
+        machines[k], selections[k] = born_machine.select_and_fit(
+            _pairs(levels, k), d=N_LEVELS, bond_dims=bond_dims, max_sweeps=max_sweeps, gap=k
+        )
+        stay[k] = (levels[:-k] == levels[k:]).mean(axis=0)
+        Ak, sigma_k, _ = lag_k_model(coded, k)
+        linear[k] = (coded.mean(axis=0), Ak, np.diag(sigma_k).copy())
+    return NetworkForecaster(
+        lags=lags, edges=edges, machines=machines, selections=selections, clock=clock, stay=stay,
+        linear=linear,
+        level_means=level_means,
+    )
+
+
+def _refit_skip_reason(x: np.ndarray, e: int, window: int, last_scored_row: int) -> str | None:
+    """Same refusals as ``rolling_errors``: a missing value, or a (near-)constant training column."""
+    if not np.all(np.isfinite(x[e - window:last_scored_row + 1])):
+        return "missing"
+    train = x[e - window:e]
+    mu, sd = train.mean(axis=0), train.std(axis=0)
+    flat = np.flatnonzero(sd < NEAR_CONSTANT_REL_STD * np.maximum(1.0, np.abs(mu)))
+    return f"constant:{int(flat[0])}" if flat.size else None
+
+
+def network_rolling_errors(
+    x: np.ndarray,
+    *,
+    partitions: Mapping[str, Partition] | None = None,
+    window: int = DEFAULT_WINDOW,
+    step: int = DEFAULT_STEP,
+    horizon: int = DEFAULT_HORIZON,
+    lags: Sequence[int] | None = None,
+    bond_dims: Sequence[int] = born_machine.BOND_DIMS,
+    max_sweeps: int = born_machine.DEFAULT_SWEEPS,
+) -> RollingErrors:
+    """The ``rolling_errors`` protocol, scored by log-loss in bits on 3-level organs.
+
+    ``whole`` is the trained network, ``clock`` and ``persistence`` are the level baselines,
+    ``linear`` is the VAR(1) forecast in the same 3 levels, and each cut is the product over
+    parts of p(later_A | now_A) from the same chain. Columns follow ``lags`` (default 1..horizon),
+    so ``skill_curve``, ``bootstrap_horizon``, ``cut_cost_curve`` and ``cut_cost_vs_null`` read it
+    unchanged. A refit trains one chain per lag; keep ``step`` large when lags are many.
+    """
+    x = np.asarray(x, dtype=float)
+    T, n = x.shape
+    lags = tuple(int(k) for k in (lags if lags is not None else range(1, horizon + 1)))
+    max_lag = max(lags)
+    partitions = dict(partitions or {})
+    for part in partitions.values():
+        _check_partition(part, n)
+    whole, clock, persist, linear = [], [], [], []
+    cuts: dict[str, list[np.ndarray]] = {name: [] for name in partitions}
+    skipped: list[tuple[int, str]] = []
+    for e in range(window, T - max_lag, step):
+        origins = np.arange(e, min(e + step, T - max_lag))
+        why = _refit_skip_reason(x, e, window, int(origins[-1]) + max_lag)
+        if why:
+            skipped.append((e, why))
+            continue
+        train = x[e - window:e]
+        mu, sd = train.mean(axis=0), train.std(axis=0)
+        z = (x - mu) / sd
+        fc = fit_network(z[e - window:e], lags=lags, bond_dims=bond_dims, max_sweeps=max_sweeps)
+        lv = to_levels(z, fc.edges)
+        now = lv[origins]
+        cols = {key: [] for key in ("whole", "clock", "persist", "linear", *(f"cut:{c}" for c in partitions))}
+        for k in lags:
+            target = lv[origins + k]
+            cols["whole"].append(_bits(fc.network_probs(now, k), target))
+            cols["clock"].append(_bits(fc.clock_probs(len(origins)), target))
+            cols["persist"].append(_bits(fc.persistence_probs(now, k), target))
+            cols["linear"].append(_bits(fc.linear_probs(now, k), target))
+            for name, part in partitions.items():
+                cols[f"cut:{name}"].append(_bits(fc.network_probs(now, k, part), target))
+        whole.append(np.stack(cols["whole"], axis=1))
+        clock.append(np.stack(cols["clock"], axis=1))
+        persist.append(np.stack(cols["persist"], axis=1))
+        linear.append(np.stack(cols["linear"], axis=1))
+        for name in partitions:
+            cuts[name].append(np.stack(cols[f"cut:{name}"], axis=1))
+    if not whole:
+        why = f"every refit was skipped: {skipped[:3]}" if skipped else "too short"
+        raise ValueError(f"network_rolling_errors: {T} rows, window={window}, lags={lags}: {why}")
+    return RollingErrors(
+        whole=np.concatenate(whole),
+        clock=np.concatenate(clock),
+        persistence=np.concatenate(persist),
+        cuts={name: np.concatenate(v) for name, v in cuts.items()},
+        block=step,
+        skipped=tuple(skipped),
+        linear=np.concatenate(linear),
+        lags=lags,
+    )
+
+
+@dataclass(frozen=True)
+class SkillSpread:
+    """Skill of one forecast against another per column, with a moving-block bootstrap."""
+
+    skill: np.ndarray  # 1 - loss_model / loss_base
+    bits: np.ndarray  # mean loss_base - loss_model per row (bits; > 0 = model better)
+    p10: np.ndarray  # skill, 10th percentile over resamples
+    p90: np.ndarray
+    p_real: np.ndarray  # share of resamples in which the model beats the base (skill > 0)
+
+
+def skill_spread(
+    model_err: np.ndarray,
+    base_err: np.ndarray,
+    *,
+    block: int,
+    n_boot: int = 1000,
+    rng: np.random.Generator | None = None,
+) -> SkillSpread:
+    """Paired moving-block bootstrap over origins: both forecasts resampled on the same rows."""
+    rng = rng if rng is not None else np.random.default_rng()
+    m = model_err.shape[0]
+    block = max(1, min(block, m))
+    n_blocks = int(np.ceil(m / block))
+    boots = np.empty((n_boot, model_err.shape[1]))
+    for b in range(n_boot):
+        starts = rng.integers(0, m - block + 1, size=n_blocks)
+        idx = (starts[:, None] + np.arange(block)[None, :]).ravel()[:m]
+        boots[b] = skill_curve(model_err[idx], base_err[idx])
+    return SkillSpread(
+        skill=skill_curve(model_err, base_err),
+        bits=(base_err - model_err).mean(axis=0),
+        p10=np.percentile(boots, 10, axis=0),
+        p90=np.percentile(boots, 90, axis=0),
+        p_real=(boots > 0).mean(axis=0),
+    )
+
+
+# --- Cut cost on the partition lattice ----------------------------------------------------------
+
+
+def set_partitions(n: int) -> list[list[list[int]]]:
+    """Every partition of 0..n-1 (Bell(n) of them), the whole system first."""
+    if n < 1:
+        return []
+    out: list[list[list[int]]] = []
+
+    def grow(i: int, parts: list[list[int]]) -> None:
+        if i == n:
+            out.append([list(p) for p in parts])
+            return
+        for p in parts:
+            p.append(i)
+            grow(i + 1, parts)
+            p.pop()
+        parts.append([i])
+        grow(i + 1, parts)
+        parts.pop()
+
+    grow(0, [])
+    return out
+
+
+def partition_normalization(partition: Partition, n_levels: int = N_LEVELS) -> float:
+    """Balduzzi-Tononi normalization: (parts - 1) times the smallest part's maximum entropy (bits).
+
+    The minimum-information partition minimizes cost / normalization, so a cut that only peels off
+    one organ is not favoured just because it is small. 0 for the whole system (never a cut).
+    """
+    sizes = [len(p) for p in partition]
+    return (len(sizes) - 1) * min(sizes) * float(np.log2(n_levels))
+
+
+def linear_cut_bits(z: np.ndarray, partition: Partition, k: int) -> float:
+    """Gaussian twin of the network cut cost, closed form from the lag-k model on ``z``.
+
+    Sum over organs of ½ log2(var(organ | its part's past) / var(organ | everyone's past)), from
+    ``lag_k_model``. Same per-organ score as the network, so the two minimum-information partitions
+    can be compared. This is not Oizumi's Φ_G (which needs an iterative fit); it is the
+    "each part forecasts from its own past" member of the family that Φ_G belongs to.
+    """
+    z = np.asarray(z, dtype=float)
+    _check_partition(partition, z.shape[1])
+    whole = np.diag(lag_k_model(z, k)[1])
+    total = 0.0
+    for part in partition:
+        idx = np.asarray(sorted(part), dtype=int)
+        cut = np.diag(lag_k_model(z[:, idx], k)[1])
+        total += 0.5 * float(np.sum(np.log2(np.maximum(cut, 1e-12) / np.maximum(whole[idx], 1e-12))))
+    return total
+
+
+@dataclass(frozen=True)
+class LatticeCosts:
+    """Held-out network cut cost and closed-form linear cut cost on every partition, per lag."""
+
+    partitions: tuple[tuple[tuple[int, ...], ...], ...]
+    lags: tuple[int, ...]
+    # (P, K): mean held-out log-loss(cut) - log-loss(whole), bits per row, on 3-level organs.
+    network_bits: np.ndarray
+    # (P, K): ``linear_cut_bits`` -- in-sample (training rows), full-resolution values, direct
+    # lag-k Gaussian. A different number from ``linear_whole_bits``; compare it only with its null.
+    linear_bits: np.ndarray
+    normalization: np.ndarray  # (P,)
+    whole_bits: np.ndarray  # (K,) network held-out log-loss per row (bits, summed over organs)
+    # (K,) held-out log-loss of the 3-level linear forecast (``linear_probs``), same rows as
+    # ``whole_bits``.
+    linear_whole_bits: np.ndarray
+    n_test: int
+
+    def mip(self, which: str, col: int) -> int:
+        """Index of the minimum-information partition (the whole system is never a candidate)."""
+        return mip_index(self.network_bits if which == "network" else self.linear_bits, self.normalization, col)[0]
+
+
+def mip_index(cost: np.ndarray, normalization: np.ndarray, col: int) -> tuple[int, float]:
+    """(index, score) of the minimum-information partition: least cost / normalization.
+
+    A negative cost (held-out noise: the cut forecast better than the whole) counts as 0, so noise
+    near zero does not pick the partition with the smallest normalization. Ties at 0 are broken by
+    the unclipped value. The whole system (normalization 0) is never a candidate.
+    """
+    ok = normalization > 0
+    safe = np.where(ok, normalization, 1.0)
+    raw = np.where(ok, cost[:, col] / safe, np.inf)
+    clipped = np.where(ok, np.maximum(cost[:, col], 0.0) / safe, np.inf)
+    i = int(np.lexsort((raw, clipped))[0])
+    return i, float(clipped[i])
+
+
+def held_out_lattice(
+    x: np.ndarray,
+    *,
+    lags: Sequence[int],
+    train_rows: int,
+    partitions: Sequence[Partition] | None = None,
+    bond_dims: Sequence[int] = born_machine.BOND_DIMS,
+    max_sweeps: int = born_machine.DEFAULT_SWEEPS,
+) -> tuple[LatticeCosts, NetworkForecaster]:
+    """Train once on rows [0, train_rows), score every partition on the rows after.
+
+    The network's cut forecasts all come from the one chain per lag; no partition is refit.
+    """
+    x = np.asarray(x, dtype=float)
+    T, n = x.shape
+    lags = tuple(int(k) for k in lags)
+    if not np.all(np.isfinite(x)):
+        raise ValueError("held_out_lattice: missing values")
+    if n > 8:
+        raise ValueError(f"held_out_lattice: {n} organs; the full search is for n <= 8")
+    parts = [list(map(list, p)) for p in (partitions if partitions is not None else set_partitions(n))]
+    train = x[:train_rows]
+    mu, sd = train.mean(axis=0), train.std(axis=0)
+    if np.any(sd <= 0):
+        raise ValueError("held_out_lattice: a constant training column")
+    z = (x - mu) / sd
+    fc = fit_network(z[:train_rows], lags=lags, bond_dims=bond_dims, max_sweeps=max_sweeps)
+    lv = to_levels(z, fc.edges)
+    origins = np.arange(train_rows, T - max(lags))
+    if len(origins) < 2:
+        raise ValueError("held_out_lattice: no held-out rows")
+    now = lv[origins]
+    net = np.zeros((len(parts), len(lags)))
+    lin = np.zeros((len(parts), len(lags)))
+    whole_bits = np.zeros(len(lags))
+    lin_whole = np.zeros(len(lags))
+    for c, k in enumerate(lags):
+        target = lv[origins + k]
+        w = _bits(fc.network_probs(now, k), target)
+        whole_bits[c] = w.mean()
+        lin_whole[c] = _bits(fc.linear_probs(now, k), target).mean()
+        for p, part in enumerate(parts):
+            net[p, c] = (_bits(fc.network_probs(now, k, part), target) - w).mean()
+            lin[p, c] = linear_cut_bits(z[:train_rows], part, k)
+    return LatticeCosts(
+        partitions=tuple(tuple(tuple(sorted(a)) for a in p) for p in parts),
+        lags=lags,
+        network_bits=net,
+        linear_bits=lin,
+        normalization=np.array([partition_normalization(p) for p in parts]),
+        whole_bits=whole_bits,
+        linear_whole_bits=lin_whole,
+        n_test=len(origins),
+    ), fc
+
+
+@dataclass(frozen=True)
+class LatticeVsNull:
+    observed: LatticeCosts
+    null_network_bits: np.ndarray  # (n_null, P, K), each draw a chain refit on shifted data
+    null_linear_bits: np.ndarray  # (n_null, P, K)
+    forecaster: NetworkForecaster  # the observed fit (its chains, for ``cut_information``)
+
+    def p_real_mip(self, which: str = "network") -> np.ndarray:
+        """(K,): share of null draws whose own minimum-information score is below the observed one.
+
+        Each null draw is minimised over partitions too, so both sides of the comparison are a
+        minimum (comparing the observed minimum with the null at that one fixed partition would be
+        biased in its favour).
+        """
+        obs = self.observed.network_bits if which == "network" else self.observed.linear_bits
+        null = self.null_network_bits if which == "network" else self.null_linear_bits
+        norm = self.observed.normalization
+        out = np.zeros(obs.shape[1])
+        for c in range(obs.shape[1]):
+            o = mip_index(obs, norm, c)[1]
+            out[c] = np.mean([mip_index(nb, norm, c)[1] < o for nb in null])
+        return out
+
+    @property
+    def p_real(self) -> np.ndarray:
+        """(P, K): share of null draws whose network cut cost is below the observed one."""
+        return (self.null_network_bits < self.observed.network_bits[None]).mean(axis=0)
+
+    @property
+    def p_real_linear(self) -> np.ndarray:
+        return (self.null_linear_bits < self.observed.linear_bits[None]).mean(axis=0)
+
+
+def lattice_vs_null(
+    x: np.ndarray,
+    *,
+    lags: Sequence[int],
+    train_fraction: float = 2 / 3,
+    partitions: Sequence[Partition] | None = None,
+    n_null: int = 20,
+    guard: int = DEFAULT_NULL_GUARD,
+    rng: np.random.Generator | None = None,
+    bond_dims: Sequence[int] = born_machine.BOND_DIMS,
+    max_sweeps: int = born_machine.DEFAULT_SWEEPS,
+) -> LatticeVsNull:
+    """``held_out_lattice`` on the data and on ``n_null`` time-shifted copies (``time_shift_null``).
+
+    Each copy refits its chains. A shifted copy keeps ``1 - DEFAULT_NULL_SPAN_FRACTION`` of the
+    rows, and held-out cut cost depends on how many rows the whole model trained on (it overfits
+    less with more). So the observed lattice is scored on the first rows of the same length, with
+    the same train/test split, and both sides carry the same fitting noise.
+    """
+    rng = rng if rng is not None else np.random.default_rng()
+    x = np.asarray(x, dtype=float)
+    length = len(x) - int(DEFAULT_NULL_SPAN_FRACTION * len(x))
+    train_rows = int(train_fraction * length)
+    kw = dict(lags=lags, partitions=partitions, bond_dims=bond_dims, max_sweeps=max_sweeps, train_rows=train_rows)
+    observed, fc = held_out_lattice(x[:length], **kw)
+    null_net, null_lin = [], []
+    for _ in range(n_null):
+        xs = time_shift_null(x, guard=guard, rng=rng)
+        res, _ = held_out_lattice(xs, **kw)
+        null_net.append(res.network_bits)
+        null_lin.append(res.linear_bits)
+    return LatticeVsNull(
+        observed=observed, null_network_bits=np.stack(null_net), null_linear_bits=np.stack(null_lin),
+        forecaster=fc,
+    )
+
+
+@dataclass(frozen=True)
+class CutInformation:
+    """Per contiguous cut of a trained chain: entanglement against classical mutual information."""
+
+    entanglement_bits: np.ndarray  # (L-1,)
+    mutual_information_bits: np.ndarray  # (L-1,)
+    mi_standard_error: np.ndarray  # 0 when exact
+
+    @property
+    def gap_bits(self) -> np.ndarray:
+        """Capacity the chain uses beyond the classical shared information (>= 0 up to MC error)."""
+        return self.entanglement_bits - self.mutual_information_bits
+
+
+def cut_information(bm: born_machine.BornMachine, *, rng: np.random.Generator | None = None) -> CutInformation:
+    mi, se = born_machine.mutual_information(bm, rng=rng)
+    return CutInformation(
+        entanglement_bits=born_machine.entanglement_entropies(bm),
+        mutual_information_bits=mi,
+        mi_standard_error=se,
+    )

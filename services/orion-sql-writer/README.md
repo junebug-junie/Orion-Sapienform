@@ -1410,6 +1410,39 @@ Apply that migration before deploying producers/writers that use this field.
 This patch does not run the migration or rewrite historical rows.
 
 
+## GPU pool events from a durable stream (2026-11-25, #3920)
+
+`gpu_pool_events` used to be written from the pub/sub channel `orion:gpu_pool:event`. Pub/sub keeps
+nothing, so every event the pool published while this service was down was lost. On 2026-11-24/25,
+68 of 69 lease grants missing from the table fell inside a sql-writer `up -d --build` window
+(17-24 s each, 14 rebuilds in 30 hours); the 69th fell inside a manual sql-writer redeploy at
+00:55:12Z that is not in `post_pull_rebuild.log` (agent board `deploy:orion-sql-writer`).
+
+Now the pool also XADDs each event to `orion:stream:gpu_pool:event`. `app/durable_stream_intake.py`
+reads it through consumer group `cg:sql-writer` (consumer `sql-writer-<NODE_NAME>`) and hands each
+envelope to the same `handle_envelope` path. The group remembers where it stopped, so the backlog is
+written when the service returns. Delivery is at-least-once; the table is insert-only on `event_id`,
+so a redelivery is a duplicate skip. The group is created at id `0`, so the first boot also writes
+what the pool streamed before it (mostly duplicates of the old pub/sub writes).
+
+A row write that fails goes to `bus_fallback_log` as before and is acked. Only when that fallback
+write also fails (Postgres unreachable) does the entry stay pending. It is retried every 30 s and
+dead-lettered to `orion:stream:gpu_pool:event:dlq` only once it is older than
+`SQL_WRITER_GPU_POOL_EVENT_STREAM_DLQ_AFTER_SEC` (12 h), so a Postgres outage is waited out. At boot
+the intake first takes back whatever the previous process read but never acked. Undecodable entries
+go straight to the DLQ.
+
+With `SQL_WRITER_GPU_POOL_EVENT_STREAM_ENABLED=true` (default) the pub/sub subscription to
+`orion:gpu_pool:event` is removed, even when a stale `SQL_WRITER_SUBSCRIBE_CHANNELS` still lists it:
+one source, no double intake. `false` is the rollback: pub/sub again, and restarts lose events again.
+The two flags are coupled: with this one on, sql-writer reads only the stream, so turning the
+pool's `GPU_POOL_EVENT_STREAM_ENABLED` off (or changing either `..._KEY`) writes nothing. Turn
+sql-writer's off first. Deploy the pool before (or with) sql-writer.
+
+Check it live: `redis-cli XINFO GROUPS orion:stream:gpu_pool:event` (`lag` near 0, `pending` 0), and
+after a sql-writer rebuild, no gap in `gpu_pool_events.generated_at` across the rebuild window.
+
+
 ## GPU state history for offline replay (2026-10-09)
 
 `orion:gpu_pool:state` / `gpu_pool.state.v1` now routes through the existing

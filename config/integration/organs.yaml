@@ -201,4 +201,6 @@ exempt_families:
 exempt_workflows:
   harness.echo_smoke: "a hand-triggered seam smoke for the durable-run -> harness step path; not an organ's output"
 exempt_channels:
+  "orion:stream:gpu_pool:event": "transport, not a new experience: a durable copy of the existing orion:gpu_pool:event payload (same GpuPoolEventV1 envelope) so sql-writer stops losing pool events while it restarts (#3920); the body organ's gpu_wait source still reads the same gpu_pool_events rows"
+  "orion:stream:gpu_pool:event:dlq": "dead letters of the stream above (undecodable, or unwritable after max attempts); no organ reads it, an operator inspects it"
   "orion:heartbeat:seat:rollup": "telemetry, not experience: a 5-minute per-seat sum of the heartbeat's routed grammar atoms, stored for the field-demon replay (scripts/demon_network_replay.py, issue #3886); no organ reads it at runtime and it carries no content of its own"

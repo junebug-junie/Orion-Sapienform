@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     state_publish_sec: float = Field(5.0, alias="GPU_POOL_STATE_PUBLISH_SEC")
     replay_payload_max_bytes: int = Field(262144, alias="GPU_POOL_REPLAY_PAYLOAD_MAX_BYTES")
     lease_retention_hours: float = Field(168.0, gt=0, alias="GPU_POOL_LEASE_RETENTION_HOURS")
+    # #3920: every pool event is also XADDed to a durable Redis Stream that sql-writer reads through
+    # a consumer group. Pub/sub alone lost every event published while sql-writer was restarting.
+    # MAXLEN (approximate) bounds Redis memory: 40000 is about one peak day (~33k events/day, ~1 KB each).
+    event_stream_enabled: bool = Field(True, alias="GPU_POOL_EVENT_STREAM_ENABLED")
+    event_stream_key: str = Field("orion:stream:gpu_pool:event", alias="GPU_POOL_EVENT_STREAM_KEY")
+    event_stream_maxlen: int = Field(40000, gt=0, alias="GPU_POOL_EVENT_STREAM_MAXLEN")
+    # One XADD runs inside the runtime lock: bound it so a hung Redis never stalls leasing.
+    event_stream_timeout_sec: float = Field(2.0, gt=0, alias="GPU_POOL_EVENT_STREAM_TIMEOUT_SEC")
 
     # Swap-load guards (read outside the runtime lock, every guard_refresh_sec).
     cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="GPU_POOL_CABINET_URL")

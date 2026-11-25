@@ -58,9 +58,10 @@ Grounding:
   the returned data in grammar_receipts. Do not rule misaligned for "no world contact", and do
   not call a tool-derived answer ungrounded when the tool result supports it.
 - A grammar_receipts entry that ends with "[receipt cut: ...]" shows only the start of a tool
-  result; the motor read all of it. A draft claim that the visible part does not show is not
-  unsupported for that reason: do not list it and do not rule misaligned for it. Only a claim
-  that the visible text contradicts is unsupported.
+  result; the motor read all of it. A draft claim on the same subject as that cut result (more
+  items of the same list, more of the same lookup) is not unsupported because the visible part
+  does not show it: do not list it and do not rule misaligned for it. A claim on a subject no
+  receipt was about, or one the visible text contradicts, is still unsupported.
 - Read substrate_appraisal.surprise_level, alignment_hints, strain_shift_refs and
   open_loop_pressure. When they conflict with the draft, prefer misaligned or uncertain; do
   not hand-wave.

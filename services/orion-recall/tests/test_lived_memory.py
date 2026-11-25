@@ -354,3 +354,23 @@ def test_index_pass_keeps_a_memory_past_its_end_date(monkeypatch):
                      "episode_ended": [_ended_row("trip", "Juniper is headed to Springfield.")]})
     asyncio.run(lm.run_index_pass(pool, _cfg().search, client=None, bus=None, source=None, batch=5))
     assert calls["upserted"] == ["episode_memory:m1", "episode_memory:trip"] and calls["deleted"] == []
+
+
+def test_a_row_that_ends_inside_the_snapshot_ttl_is_served_with_its_label(no_dense):
+    pool = FakePool({"episode_memory": [_row("trip", "Juniper is going to Springfield and is back by Friday.")]})
+    reader = LivedMemoryRecall(pool, _cfg(min_fit=0.5), reranker=_overlap_reranker, clock=lambda: NOW)
+    asyncio.run(reader.snapshot(force=True))  # still current when the snapshot was read
+    pool.live["episode_ended"] = [_ended_row("trip", "Juniper is going to Springfield and is back by Friday.")]
+    pool.live["episode_memory"] = []          # its end date passed before the re-check
+    out = asyncio.run(reader.recall("Springfield traveled trip back Friday"))
+    assert [s.rec.record_id for s in out.chosen] == ["trip"] and "ended" in out.lines[0]
+    assert "ended" in lm.items_for(out.chosen)[0]["tags"]
+
+
+def test_a_replay_before_the_end_date_shows_no_ended_label(no_dense):
+    ended = datetime(2026, 10, 1, 5, 59, tzinfo=timezone.utc)
+    pool = FakePool({"episode_ended": [_ended_row("trip", "Juniper is going to Springfield and is back by Friday.",
+                                                  at=ended - timedelta(days=3), ended=ended)]})
+    reader = LivedMemoryRecall(pool, _cfg(min_fit=0.5), reranker=_overlap_reranker, clock=lambda: NOW)
+    out = asyncio.run(reader.recall("Springfield traveled trip back Friday", as_of=ended - timedelta(days=1)))
+    assert [s.rec.record_id for s in out.chosen] == ["trip"] and "ended" not in out.lines[0]

@@ -120,6 +120,9 @@ def _summarize_content_blocks(
             err = " [error]" if block.get("is_error") else ""
             size = f" ({len(text)} chars)" if text else ""
             snippet = f": {text.strip()[:tool_result_cap]}" if text.strip() else ""
+            if len(text.strip()) > tool_result_cap:  # same mark as orion/harness/fcc_motor.TOOL_RESULT_CUT_MARK
+                snippet += (f" [receipt cut: first {tool_result_cap} of {len(text.strip())} chars shown; "
+                            "the motor read the full result]")
             parts.append(f"tool_result{err}{size}{snippet}")
     return " | ".join(p for p in parts if p)
 

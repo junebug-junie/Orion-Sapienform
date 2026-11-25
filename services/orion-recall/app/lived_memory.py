@@ -63,7 +63,7 @@ import re
 import time
 from collections import Counter
 from itertools import zip_longest
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -939,6 +939,8 @@ class LivedMemoryRecall:
 
             chosen = await self._recheck(chosen, out, timings, window=window)
             for s in chosen:
+                if as_of is not None and s.rec.ended_at is not None and s.rec.ended_at >= as_of:
+                    s.rec = replace(s.rec, ended_at=None)  # a replay: it had not ended yet then
                 s.dense, s.lexical = dense_best.get(s.rec.doc_id), lexical_best.get(s.rec.doc_id)
                 s.link = s.rec.doc_id in link_ids
             out.chosen = chosen
@@ -1005,9 +1007,10 @@ class LivedMemoryRecall:
                 as_of_ids.append(s.rec.record_id)
             else:
                 ids_by_kind.setdefault(s.rec.kind, []).append(s.rec.record_id)
-        still_live = {r.doc_id for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind),
-                                                                  ids_by_kind=ids_by_kind,
-                                                                  include_ended=True)} if ids_by_kind else set()
+        live_now = {r.doc_id: r for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind),
+                                                                   ids_by_kind=ids_by_kind,
+                                                                   include_ended=True)} if ids_by_kind else {}
+        still_live = set(live_now)
         reread: Dict[str, LivedRecord] = {}
         if as_of_ids and window is not None:
             try:
@@ -1028,6 +1031,9 @@ class LivedMemoryRecall:
             fresh = reread.get(s.rec.doc_id)
             if fresh is not None and fresh.invalid_at is None:
                 s.rec = fresh  # its retirement was undone since: it is true now, so no "true then" label
+            now_rec = live_now.get(s.rec.doc_id)
+            if now_rec is not None and now_rec.ended_at != s.rec.ended_at:
+                s.rec = now_rec  # its end date passed since the snapshot: label it
         return kept
 
     async def degraded_now(self, query: str, *, reason: str, timeout_sec: float = 0.3) -> LivedRecall:
@@ -1287,7 +1293,8 @@ def items_for(chosen: Sequence[Scored]) -> List[Dict[str, Any]]:
             "ts": s.rec.occurred_at.timestamp() if s.rec.occurred_at else None,
             "snippet": s.rec.text[:LINE_MAX_CHARS],
             "tags": [SOURCE, s.rec.kind, s.rec.purpose] + (["degraded"] if s.degraded else [])
-                    + (["link"] if s.link else []),
+                    + (["link"] if s.link else []) + (["ended"] if s.rec.ended_at is not None else [])
+                    + (["as_of"] if s.rec.invalid_at is not None else []),
         })
     return out
 

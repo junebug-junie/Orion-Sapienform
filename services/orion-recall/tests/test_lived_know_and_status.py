@@ -317,3 +317,38 @@ def test_know_endpoint_failure_is_a_status_not_an_empty_answer(monkeypatch):
     finally:
         worker.set_lived_memory(None)
     assert resp.status_code == 200 and resp.json()["status"] == "error" and resp.json()["hits"] == []
+
+
+def test_know_endpoint_gives_the_end_day_in_the_local_zone_like_chat(no_dense):
+    """An end date at 05:59Z on 10-01 is 09-30 in Juniper's zone: chat and dig know must agree."""
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from app import main, worker
+
+    row = _row("trip", "Juniper went to Springfield and was back by Friday.")
+    row["ended_at"] = datetime(2026, 10, 1, 5, 59, tzinfo=timezone.utc)
+
+    class EndedPool(Pool):
+        async def fetch(self, sql, *args):
+            if "AS ended_at" in sql:
+                return [row] if not args or "trip" in set(args[0]) else []
+            return await super().fetch(sql, *args)
+
+    reader = LivedMemoryRecall(EndedPool({}), _cfg(), reranker=overlap_reranker, clock=lambda: NOW)
+
+    async def persist(_d):
+        return None
+
+    import pytest as _pt
+    mp = _pt.MonkeyPatch()
+    mp.setattr(main, "persist_decision_async", persist)
+    worker.set_lived_memory(reader)
+    try:
+        resp = TestClient(main.app).post("/lived/know", json={"words": "Springfield Friday back"})
+    finally:
+        worker.set_lived_memory(None)
+        mp.undo()
+    (hit,) = [h for h in resp.json()["hits"] if h["id"] == "episode_memory:trip"]
+    assert hit["ended"] == "2026-09-30"

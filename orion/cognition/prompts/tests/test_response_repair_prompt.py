@@ -27,7 +27,9 @@ def test_judge_and_repair_never_treat_a_cut_receipt_as_absence() -> None:
     from orion.harness.fcc_motor import TOOL_RESULT_CUT_MARK
 
     mark = TOOL_RESULT_CUT_MARK.split(":", 1)[0]  # "[receipt cut"
-    reflect = (REPO / "orion/cognition/prompts/harness_finalize_reflect.j2").read_text(encoding="utf-8")
-    repair = (REPO / "orion/cognition/prompts/orion_response_repair.j2").read_text(encoding="utf-8")
-    assert f'"{mark}: ...]"' in reflect and "is not\n  unsupported for that reason" in reflect
-    assert f'"{mark}: ...]"' in repair and "Never write\nthat something is not in Orion's records" in repair
+    reflect = " ".join((REPO / "orion/cognition/prompts/harness_finalize_reflect.j2").read_text(encoding="utf-8").split())
+    repair = " ".join((REPO / "orion/cognition/prompts/orion_response_repair.j2").read_text(encoding="utf-8").split())
+    assert f'"{mark}: ...]"' in reflect and "same subject as that cut result" in reflect
+    # Scoped: a cut receipt excuses only claims on its own subject, never an unrelated invention.
+    assert "A claim on a subject no receipt was about, or one the visible text contradicts, is still unsupported" in reflect
+    assert f'"{mark}: ...]"' in repair and "Never write that something is not in Orion's records" in repair

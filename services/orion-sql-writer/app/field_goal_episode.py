@@ -89,9 +89,11 @@ def fold_goal(sess: Any, goal: Any, *, envelope_id: str | None, now: datetime | 
         # first_* stay the first goal SEEN (first_ts matches first_artifact_id and
         # first_payload_json); a late older goal widens nothing but last_ts = max.
         latest.repeat_count += 1
+        if ts >= _aware(latest.last_ts):
+            # last_salience belongs to the latest goal by ts; a late older goal leaves it.
+            latest.last_salience = goal.salience_score
         latest.last_ts = max(_aware(latest.last_ts), ts)
         latest.max_salience = max(latest.max_salience, goal.salience_score)
-        latest.last_salience = goal.salience_score
         latest.updated_at = now
         episode_id, outcome = latest.episode_id, "folded"
     else:

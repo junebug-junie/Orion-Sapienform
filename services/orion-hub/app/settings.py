@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     # The frames go to PERCEPT_STORE_BASE_URL / PERCEPT_STORE_TOKEN (below): this process reads them too.
     HUB_RETRO_WATCH_ENABLED: bool = Field(default=True, alias="HUB_RETRO_WATCH_ENABLED")
     HUB_RETRO_LOOK_SEC: float = Field(default=60.0, alias="HUB_RETRO_LOOK_SEC")
+    # A game with no calibrated floor looks on this timer while buttons are pressed (scripts/retro_watch.py); 0 = no look.
+    HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC: float = Field(default=60.0, alias="HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC")
     HUB_RETRO_WATCH_SEAT_WAIT_SEC: float = Field(default=30.0, alias="HUB_RETRO_WATCH_SEAT_WAIT_SEC")
     # Orion's lines while a person plays (scripts/retro_commentary.py; game company design, patch 3). Ships on; needs
     # the watch (a line needs a stored note) and the watch mode "on" (watch and talk). A funded (or pool-queued) hub.retro_commentary

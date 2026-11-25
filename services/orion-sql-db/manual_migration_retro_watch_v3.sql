@@ -1,0 +1,11 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-hub
+-- Game company, patch 2 follow-up (2026-11-25, docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md,
+-- section 3 "The look", timer looks): a game with no calibrated floor looks on a timer (one look a minute while
+-- buttons are pressed) instead of never. retro_sitting gains the count of those looks started.
+--
+-- Writer: Hub's Retro gateway (services/orion-hub/scripts/retro_watch.py, COUNTERS_SQL over orion/retro/watch.py
+-- COUNTERS). Reader: `dig watch` (orion/dig/watch.py) prints every counter.
+--
+-- Additive only. Safe to apply twice.
+-- Rollback: ALTER TABLE retro_sitting DROP COLUMN timer_looks; (after removing it from orion/retro/watch.py COUNTERS).
+ALTER TABLE retro_sitting ADD COLUMN IF NOT EXISTS timer_looks integer NOT NULL DEFAULT 0;

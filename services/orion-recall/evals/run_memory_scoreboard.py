@@ -193,7 +193,8 @@ def build_local_lived(pool: Any, bus: Any, args: argparse.Namespace) -> Any:
         min_query_tokens=int(_env_float("RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS", 5)),
         short_gate=args.lived_local_short_gate == "on",
         rewrite_timeout_sec=rewrite_timeout,
-        link_top_k=int(_env_float("RECALL_LIVED_MEMORY_LINK_TOP_K", 2)))
+        link_top_k=int(_env_float("RECALL_LIVED_MEMORY_LINK_TOP_K", 2)),
+        recent_slots=int(_env_float("RECALL_LIVED_MEMORY_RECENT_SLOTS", 3)))
     return LivedMemoryRecall(pool, cfg, rewriter=rewriter)
 
 

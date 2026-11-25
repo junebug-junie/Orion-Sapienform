@@ -309,6 +309,12 @@ class Settings(BaseSettings):
     RECALL_LIVED_MEMORY_LINK_TOP_K: int = Field(
         default=2, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_LINK_TOP_K")
     )
+    # Issue #3881: of the 24 pre-rerank pool places, how many go to the newest of the message's
+    # top meaning/exact-word matches, so older same-topic records cannot crowd out the newest
+    # relevant one before the rerank. Pool size and rerank cost are unchanged. 0 = off.
+    RECALL_LIVED_MEMORY_RECENT_SLOTS: int = Field(
+        default=3, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_RECENT_SLOTS")
+    )
     # The LLM gateway's bus intake (the rewrite's RPC). Must match orion-llm-gateway's own.
     CHANNEL_LLM_INTAKE: str = Field(
         default="orion:exec:request:LLMGatewayService", validation_alias=AliasChoices("CHANNEL_LLM_INTAKE")

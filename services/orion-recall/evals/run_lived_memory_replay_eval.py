@@ -210,7 +210,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             max_lines=64 if not dead and not args.budget_sec else MAX_LINES,
             timeout_sec=float(args.budget_sec or 30.0),
             min_query_tokens=args.min_query_tokens, rewrite_timeout_sec=args.rewrite_timeout,
-            link_top_k=args.link_top_k if use_links else 0)
+            link_top_k=args.link_top_k if use_links else 0, recent_slots=args.recent_slots)
         # Budget mode times the live rewrite in every variant: a cached answer would cost 0 ms.
         variant_rewriter = (_CachedRewriter(rewriter.inner) if args.budget_sec and rewriter is not None
                             else rewriter)
@@ -323,6 +323,8 @@ def main() -> int:
     ap.add_argument("--rewrite-route", default="quick_turn")
     ap.add_argument("--rewrite-timeout", type=float, default=1.8)
     ap.add_argument("--link-top-k", type=int, default=6)
+    ap.add_argument("--recent-slots", type=int, default=3,
+                    help="pre-rerank places kept for the newest matches (issue #3881; 0 = the old pool)")
     ap.add_argument("--budget-sec", type=float, default=0.0,
                     help="replay under this end-to-end budget (live: RECALL_LIVED_MEMORY_TIMEOUT_SEC) and "
                          "skip the referring bank; reports degraded_rate (issue #3662). Calls run one at a "

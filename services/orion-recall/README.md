@@ -1125,9 +1125,26 @@ Telemetry: `recall_telemetry.backend_counts.lived_memory_degraded = 1`, and
 `recall_telemetry.timings_ms.lived_memory_{rewrite,rerank,total}`; `recall_debug.lived_memory`
 carries `backend`, `degraded` reasons and the rewritten searches.
 
+### 17c) Recent slots in the rerank pool (issue #3881)
+
+The rerank pool holds at most 24 records: the message's top 16 meaning hits and top 10
+exact-word hits, in meaning-score order. Nothing in that step looks at time. After the
+July-September backfill (#3537) doubled `episode_memory`, older records on the same topic filled
+the pool, and the newest relevant record never reached the reranker (live trace 2026-11-25: 13 of
+25 candidates were backfilled, and the target was not among them).
+
+`RECALL_LIVED_MEMORY_RECENT_SLOTS` (default 3) keeps that many of the pool's places for the
+newest records (`occurred_at`) among the message's top 48 meaning and exact-word matches
+(`RECENT_DEPTH`). The pool keeps its size: the last places of the plain order give way, and those
+records do not come back as step-2 extras, so the reranker scores the same number of
+candidates. The plain order always keeps at least half the pool. Ranking after the rerank is
+unchanged (same `W_RECENCY`). The trace records `recent_slots: {slots, added}`, where `added`
+counts the records the slots brought in that the plain pool had left out. 0 = the old pool.
+
 Kill switches: `RECALL_LIVED_MEMORY_ENABLED=false` (all lived recall),
 `RECALL_LIVED_MEMORY_REWRITE_ENABLED=false` (rewrite only), `RECALL_LIVED_MEMORY_LINK_TOP_K=0`
-(links only). Restart orion-recall after changing any of them.
+(links only), `RECALL_LIVED_MEMORY_RECENT_SLOTS=0` (recent slots only). Restart orion-recall
+after changing any of them.
 
 ### Memory scoreboard (issue #3536)
 

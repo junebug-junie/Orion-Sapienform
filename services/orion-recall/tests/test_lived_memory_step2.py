@@ -358,7 +358,8 @@ def test_a_link_neighbour_is_never_served_without_a_rerank(no_dense, monkeypatch
     sibling = _row("s2", "Castle adventure game notes from the final week.")
     pool = Pool({"episode_memory": [seed, other, sibling]},
                 edges=[("s1", "project:castle-game"), ("s2", "project:castle-game")])
-    reader = LivedMemoryRecall(pool, _cfg(), reranker=down, clock=lambda: NOW)
+    # recent_slots=0: with a 2-place pool a recent slot would pull s2 in as a search hit.
+    reader = LivedMemoryRecall(pool, _cfg(recent_slots=0), reranker=down, clock=lambda: NOW)
     out = asyncio.run(reader.recall("final dungeon reached in the castle adventure game today"))
     assert out.debug["candidates"]["links"] == 1  # s2 came in as a link, not as a search hit
     assert out.backend == "degraded" and "s2" not in [s.rec.record_id for s in out.chosen]
@@ -554,8 +555,9 @@ def test_partial_rerank_with_nothing_above_the_bar_degrades_and_says_so(no_dense
     def rr(query, docs):
         return _first_chunk_fits_nothing_then_stalls(query, docs, seen)
 
+    # recent_slots=0: every record has the same date, and this test pins the plain chunk order.
     reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + TWO_WORD_FILLER}),
-                               _cfg(timeout_sec=0.8, link_top_k=0), reranker=rr, clock=lambda: NOW)
+                               _cfg(timeout_sec=0.8, link_top_k=0, recent_slots=0), reranker=rr, clock=lambda: NOW)
     out = asyncio.run(reader.recall(CASTLE_TURN))
     assert out.backend == "degraded" and out.debug["degraded"] == ["rerank_partial"]
     scored = {r.doc_id for r, _l in out.reranked}
@@ -579,7 +581,8 @@ def test_partial_rerank_that_finds_nothing_at_all_leaves_the_not_proof_note(no_d
 
 
 def test_know_shows_what_a_partial_rerank_left_unscored_as_weak(no_dense):
-    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}), _cfg(link_top_k=0),
+    # recent_slots=0: every record has the same date, and this test pins the plain chunk order.
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME] + FILLER}), _cfg(link_top_k=0, recent_slots=0),
                                reranker=_chunked(1), clock=lambda: NOW)
     got = asyncio.run(reader.know("castle adventure game dungeon", max_hits=20, timeout_sec=0.8))
     assert [s.rec.record_id for s in got.strong] == ["g1"]
@@ -635,3 +638,86 @@ def test_http_rerank_goes_in_chunks_each_with_a_live_timeout(no_dense):
     assert [s for s, _t in seen] == sizes and len(seen) > 1
     assert all(0 < t <= 2.0 for _s, t in seen)
     assert out.backend == "hybrid" and len(out.reranked) == n
+
+
+# ---------------------------------------------------------------- recent slots (issue #3881)
+
+def _recs(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    from orion.memory.lived_memory import record_from_row
+
+    out = {}
+    for r in rows:
+        rec = record_from_row("episode_memory", r)
+        out[rec.doc_id] = rec
+    return out
+
+
+def test_recent_pool_keeps_the_size_and_gives_the_tail_to_the_newest():
+    rows = [_row(f"old{i}", "x", at=NOW - timedelta(days=90 + i)) for i in range(6)]
+    rows.append(_row("new", "x", at=NOW - timedelta(days=5)))
+    by = _recs(rows)
+    ranked = [f"episode_memory:old{i}" for i in range(6)]
+    matches = ranked + ["episode_memory:new"]
+    out = lm.recent_pool(ranked, matches, by, slots=1, size=4)
+    assert len(out) == 4  # same size as the plain pool
+    assert out[:3] == ranked[:3] and out[3] == "episode_memory:new"
+
+
+def test_recent_pool_off_or_tiny_is_the_plain_pool():
+    rows = [_row(f"r{i}", "x", at=NOW - timedelta(days=i)) for i in range(3)]
+    by = _recs(rows)
+    ranked = ["episode_memory:r2", "episode_memory:r1", "episode_memory:r0"]
+    assert lm.recent_pool(ranked, ranked, by, slots=0, size=24) == ranked
+    # The plain order keeps at least half the pool; never larger than ranked.
+    out = lm.recent_pool(ranked, ranked, by, slots=5, size=24)
+    assert out[0] == "episode_memory:r2" and sorted(out) == sorted(ranked)
+    assert lm.recent_pool([], ranked, by, slots=3, size=24) == []
+
+
+def test_recent_pool_ignores_unknown_ids_and_fills_from_the_plain_order():
+    rows = [_row(f"r{i}", "x", at=NOW - timedelta(days=10 * i)) for i in range(5)]
+    by = _recs(rows)
+    ranked = [f"episode_memory:r{i}" for i in (4, 3, 2, 1)]
+    out = lm.recent_pool(ranked, ["episode_memory:gone"], by, slots=2, size=4)
+    assert len(out) == 4 and "episode_memory:gone" not in out
+
+
+def _crowded(monkeypatch, n_old: int):
+    """n_old older records out-score the newest one in meaning search; the newest sits last."""
+    old = [_row(f"old{i}", f"Record number {i} about something.", at=NOW - timedelta(days=90 + i))
+           for i in range(n_old)]
+    new = _row("new", "Record about something newer.", at=NOW - timedelta(days=3))
+
+    async def embed(*_a, **_k):
+        return [0.0], "m"
+
+    async def nearest(_client, _cfg, _vec, k):
+        hits = [(f"episode_memory:old{i}", 0.9 - 0.01 * i) for i in range(n_old)]
+        hits.append(("episode_memory:new", 0.5))
+        return hits[:k]
+
+    monkeypatch.setattr(lm, "embed", embed)
+    monkeypatch.setattr(lm, "nearest", nearest)
+    return Pool({"episode_memory": old + [new]})
+
+
+def test_an_older_cluster_no_longer_pushes_the_newest_match_out_of_the_rerank(monkeypatch):
+    pool = _crowded(monkeypatch, 30)
+    query = "alpha bravo charlie delta echo foxtrot"  # no exact-word hits: meaning search only
+    plain = LivedMemoryRecall(pool, _cfg(link_top_k=0, recent_slots=0), reranker=overlap_reranker,
+                              clock=lambda: NOW)
+    out = asyncio.run(plain.recall(query))
+    assert "episode_memory:new" not in out.debug["candidate_ids"]
+    assert len(out.debug["candidate_ids"]) == lm.DENSE_TOP_K
+
+    slotted = LivedMemoryRecall(pool, _cfg(link_top_k=0, recent_slots=3), reranker=overlap_reranker,
+                                clock=lambda: NOW)
+    out = asyncio.run(slotted.recall(query))
+    assert "episode_memory:new" in out.debug["candidate_ids"]
+    assert len(out.debug["candidate_ids"]) == lm.DENSE_TOP_K  # pool size (rerank cost) unchanged
+    assert out.debug["recent_slots"] == {"slots": 3, "added": 1}  # only "new" was outside the plain pool
+
+
+def test_recent_slots_ship_on_by_default():
+    assert LivedMemoryConfig(search=SearchConfig("a", "b", "c", 0.0), rerank_url="r", min_fit=0.0,
+                             max_lines=4, timeout_sec=1.0).recent_slots == lm.DEFAULT_RECENT_SLOTS > 0

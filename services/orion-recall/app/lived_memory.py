@@ -63,7 +63,7 @@ from collections import Counter
 from itertools import zip_longest
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import httpx
 
@@ -109,6 +109,11 @@ DEGRADED_EMPTY_NOTE_RERANKED = ("[Lived memory search ran degraded this turn (me
 DENSE_TOP_K = 16
 LEXICAL_TOP_K = 10
 MAX_RERANK = 24
+# Issue #3881: how deep the message's own meaning and exact-word searches look for the newest
+# matches that fill the recent slots (``LivedMemoryConfig.recent_slots``). Only these few picks
+# join the pool; the pool size and the rerank cost do not change.
+RECENT_DEPTH = 48
+DEFAULT_RECENT_SLOTS = 3
 # Step 2 ceiling: step 1's pool (at most MAX_RERANK) plus rewrite hits and link neighbours.
 MAX_RERANK_STEP2 = 32
 # ``orion.dig know``: at most this many hits (strong first, then weak) per lookup.
@@ -335,6 +340,40 @@ def rrf(lists: Sequence[Sequence[tuple[str, float]]], k: float = RRF_K) -> Dict[
     return out
 
 
+def recent_pool(ranked: Sequence[str], matches: Sequence[str], by_doc: Mapping[str, LivedRecord], *,
+                slots: int, size: int) -> List[str]:
+    """The pre-rerank pool with ``slots`` of its places kept for the newest matches (issue #3881).
+
+    ``ranked`` is the plain pool order (meaning score, then exact-word score); ``matches`` is the
+    message's deeper meaning and exact-word hit lists. The pool is exactly as large as the plain
+    one (``min(size, len(ranked))``), so the rerank cost does not change: the first ``n - r``
+    places keep the plain order, and the last ``r = min(slots, n // 2)`` go to the newest records (``occurred_at``)
+    among every match not already in. A plain-pool record can win a recent slot too. If too few
+    matches are left, the plain order fills the rest. Recency after the rerank is unchanged.
+    """
+    n = min(int(size), len(ranked))
+    if n <= 0:
+        return []
+    r = max(0, min(int(slots), n // 2))  # the plain order always keeps at least half the pool
+    head = list(ranked[: n - r])
+    taken = set(head)
+
+    def newest(d: str) -> tuple[float, str]:
+        rec = by_doc.get(d)
+        ts = rec.occurred_at.timestamp() if rec is not None and rec.occurred_at is not None else float("-inf")
+        return (-ts, d)
+
+    pool = [d for d in dict.fromkeys(list(matches) + list(ranked)) if d not in taken and d in by_doc]
+    recent = sorted(pool, key=newest)[:r]
+    out = head + recent
+    for d in ranked:
+        if len(out) >= n:
+            break
+        if d not in out:
+            out.append(d)
+    return out
+
+
 def lexical_fallback(recs: Sequence[LivedRecord], lexical_scores: Dict[str, float], query_tokens: set[str],
                      names: set[str], *, max_lines: int) -> List[Scored]:
     """Exact-word ranking when the reranker cannot score (issue #3573). Only records the
@@ -373,6 +412,11 @@ class LivedMemoryConfig:
     # message is used. link_top_k is how many referent neighbours join the rerank (0 = off).
     rewrite_timeout_sec: float = 2.5
     link_top_k: int = 2
+    # Issue #3881: of the MAX_RERANK pre-rerank slots, this many go to the newest records among
+    # the message's top RECENT_DEPTH meaning and exact-word matches, so a cluster of older
+    # same-topic records cannot push the newest relevant one out before the rerank (seen live
+    # after the July-September backfill doubled episode_memory). 0 = off (the old pool).
+    recent_slots: int = DEFAULT_RECENT_SLOTS
 
 
 class LivedMemoryRecall:
@@ -601,7 +645,9 @@ class LivedMemoryRecall:
                     return out
                 # How many known entities the searches name (the trace keeps the count; #3613 (b)).
                 out.debug["rewrite_entities"] = len(self.entity_mentions(" ; ".join(queries)))
-            raw_dense = asyncio.ensure_future(self._dense(client, query, DENSE_TOP_K, replay=replay))
+            recent_slots = max(0, min(int(self.cfg.recent_slots), MAX_RERANK))
+            raw_k = max(DENSE_TOP_K, RECENT_DEPTH) if recent_slots else DENSE_TOP_K
+            raw_dense = asyncio.ensure_future(self._dense(client, query, raw_k, replay=replay))
             pending.append(raw_dense)
             queries = await rewrites()
             t = time.perf_counter()  # dense time past the rewrite wait (the raw search overlaps it)
@@ -625,12 +671,15 @@ class LivedMemoryRecall:
                     out.debug.setdefault("dense_error", f"{type(exc).__name__}: {exc}"[:200])
                 else:
                     res = task.result()
-                k = DENSE_TOP_K if i == 0 else REWRITE_DENSE_TOP_K
+                k = (raw_k if i == 0 else REWRITE_DENSE_TOP_K)
                 kept = []
                 for did, sim in res:
                     rec = self._by_doc.get(did)
                     if rec is not None and allowed(rec) and len(kept) < k:
                         kept.append((did, sim))
+                if i == 0:
+                    deep_dense = [d for d, _ in kept]  # the recent slots' meaning matches
+                    kept = kept[:DENSE_TOP_K]
                 dense_lists.append(kept)
                 if i == 0:
                     out.debug["dense_not_live"] = sum(1 for d, _ in res if d not in self._by_doc)
@@ -638,7 +687,8 @@ class LivedMemoryRecall:
             if dense_failed == len(dense_tasks):
                 degraded.append("embedder_timeout" if not_done else "embedder_unavailable")
 
-            lexical_lists = [self.lexical(query, allowed=allowed)]
+            deep_lexical = self.lexical(query, max(LEXICAL_TOP_K, RECENT_DEPTH), allowed=allowed) if recent_slots else []
+            lexical_lists = [deep_lexical[:LEXICAL_TOP_K] if recent_slots else self.lexical(query, allowed=allowed)]
             lexical_lists += [self.lexical(q, REWRITE_LEXICAL_TOP_K, allowed=allowed) for q in queries]
             lexical_best: Dict[str, float] = {}
             for lst in lexical_lists:
@@ -654,7 +704,17 @@ class LivedMemoryRecall:
             # rewrite's hits follow in reciprocal-rank-fusion order (Cormack et al. 2009).
             fused = rrf(dense_lists + lexical_lists)
             base = list(dict.fromkeys([d for d, _ in dense_lists[0]] + [d for d, _ in lexical_lists[0]]))
-            base = sorted(base, key=lambda d: (-dense_best.get(d, 0.0), -lexical_best.get(d, 0.0)))[:MAX_RERANK]
+            base = sorted(base, key=lambda d: (-dense_best.get(d, 0.0), -lexical_best.get(d, 0.0)))
+            displaced: set[str] = set()  # plain-pool records a recent slot replaced
+            if recent_slots:
+                plain = set(base[:MAX_RERANK])
+                base = recent_pool(base, deep_dense + [d for d, _ in deep_lexical], self._by_doc,
+                                   slots=recent_slots, size=MAX_RERANK)
+                displaced = plain - set(base)
+                # How many records the recent slots brought in that the plain pool left out.
+                out.debug["recent_slots"] = {"slots": recent_slots, "added": sum(1 for d in base if d not in plain)}
+            else:
+                base = base[:MAX_RERANK]
             # Rerank order (#3662): the message's own meaning and exact-word lists take turns, so the
             # first chunk holds the top hits of both. An exact-word-only hit (a name, a rare word)
             # has no meaning score and would otherwise sit in the last chunk, past a short deadline.
@@ -663,7 +723,9 @@ class LivedMemoryRecall:
             turns = [d for pair in zip_longest([d for d, _ in dense_lists[0]], [d for d, _ in lexical_lists[0]])
                      for d in pair if d is not None and d in kept_base]
             rerank_base = list(dict.fromkeys(turns + base))
-            extra = sorted((d for d in fused if d not in set(base)), key=lambda d: (-fused[d], d))
+            # A record a recent slot pushed out of the base does not ride back in as an extra, so
+            # the rerank never sees more candidates than it would without recent slots.
+            extra = sorted((d for d in fused if d not in set(base) and d not in displaced), key=lambda d: (-fused[d], d))
             ordered = base + extra
 
             # Link-following: neighbours of the top candidates and of names in the message or
@@ -1081,6 +1143,6 @@ __all__ = [
     "GATES", "KNOW_MAX_HITS", "KnowResult", "STATUSES",
     "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
     "index_loop", "items_for", "lexical_fallback", "name_tokens", "rank", "recency", "render_line",
-    "rerank_query", "rrf", "run_index_pass",
+    "recent_pool", "rerank_query", "rrf", "run_index_pass",
     "sigmoid", "split_doc_id", "status_of", "tokenize", "trace_of",
 ]

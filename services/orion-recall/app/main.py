@@ -180,14 +180,16 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
                 short_gate=settings.RECALL_LIVED_MEMORY_SHORT_GATE_ENABLED,
                 rewrite_timeout_sec=settings.RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC,
                 link_top_k=settings.RECALL_LIVED_MEMORY_LINK_TOP_K,
+                recent_slots=settings.RECALL_LIVED_MEMORY_RECENT_SLOTS,
             ),
             rewriter=rewriter,
         )
     )
     logger.info(
-        "lived_memory_enabled collection=%s min_fit=%s rewrite_route=%s link_top_k=%s",
+        "lived_memory_enabled collection=%s min_fit=%s rewrite_route=%s link_top_k=%s recent_slots=%s",
         search.collection, settings.RECALL_LIVED_MEMORY_MIN_FIT,
         settings.RECALL_LIVED_MEMORY_REWRITE_ROUTE if rewriter else "off", settings.RECALL_LIVED_MEMORY_LINK_TOP_K,
+        settings.RECALL_LIVED_MEMORY_RECENT_SLOTS,
     )
     return asyncio.create_task(
         index_loop(

@@ -359,3 +359,53 @@ test('a second Back / Next tap during a move is refused and says so', { skip: !J
   doc.getElementById('visionSource').value = 'off';
   api.sync();
 });
+
+test('a refresh held by unsent text on a hidden story says which story', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b')];
+  const fetchFn = async (url) => {
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  // A typed draft on story 1 (the input stands in for a person's "why" box).
+  const first = doc.querySelector('#walkwayStoriesList [data-story-id]');
+  const input = doc.createElement('input');
+  input.setAttribute('data-person-why-input', '');
+  input.value = 'pushing a stroller';
+  first.appendChild(input);
+  doc.getElementById('walkwayStoriesNext').click();
+  for (let i = 0; i < 5; i += 1) await tick();
+  await api.load(true);
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /story 1 has text you have not sent/);
+  assert.equal(doc.querySelector('[data-person-why-input]').value, 'pushing a stroller');   // never wiped
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});
+
+test('Next counts from the story she is on after a reload rebuilt the list mid-move', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  let stories = [storyFixture('b'), storyFixture('c'), storyFixture('d')];
+  const fetchFn = async (url) => {
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  assert.deepEqual(visible(), ['b']);
+  // A newer story arrives and a filter-change reload lands while Next is in flight.
+  stories = [storyFixture('a'), storyFixture('b'), storyFixture('c'), storyFixture('d')];
+  doc.getElementById('walkwayStoriesNext').click();
+  await api.load(false);
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['c']);   // the story after b, not two off
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});

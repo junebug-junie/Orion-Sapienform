@@ -1006,16 +1006,25 @@
     // One move at a time: a second tap while a held answer is still being sent is ignored, so the
     // story shown is always the last move that finished and a failed send stays on the story it is about.
     let moving = false;
-    async function show(i) {
+    // ``delta`` is counted from the story she is on (by story_id) AFTER the held answer is sent:
+    // a reload during the send (a filter change) may have rebuilt the list in between.
+    async function step(delta) {
       if (moving || flushing) {
         say(flushing ? "Still saving your last answer. Try again in a moment." : "Still moving. Try again in a moment.");
         return false;
       }
-      if (i < 0 || i > items().length - 1) return false;
+      const target = (d) => {
+        const all = items();
+        const at = all.findIndex((it) => it.getAttribute("data-story-id") === currentId);
+        return (at >= 0 ? at : current) + d;
+      };
+      if (target(delta) < 0 || target(delta) > items().length - 1) return false;
       moving = true;
       try {
         if (!(await flush(false))) return false;   // send() already said why it failed
-        current = Math.min(i, items().length - 1);
+        const i = target(delta);
+        if (i < 0 || i > items().length - 1) return false;
+        current = i;
         applyView();
         if (pager && typeof pager.scrollIntoView === "function") pager.scrollIntoView({ block: "nearest" });
         return true;
@@ -1033,7 +1042,7 @@
       const at = all.findIndex((it) => it.getAttribute("data-story-id") === storyId);
       if (at < 0) { say(savedText); return; }            // no longer listed: not "the last one"
       if (at < all.length - 1) {
-        if (await show(at + 1)) {
+        if (await step(1)) {
           const shown = items()[current];
           if (shown) {
             shown.setAttribute("tabindex", "-1");
@@ -1344,10 +1353,20 @@
         showTally(body.tally);
         // The 60 s refresh never wipes a name Juniper is typing, nor an answer held for Undo
         // (a filter change she makes does reload, and sends the held answer first).
-        const typing = fromTimer === true && Array.from(
+        const drafts = fromTimer === true ? Array.from(
           list.querySelectorAll("[data-person-name-input], [data-person-why-input]"))
-          .some((i) => i.value.trim() || doc.activeElement === i);
-        if (typing) return;
+          .filter((i) => i.value.trim() || doc.activeElement === i) : [];
+        if (drafts.length) {
+          // One story at a time: unsent text may sit on a story she cannot see. Say which one.
+          const all = items();
+          const hidden = drafts.map((i) => all.indexOf(i.closest("[data-story-id]")))
+            .filter((at) => at >= 0 && at !== current);
+          if (hidden.length) {
+            say(`New stories are on hold: story ${hidden[0] + 1} has text you have not sent. ` +
+              "Go back to it to send or clear it.");
+          }
+          return;
+        }
         list.textContent = "";
         const stories = body.stories || [];
         stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
@@ -1390,8 +1409,8 @@
     if (select) select.addEventListener("change", sync);
     if (uncheckedBox) uncheckedBox.addEventListener("change", () => load(false));
     if (checkableBox) checkableBox.addEventListener("change", () => load(false));
-    if (backBtn) backBtn.addEventListener("click", () => { show(current - 1); });
-    if (nextBtn) nextBtn.addEventListener("click", () => { show(current + 1); });
+    if (backBtn) backBtn.addEventListener("click", () => { step(-1); });
+    if (nextBtn) nextBtn.addEventListener("click", () => { step(1); });
     sync();
     return { load, sync, flush };
   }

@@ -347,16 +347,20 @@ the self-inquiry seed picker, each act producer's open call (per family, Patch 1
 
 ## Acceptance checks (live)
 
-1. After Patch 1b AND #3989's act-surprise switch (posterior KL -> `-ln p(outcome)`; the KL shrinks as a
-   posterior ages, mean 0.0022 nats, so without that switch these bets inherit a dead surprise): per
-   switched actor over 14 days, (a) the mean surprise is within 25% of the binary entropy H(p) of its
-   own observed used-rate p (a calibrated, live signal; a dead KL reads ~0), and (b) at least one
-   graded-1 close carries surprise > 2 nats (the rare hit is seen as surprising). An IQR bar cannot
-   work: at p ~ 4% the quartiles all sit at -ln 0.96 (Orion, #4004 Q1).
+1. After Patch 1b AND #3989's Patch B (act surprise `-ln q(outcome)`; the old KL shrinks as a posterior
+   ages, mean 0.0022 nats) and Patch C (derived series break): the same check #3989 uses for every act,
+   so the two specs cannot disagree. (a) At least 1% of the switched actors' graded closes have
+   s >= ln 2, from at least 3 actors. (b) Per actor, the mean excess (s - H(q)) is reported with its SE
+   and cross-checked against the self-monitor's miscalibrated faculties. Plus one check of this spec's
+   own: at least one graded-1 close carries s > 2 nats (a rare hit reads as surprising). No IQR bar: at
+   p ~ 4% all quartiles sit at -ln 0.96 (Orion, #4004 Q1; #3989 Q5).
 2. Replay: weekly median surprise over 3 weeks shows no monotone drift with posterior age (the
    organs.yaml note becomes false).
-3. Gate, with numbers: per switched family with n >= 200 observable settled acts, the posterior mean
-   sits inside the 95% interval of the observed used-rate over the last 14 days (calibrated), and the
+3. Gate, with numbers: per switched actor with n >= 200 observable settled acts, the posterior mean
+   sits inside the 95% interval of the observed used-rate over the last 14 days (calibrated). The
+   effect posterior never forgets (#4010: journal.make stated 0.69-0.74 while hitting 233/233), so this
+   check fails on staleness, not just bias, until #4010 gives it a half-life. A switched actor's new key
+   starts fresh, so the first 14 days are clean; read a later fail with #4010 in mind, and the
    gate says plainly that it is a BASE RATE (Q8): `predicted` is stamped from the (kind, actor, signal)
    posterior, so every act of an actor opens with the same number and a per-act sort (AUC) is 0.5 by
    construction. Patch 1 adds no per-act conditioning. The per-act check (AUC >= 0.60, p < 0.05, Brier

@@ -418,7 +418,7 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   waiting and 20 unread messages on one thread (HTTP 429 past that).
 - **The round-up.** Each bucket (`HUB_SESSION_ROUNDUP_INTERVAL_SEC`, 15 min) Hub takes every `held`
   thread whose message arrived before the bucket started. One round runs at a time. It submits ONE durable run
-  (`session_roundup.orion_turn`, run id `session-roundup-<utc hour>`, agent lane, background priority,
+  (`session_roundup.orion_turn`, run id `session-roundup-<utc bucket start>`, agent lane, background priority,
   act family `durable.session_roundup`). No held thread means no run and no GPU. The threads are marked
   `reading` before the submit, so a Hub restart cannot submit a second run for the same hour. Threads
   that do not fit the prompt (`HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS`) stay held for the next hour, oldest

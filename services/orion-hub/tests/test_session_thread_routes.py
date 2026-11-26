@@ -95,6 +95,17 @@ def test_a_pull_requests_thread_is_found_by_number_and_a_diff_keeps_its_kind(wor
     assert short["turns"][0]["meta"]["spec"][0]["kind"] == "diff" and "text" not in short["turns"][0]["meta"]["spec"][0]
 
 
+def test_a_waiver_is_stored_as_meta_and_labelled_for_orion_as_not_an_answer(world):
+    client, *_ = world
+    tid = client.post("/api/session-threads/message", json=_msg()).json()["thread"]["thread_id"]
+    client.post("/api/session-threads/message", json={"session_id": "sess-A", "thread_id": tid, "title": "reply",
+                                                      "body": "[draft gate] waived", "waiver": True})
+    turns = client.get(f"/api/session-threads/{tid}").json()["turns"]
+    assert [t["meta"].get("waiver") for t in turns if t["speaker"] == "session"] == [None, True]
+    section = core.thread_section({"thread_id": tid, "title": "t"}, [t for t in turns if t["speaker"] == "session"][1:])
+    assert f"[{core.WAIVER_LABEL}] [draft gate] waived" in section
+
+
 def test_list_thread_pending_and_delivered(world, monkeypatch):
     monkeypatch.setattr(core, "MAX_QUESTION_ROUNDS_PER_THREAD", 1)   # the answer-phase mechanics, one round
     client, loop, clock, _sink, durable = world

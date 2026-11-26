@@ -139,6 +139,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import create_engine, text
 
+from orion.reverie.questions import routed_words
 from orion.reverie.visual_storage import SUPPORTED_MIMES, load_visual_artifact, sniff_image
 
 from app.settings import settings
@@ -425,7 +426,7 @@ async def visual_image(sha256: str) -> Response:
 
 _QUESTIONS_SQL = (
     "SELECT question_id, thread_id, seed_kind, seed_refs, seed_material, question, why, none_reason, "
-    "refused_reason, refused_detail, routed_to, route_note, outcome, created_at "
+    "refused_reason, refused_detail, routed_to, route_note, offer_status, outcome, created_at "
     "FROM reverie_question ORDER BY created_at DESC LIMIT :limit"
 )
 
@@ -459,6 +460,9 @@ def question_view(row: dict[str, Any]) -> dict[str, Any]:
         "refused_detail": row.get("refused_detail"),
         "routed_to": row.get("routed_to") or "none",
         "route_note": row.get("route_note"),
+        # Reverie Patch 3: waiting | sent | lapsed | dropped | None, and the shared words for it.
+        "offer_status": row.get("offer_status"),
+        "routed_words": routed_words(row),
         "outcome": row.get("outcome"),
     }
 

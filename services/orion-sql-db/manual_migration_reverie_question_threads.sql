@@ -1,4 +1,4 @@
--- ORION-MIGRATION-REQUIRED-BY: orion-thought
+-- ORION-MIGRATION-REQUIRED-BY: orion-thought, orion-hub
 -- Reveries that ask, Patch 3: threads and read-back
 -- (docs/superpowers/specs/2026-11-18-reverie-questions-design.md, "Threads (idea 9) and read-back").
 --
@@ -16,9 +16,11 @@
 -- the last question on it. Written by orion-thought's reconcile pass; read by orion-thought (the seed
 -- picker never joins a closed thread; a continuing thread is offered first).
 --
--- Only orion-thought reads the new columns and the new table. orion-hub, orion-cortex-exec and
--- orion-durable-runs read reverie_question through orion/reverie/questions.py's column list, which this
--- patch does not change, so they do not depend on this file.
+-- Readers of the new columns: orion-thought (all of them, and reverie_thread) and orion-hub (offer_status:
+-- the Reverie tab and the day letter's gather, through orion/reverie/questions.py COLUMNS, render a waiting
+-- question as "waiting for the focus slot"). orion-cortex-exec's situation brief selects only question and
+-- created_at; orion-durable-runs reads neither new column (it validates the letter brief, whose
+-- ReverieQuestionDayV1.offer_status is filled by Hub: deploy the two together, see orion/schemas/orion_day.py).
 --
 -- Additive and idempotent (post-pull auto-apply allowlist: add column / create table / create index).
 -- Apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_reverie_question_threads.sql

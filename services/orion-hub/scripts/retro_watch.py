@@ -21,7 +21,9 @@ The whole path, in order:
    looks on a timer instead: one look every ``HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC`` (60) while a button changed
    in the last 60 s, counted ``timer_looks`` when it bids; it bids and seats exactly as a floor look does. On a timer look
    an exact repeat of the previous note is stored, not ``copied``: the prompt is stateless, so on a still
-   screen (SimEarth) the same words are a true look, and dropping them would leave no fresh note.
+   screen (SimEarth) the same words are a true look, and dropping them would leave no fresh note. Its act closes 0
+   (it says nothing new), and a check where the timer look was due but no button changed in 60 s counts
+   ``input_stale_skips``.
 4. **Mode.** Before every bid, Orion's own choices (``dig watch``: act rows of actor ``orion.watch_choice``)
    are copied into ``retro_watch_preference`` and read with Juniper's page switch. The lower wins. Off: no bid.
 5. **Bid.** One want in family ``hub.retro_watch`` (tier 1). Only ``funded`` runs the look; anything else is
@@ -35,7 +37,7 @@ The whole path, in order:
    prompt is stateless: the game title, the minutes played, the frames. The gateway refuses images on a blind
    lane, so a look can never return words about frames the model did not receive.
 9. **Note.** stored / empty / unclear / copied (or failed), one ``retro_watch_look`` row, the act closed 1 only
-   for stored. The hold and the want are released.
+   for stored (a timer look's exact repeat is stored but closes 0: it says nothing new). The hold and the want are released.
 
 No look writes a Temporal Self event here: a line turn (patch 3, scripts/retro_commentary.py in hub-app) judges the
 notes it was shown, and only a note it checked and found to hold becomes one (source kind retro_look,
@@ -409,10 +411,13 @@ class WatchService:
         st.last_change = st.max_change
         cal = self.calibrations.get(str(game)) if game else None
         floor = cal.floor if cal is not None else None
+        timer_sec = self._timer_sec(cal)
         result = W.gate(st.max_change, floor, now=now, last_input_at=float(cur.last_input_at),
                         last_look_at=st.last_look_at, look_gap_sec=self.look_gap,
-                        timer_sec=self._timer_sec(cal), timer_from=st.first_check_at)
-        W.count(st.counters, result, input_in_window=input_in_window)
+                        timer_sec=timer_sec, timer_from=st.first_check_at)
+        W.count(st.counters, result, input_in_window=input_in_window,
+                timer_due=result == W.GATE_TIMER_STALE and W.timer_due(
+                    now=now, last_look_at=st.last_look_at, timer_from=st.first_check_at, timer_sec=timer_sec))
         if result not in (W.GATE_NO_FLOOR, W.GATE_STATIC) and result not in W.TIMER_GATES:
             st.last_over_floor_at = now
         if result in W.LOOK_GATES and not st.looking and (self._look_task is None or self._look_task.done()):
@@ -533,6 +538,7 @@ class WatchService:
         hashes: list[str] = []
         frames_expire_at: Optional[datetime] = None
         note, outcome, failure, seconds, prompt_tokens = None, "failed", None, None, None
+        repeat = False
         lease_id = getattr(lease, "lease_id", None)
         try:
             if len(picked) < W.MIN_FRAMES:
@@ -575,7 +581,10 @@ class WatchService:
             note = W.clean_note(content)
             outcome = W.classify(note, st.last_note)
             if timer and outcome == "copied":
-                outcome = "stored"        # a still screen, a stateless prompt: the same words are a true look
+                # A still screen, a stateless prompt: the same words are a true look, so the note is stored and
+                # keeps "watching" fresh. But it says nothing new, so its act closes 0 (2026-11-25, Orion's review
+                # of #3995: closing 1 only made the family look better at looking).
+                outcome, repeat = "stored", True
             if last_grid is not None:
                 st.ref_grid, st.max_change = last_grid, 0.0
         except LookFailed as exc:
@@ -601,7 +610,7 @@ class WatchService:
                     lease_id, outcome, failure, len(hashes), change, lane_wait_ms, seconds, prompt_tokens,
                     "timer" if timer else "floor")
         # Never "failed:..." at the start: self-monitor reads such a note as a run that never happened.
-        return outcome == "stored", f"look {outcome}: {note or failure or '-'}"
+        return outcome == "stored" and not repeat, f"look {'repeat' if repeat else outcome}: {note or failure or '-'}"
 
     def looking(self) -> bool:
         return self._look_task is not None and not self._look_task.done()

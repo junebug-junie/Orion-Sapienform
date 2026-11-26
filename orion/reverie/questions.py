@@ -21,7 +21,7 @@ MIGRATION = "services/orion-sql-db/manual_migration_reverie_question.sql"
 
 COLUMNS = (
     "question_id, thread_id, seed_kind, seed_refs, question, why, none_reason, refused_reason, "
-    "routed_to, outcome, created_at"
+    "routed_to, offer_status, outcome, created_at"
 )
 
 # Accepted questions (not refused, not none) created in [lo, hi), newest first. Positional params: lo, hi,
@@ -64,11 +64,20 @@ def is_accepted(row: Mapping[str, Any]) -> bool:
     )
 
 
+# reverie_question.offer_status (Patch 3, services/orion-thought/app/reverie_threads.py), in words.
+OFFER_WORDS = {
+    "waiting": "waiting for the focus slot",
+    "lapsed": "waited for the focus slot, lapsed",
+    "dropped": "not sent: repeated an open question",
+}
+
+
 def routed_words(row: Mapping[str, Any]) -> str:
     routed = str(row.get("routed_to") or "none")
     if routed.startswith("focus:"):
         return "sent to curiosity"
-    return "kept, not sent"
+    words = OFFER_WORDS.get(str(row.get("offer_status") or ""))
+    return words or "kept, not sent"
 
 
 def outcome_words(row: Mapping[str, Any]) -> str | None:
@@ -109,6 +118,7 @@ __all__ = [
     "ACCEPTED_SQL_SA",
     "COLUMNS",
     "MIGRATION",
+    "OFFER_WORDS",
     "SEED_WORDS",
     "TABLE",
     "is_accepted",

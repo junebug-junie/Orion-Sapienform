@@ -18,8 +18,16 @@ the same conversation and writes up to ``MAX_QUERIES`` short searches that name 
   told who is speaking: without that, "how tall am I?" read as a question about Orion and got
   NONE. A YES/NO-first form was tried and said YES to 10 of 22 real small-talk messages, so the
   reply stays "queries or NONE".
+- **Recall-seeking questions** (live miss 2026-11-25). "do you recall when I traveled to X?" got
+  NONE: the general prompt read a message that names its own subject as needing no search, and
+  the reranker scores a third-person memory ("Juniper headed to X") far below the raw first-person
+  question. The prompt now says who is speaking and that a question about Juniper's past always
+  needs a search. When the model still answers NONE, fails or times out on a message that
+  ``asks_about_past``, recall builds one search itself (``lived_memory.fallback_queries``).
+  The check is grammar, not topics: a memory verb in an asking form ("do you remember", "remind me
+  what"), or a question about Juniper's own past ("when did I ...?", "was I ...?").
 - **Failure.** Any error, refusal or timeout means "no rewrite": recall goes on with the raw
-  message, exactly as in step 1.
+  message, exactly as in step 1 (except for the recall-seeking fallback above).
 
 Context comes from ``chat_history_log`` (same ``session_id``, the last ``CONTEXT_TURNS`` rows
 inside ``CONTEXT_WINDOW``). The prompt goes only to the local model through the gateway; orion-recall
@@ -43,16 +51,22 @@ CONTEXT_WINDOW = timedelta(hours=6)
 MAX_TOKENS = 80
 
 PROMPT = """You help Orion search their own memories before they reply.
+The messages are from Juniper, talking to Orion. In them, "I", "me" and "my" mean Juniper, and
+"you" means Orion.
 
 Recent conversation, oldest first:
 {context}
 
-New message:
+New message from Juniper:
 {message}
 
 Does the new message lean on something from the past that a memory search could find: an
 event, a person, a pet, a place, a project, a game, a plan, or something said before? Use the
 recent conversation to work out what words like "it", "that" or "she" point to.
+
+A message that asks Orion to remember or recall something, or asks when, where or what happened
+in Juniper's past, always needs a search, even when it names the thing itself. Search for that
+thing.
 
 If yes, write 1 to {max_queries} short search queries, 3 to 8 words each, one per line. Name the
 specific thing. If the message is only a greeting, thanks or small talk with nothing to look
@@ -81,6 +95,35 @@ something now, or anything the recent conversation itself already answers.
 
 If a search is needed, write 1 to {max_queries} short search queries, 3 to 8 words each, one per
 line. Name the specific thing. Write only the queries, or NONE."""
+
+# The person whose messages these are: first-person words in a recall-seeking question are
+# rewritten to this name, because the memories are written about her in the third person.
+SPEAKER = "Juniper"
+
+# Closed-class cues only (memory verbs, auxiliaries, pronouns, wh-words): never topic words.
+# A memory verb counts only in an asking form: "do you remember / recall", "remind me what /
+# about", "remember when ...?". Plain statements ("I forgot to tell you"), reminders about the
+# future ("remind me to call"), likenesses ("you remind me of") and store requests ("can you
+# remember this") do not ask about the past.
+RECALL_VERB = re.compile(r"\b(?:remember|remembers|remembered|recall|recalls|recalled|remind|reminds|reminded)\b", re.I)
+_RECALL_ASK = re.compile(
+    r"\b(?:do|did|does)\s+(?:you|u)\s+(?:still\s+|even\s+)?(?:remember|recall)\b"
+    r"|\bremind\s+me\s+(?:what|when|where|who|how|why|which|about|of\s+(?:the|that|what|when|where|how))\b"
+    r"|\b(?:remember|recall)\s+(?:when|where|what|who|how|which|the\s+time)\b[^.!?]*\?",
+    re.I)
+PAST_SELF = re.compile(r"\b(?:did|was|were|had)(?:n['\u2019]?t)?\s+(?:i|we)\b", re.I)
+_QUESTION = re.compile(r"[^.!?]*\?")
+
+
+def asks_about_past(text: str) -> bool:
+    """True when the message asks Orion to remember something ("do you recall ...", "remind me
+    what ...") or asks a question about Juniper's own past ("when did I ...?", "was I ...?"; the
+    "?" must close the same sentence)."""
+    t = str(text or "")
+    if _RECALL_ASK.search(t):
+        return True
+    return any(PAST_SELF.search(q) for q in _QUESTION.findall(t))
+
 
 # Called as ``rewriter(message, context)``; a short-message gate call adds ``short=True``.
 Rewriter = Callable[..., Awaitable[List[str]]]
@@ -220,5 +263,5 @@ class BusRewriter:
         return parse_queries(text)
 
 
-__all__ = ["BusRewriter", "ContextTurn", "PROMPT", "SHORT_PROMPT", "RewriteRefused", "Rewriter", "build_prompt",
-           "fetch_context", "parse_queries"]
+__all__ = ["BusRewriter", "ContextTurn", "PROMPT", "SHORT_PROMPT", "SPEAKER", "RewriteRefused", "Rewriter",
+           "PAST_SELF", "RECALL_VERB", "asks_about_past", "build_prompt", "fetch_context", "parse_queries"]

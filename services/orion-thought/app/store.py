@@ -1686,7 +1686,10 @@ LEFT JOIN LATERAL (
      WHERE s.run_id = f.offered_run_id AND s.node = 'finish' AND s.status = 'completed'
      ORDER BY s.created_at DESC LIMIT 1
 ) fin ON true
-WHERE q.routed_to LIKE 'focus:%' AND q.outcome IS NULL
+WHERE q.routed_to LIKE 'focus:%'
+  AND (q.outcome IS NULL
+       -- An outcome written on the grace timeout before the finish row landed is rewritten once it lands.
+       OR ((q.outcome->>'finish_found') = 'false' AND fin.detail IS NOT NULL))
 ORDER BY q.created_at
 """
 
@@ -1696,14 +1699,15 @@ def load_reverie_reconcile_rows() -> list[dict[str, Any]]:
 
 
 def write_reverie_outcome(question_id: str, outcome: dict[str, Any]) -> bool:
-    """Fill ``outcome`` once (only while it is NULL). False on a miss; never raises."""
+    """Fill ``outcome`` while it is NULL, or replace one written before the run's finish row landed
+    (``finish_found`` false). False on a miss; never raises."""
     try:
         from sqlalchemy import text
 
         with _get_engine().begin() as conn:
             conn.execute(
                 text("UPDATE reverie_question SET outcome = CAST(:o AS jsonb), outcome_at = now() "
-                     "WHERE question_id = :id AND outcome IS NULL"),
+                     "WHERE question_id = :id AND (outcome IS NULL OR (outcome->>'finish_found') = 'false')"),
                 {"o": json.dumps(outcome), "id": question_id},
             )
         return True
@@ -1719,6 +1723,23 @@ FROM reverie_question q LEFT JOIN reverie_thread t ON t.thread_id = q.thread_id
 WHERE t.thread_id IS NULL OR t.status = 'open'
 ORDER BY q.created_at
 """
+
+
+# Was the newest reverie row a thread continuation (an earlier question on its thread was dug)? A quiet
+# stretch writes at most one row, so "the last row was a continuation" means "the last stretch went to a
+# thread": the next one goes to the picker (a continuation gets at most every other stretch).
+LAST_WAS_CONTINUATION_SQL = """
+SELECT EXISTS (
+    SELECT 1 FROM reverie_question p
+     WHERE p.thread_id = l.thread_id AND p.created_at < l.created_at AND (p.outcome->>'dug') = 'true'
+) AS cont
+FROM (SELECT thread_id, created_at FROM reverie_question ORDER BY created_at DESC LIMIT 1) l
+"""
+
+
+def last_reverie_was_continuation() -> bool:
+    rows = _rows(LAST_WAS_CONTINUATION_SQL)
+    return bool(rows and rows[0].get("cont"))
 
 
 def load_reverie_thread_rows() -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:

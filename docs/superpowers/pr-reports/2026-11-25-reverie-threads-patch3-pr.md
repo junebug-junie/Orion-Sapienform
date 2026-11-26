@@ -46,7 +46,7 @@ Where `continue_note` comes from: the run's `:TurnOutcome.continue_note` lives i
 
 ## Env/config changes
 
-- Added keys: `ORION_REVERIE_THREADS_ENABLED=true` (orion-thought).
+- Added keys: `ORION_REVERIE_THREADS_ENABLED=true`, `ORION_REVERIE_THREAD_MAX_DIGS=3` (orion-thought).
 - Removed / renamed: none.
 - `.env_example` updated: yes.
 - Local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes (key present in the primary checkout's `services/orion-thought/.env`).
@@ -106,7 +106,37 @@ No docker build run: no dependency, Dockerfile, or compose change.
 
 ## Review findings fixed
 
-Code review is run by the orchestrator after this report.
+#3997 was merged before the review findings were fixed, so the fixes ship in a follow-up PR from the same branch (link below).
+
+- Finding: a thread crowds out the other seeds. Live, 77% of curiosity finishes set `continue_line=true`, so one thread could hold the reverie for days.
+  - Fix: a thread closes `exhausted` after `ORION_REVERIE_THREAD_MAX_DIGS` (3) dug questions. A continuation goes first on at most every other quiet stretch: if the newest reverie row was a continuation (`store.last_reverie_was_continuation`), the picker goes first, and the thread is used only when the picker has no material.
+  - Evidence: `test_a_thread_is_exhausted_after_three_dug_questions`, `test_a_continuation_goes_first_on_at_most_every_other_stretch`, `test_the_alternate_stretch_falls_back_to_the_thread_when_the_picker_has_nothing`.
+- Finding: an outcome written on the 30-min grace miss was permanent.
+  - Fix: `RECONCILE_SQL` also returns rows whose outcome has `finish_found=false` once a finish row exists. `write_reverie_outcome` may replace only such an outcome. The first write keeps the 30-min grace. (Live example of the miss: run `a32417ee8a57` is `ran` with no finish row.)
+  - Evidence: `test_an_outcome_written_before_the_finish_row_is_rewritten_when_it_lands`, `test_write_outcome_may_replace_only_a_finish_missing_outcome`.
+- Finding: a waiting question showed as "kept, not sent".
+  - Fix: `orion/reverie/questions.py` COLUMNS gains `offer_status`, and `routed_words` renders "waiting for the focus slot" / lapsed / dropped. The day letter gets the field through `ReverieQuestionDayV1.offer_status`. This is an additive field on a forbid model, so deploy orion-hub and orion-durable-runs together. The Hub tab (`reverie_routes.question_view`, `reverie-tab.js`) shows an amber "waiting for the focus slot" badge. The situation brief selects only question text, so it never showed routing. REQUIRED-BY is now `orion-thought, orion-hub`.
+  - Evidence: `test_routed_words_say_waiting`, hub `test_question_view_says_waiting_for_a_waiting_question`.
+- Finding: re-offering a question whose focus had expired looped until the question lapsed.
+  - Fix: new constant `orion/curiosity/focus.py QUEUED_EARLIER`, used by Hub's refusal text. A re-offer refused with it is marked `lapsed`.
+  - Evidence: `test_a_reoffer_refused_as_queued_earlier_lapses_instead_of_looping`, `test_hubs_queued_earlier_refusal_uses_the_constant`.
+- Finding: the adopt sweep wrote on every poll.
+  - Fix: it now runs once per process start (`_SWEEP_DONE`).
+  - Evidence: `test_the_adopt_sweep_runs_once_per_process`.
+- Finding: the lapse loop compared naive and aware timestamps.
+  - Fix: `_aware(created_at)` in the lapse loop and in `_question_from_row`.
+  - Evidence: `test_the_lapse_check_takes_a_naive_timestamp`.
+
+Re-run after the fixes:
+
+```text
+services/orion-thought tests -> 628 passed, 31 skipped (test_reverie_threads.py 35)
+services/orion-hub reverie/focus/orion_day tests -> 191 passed
+orion/orion_day orion/situational orion/temporal_self orion/integration/evals orion/curiosity tests -> 1159 passed, 30 skipped
+run_now_ablation_eval --offline -> PASS; migration REQUIRED-BY OK; auto_apply_refusals [] (REQUIRED-BY orion-thought, orion-hub)
+deploy-migration-gate / personal-terms / post-pull tests -> 197 passed; env parity PASS; env single source OK; integration seam OK
+New env key ORION_REVERIE_THREAD_MAX_DIGS=3 synced to local .env
+```
 
 ## Restart required
 
@@ -130,6 +160,6 @@ Optional, needs Juniper's yes: `scripts/sql/2026-11-25_grant_orion_readonly_reve
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/3997
+https://github.com/junebug-junie/Orion-Sapienform/pull/3997 (Patch 3), https://github.com/junebug-junie/Orion-Sapienform/pull/4003 (review findings)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

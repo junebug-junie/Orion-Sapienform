@@ -435,7 +435,9 @@
     }
     const routed = String(q.routed_to || "none").startsWith("focus:")
       ? `<span class="px-2 py-0.5 rounded-full border border-emerald-700 text-emerald-400 text-[11px]">sent to curiosity</span>`
-      : `<span class="px-2 py-0.5 rounded-full border border-gray-700 text-gray-500 text-[11px]">${escapeHtml(q.route_note || "not sent")}</span>`;
+      : q.offer_status === "waiting"
+        ? `<span class="px-2 py-0.5 rounded-full border border-amber-700 text-amber-400 text-[11px]" title="${escapeHtml(q.route_note || "")}">${escapeHtml(q.routed_words || "waiting for the focus slot")}</span>`
+        : `<span class="px-2 py-0.5 rounded-full border border-gray-700 text-gray-500 text-[11px]">${escapeHtml(q.route_note || "not sent")}</span>`;
     return `
       <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2">
         <div class="flex justify-between items-center text-[11px] text-gray-500">

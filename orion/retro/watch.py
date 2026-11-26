@@ -10,7 +10,7 @@ frame and measures the screen change (orion/retro/frames.py). Then, in order:
 
 1. The game has no calibrated floor (any status but ``set``, still calibrating included): the timer instead
    (``NO_FLOOR_LOOK_SEC``, Hub's ``HUB_RETRO_WATCH_NO_FLOOR_LOOK_SEC``). The last button change is 60 s old or
-   more: no look (``timer_input_stale``). Less than the interval since the last look (or since the sitting's
+   more: no look (``timer_input_stale``; when the look was due, ``input_stale_skips`` counts the check). Less than the interval since the last look (or since the sitting's
    first check): wait. Otherwise a timer look (``timer_looks``), then steps 5-6 as for any look. The screen
    change is not read: a slow screen (SimEarth) still gets a look a minute while someone plays. Interval 0:
    no look (the page says "no looks for this game yet"). Calibration keeps running, so a floor can still be set.
@@ -193,8 +193,7 @@ def gate(change: Optional[float], floor: Optional[float], *, now: float, last_in
             return GATE_NO_FLOOR
         if last_input_at is None or now - last_input_at >= INPUT_FRESH_SEC:
             return GATE_TIMER_STALE
-        anchor = last_look_at if last_look_at is not None else timer_from
-        if anchor is not None and now - anchor < timer_sec:
+        if not timer_due(now=now, last_look_at=last_look_at, timer_from=timer_from, timer_sec=timer_sec):
             return GATE_TIMER_WAIT
         return GATE_TIMER
     if change is None or change < floor:
@@ -206,9 +205,25 @@ def gate(change: Optional[float], floor: Optional[float], *, now: float, last_in
     return GATE_READY
 
 
-def count(counters: dict, gate_result: str, *, input_in_window: bool) -> None:
-    """The sitting's counters for one ring check that had a floor to compare with. Timer gates count nothing
-    here: the gateway counts ``timer_looks`` when it starts one."""
+def timer_due(*, now: float, last_look_at: Optional[float], timer_from: Optional[float],
+              timer_sec: Optional[float]) -> bool:
+    """True when a no-floor game's timer look is due: ``timer_sec`` since the last look (or since the sitting's
+    first check when there was none yet). False for no timer."""
+    if timer_sec is None or timer_sec <= 0:
+        return False
+    anchor = last_look_at if last_look_at is not None else timer_from
+    return anchor is None or now - anchor >= timer_sec
+
+
+def count(counters: dict, gate_result: str, *, input_in_window: bool, timer_due: bool = False) -> None:
+    """The sitting's counters for one ring check. On the timer path only one thing counts here: a check where
+    the timer look was DUE but the last button change was 60 s old or more (``input_stale_skips``, the timer's
+    missed look: 2026-11-25, without it a short timer sitting could not say why it got fewer looks than its
+    minutes). ``static_skips`` never counts on the timer path: the screen change is not read there. The gateway
+    counts ``timer_looks`` when it starts one."""
+    if gate_result == GATE_TIMER_STALE and timer_due:
+        counters["input_stale_skips"] = counters.get("input_stale_skips", 0) + 1
+        return
     if gate_result == GATE_NO_FLOOR or gate_result in TIMER_GATES:
         return
     if gate_result == GATE_STATIC:

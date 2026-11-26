@@ -100,6 +100,14 @@ def test_a_game_with_no_floor_looks_on_the_timer_only_while_buttons_are_pressed(
     for g in W.TIMER_GATES:
         W.count(c, g, input_in_window=True)
     assert not any(c.values())
+    # Only a due timer look blocked by idle hands counts (input_stale_skips); waiting counts nothing.
+    W.count(c, W.GATE_TIMER_STALE, input_in_window=False, timer_due=True)
+    W.count(c, W.GATE_TIMER_WAIT, input_in_window=False, timer_due=True)
+    assert c["input_stale_skips"] == 1 and sum(c.values()) == 1
+    assert W.timer_due(now=100.0, last_look_at=40.0, timer_from=None, timer_sec=60.0)
+    assert not W.timer_due(now=99.0, last_look_at=40.0, timer_from=None, timer_sec=60.0)
+    assert W.timer_due(now=5.0, last_look_at=None, timer_from=None, timer_sec=60.0)
+    assert not W.timer_due(now=100.0, last_look_at=None, timer_from=0.0, timer_sec=0.0)
 
 
 def test_a_paused_game_counts_static_skips_and_a_still_screen_with_presses_counts_a_likely_miss():

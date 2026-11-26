@@ -330,13 +330,15 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
         rewrites: Dict[str, int] = {}
         for row in local_traces.values():
             k = str(row.get("rewrite") or "none")
+            if k == "fallback" and row.get("rewrite_model"):  # keep timeouts countable
+                k = f"fallback/{row['rewrite_model']}"
             rewrites[k] = rewrites.get(k, 0) + 1
         report["lived_local"] = {
             "short_gate": args.lived_local_short_gate, "gates": gates,
             # Rewrite outcomes per run (ok/none/timeout/...): the run-to-run noise source (#3674).
             "rewrite": dict(sorted(rewrites.items())),
             # Per item: rewrite outcome, the time window read, pool size. Ids and dates only.
-            "traces": {q: {k: v for k, v in t.items() if k in ("rewrite", "window", "gate")}
+            "traces": {q: {k: v for k, v in t.items() if k in ("rewrite", "rewrite_model", "window", "gate")}
                        | {"candidates": len(t.get("candidate_ids") or [])} for q, t in sorted(local_traces.items())},
             "total_ms": pcts([m for vals in local_ms.values() for m in vals]),
             "total_ms_by_gate": {g: pcts(v) for g, v in sorted(local_ms.items())},

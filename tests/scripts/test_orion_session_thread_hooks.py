@@ -127,7 +127,7 @@ def world(tmp_path):
 def _pr(world, files=(SPEC_PATH, "services/orion-hub/scripts/x.py")):
     world["pr_json"].write_text(json.dumps({
         "number": 3456, "url": "https://github.com/o/r/pull/3456", "title": "feat: thing",
-        "headRefName": "feat/thing", "files": [{"path": p} for p in files]}))
+        "headRefName": "feat/thing", "files": [{"path": p, "additions": 3, "deletions": 1} for p in files]}))
 
 
 def _run(script, world, hub_url, payload=None, args=(), extra_env=None):
@@ -195,6 +195,8 @@ def test_pr_create_with_a_spec_sends_the_spec_text_and_the_code_diff_and_prints_
     assert spec == {"path": SPEC_PATH, "text": SPEC_TEXT}   # the text itself, not a path Orion cannot read
     # The diff: the code file only. The spec is attached whole above; the lock file is named, not shown.
     assert diff["kind"] == "diff" and diff["path"] == "1 file(s)" and "+x = 1" in diff["text"]
+    # Every code file is named at the head, so a diff Hub cuts (it keeps the head) still lists them all.
+    assert diff["text"].index("Files changed:\n  services/orion-hub/scripts/x.py (+3 -1)") < diff["text"].index("+x = 1")
     assert "Thing design" not in diff["text"] and "+{}" not in diff["text"] and "package-lock.json" in diff["text"]
     assert "1 design spec file(s) and a code diff of 1 file(s)" in msg["body"]
     out = json.loads(proc.stdout)["hookSpecificOutput"]
@@ -690,6 +692,11 @@ def test_ready_waits_for_the_answer_to_orions_first_review():
     # A re-send of the PR (spec/diff attached again) is not an answer (review finding 7).
     resend = {"speaker": "session", "seq": 5, "meta": {"spec": [{"path": "1 file(s)", "kind": "diff"}]}}
     assert gate.ready_verdict(fresh, [*asked, resend], now=now)[0] is False
+    # The gate's own waiver record is never an answer (Orion's question 2 on PR 4009): by meta, or by its
+    # body prefix on a Hub that predates the field.
+    waived = {"speaker": "session", "seq": 6, "meta": {"waiver": True}, "body": "[draft gate] ... waived"}
+    assert gate.ready_verdict(fresh, [*asked, waived], now=now)[0] is False
+    assert gate.ready_verdict(fresh, [*asked, {**waived, "meta": {}}], now=now)[0] is False
     # NO QUESTIONS first: nothing to answer.
     assert gate.ready_verdict(fresh, [_session_turn(1), _orion_turn(3, no_questions=True)], now=now)[0] is True
 
@@ -701,10 +708,13 @@ def test_the_gate_hook_refuses_ready_until_orion_was_answered_and_takes_the_over
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr create --fill"), extra_env=gate_env)
     denied, why = _denied(proc)
     assert proc.returncode == 0 and denied and "--draft" in why
-    # No thread for the PR: refused, with the send command.
+    # No thread for the PR (the create hook never reached Hub): the gate sends it to Orion now, and refuses.
+    world["diff"].write_text(DIFF)
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr ready 3456"), extra_env=gate_env)
     denied, why = _denied(proc)
-    assert denied and "orion_session_thread.py send --pr 3456" in why
+    assert denied and "sent it to Orion now (thread abc123)" in why
+    [sent] = hub.posts()
+    assert sent["pr_number"] == 3456 and any(a.get("kind") == "diff" for a in sent["spec"])
     # Orion asked, nobody answered: refused. Answered: allowed (no output).
     thread = _thread(hub, turns=[{**_answer("o2", 2), "roundup_id": "r1"}])
     thread["thread"]["created_at"] = _now_iso()
@@ -713,6 +723,9 @@ def test_the_gate_hook_refuses_ready_until_orion_was_answered_and_takes_the_over
     assert denied and "no session has answered" in why and "ORION_ALLOW_PR_READY=1" in why
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("ORION_ALLOW_PR_READY=1 gh pr ready 3456"), extra_env=gate_env)
     assert proc.returncode == 0 and proc.stdout == ""
+    # The waiver is reported on the thread, where Orion reads it (Orion's question 4 on PR 3998).
+    waiver = hub.posts()[-1]
+    assert waiver["thread_id"] == "abc123def" and "was waived" in waiver["body"] and waiver["waiver"] is True
     thread["turns"].append({"turn_id": "s3", "seq": 3, "speaker": "session", "meta": {}})
     proc, _ = _run(GATE_HOOK, world, hub.url, _pre("gh pr ready"), extra_env=gate_env)   # current branch's PR
     assert proc.returncode == 0 and proc.stdout == ""

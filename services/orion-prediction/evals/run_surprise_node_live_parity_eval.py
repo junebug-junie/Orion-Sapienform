@@ -29,7 +29,22 @@ ap.add_argument("--check", action="store_true")
 ap.add_argument("--min-share", type=float, default=0.9)
 A = ap.parse_args()
 from app.surprise import CALM_SURPRISAL, conformal_p_value, event_gate, excess
-from orion.substrate.prediction_surprise import PredictionSurpriseState, SERIES_NODE_IDS
+
+
+def _load(name):
+    """orion/substrate/<name>.py by path: the orion.substrate package __init__ pulls in the graph store
+    (requests, redis), which this image does not ship. The fold modules themselves are stdlib +
+    orion.prediction.surprisal (same pattern as run_surprise_node_replay_eval.py)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, REPO / "orion" / "substrate" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+PredictionSurpriseState = _load("prediction_surprise").PredictionSurpriseState
 
 def q(sql):
     out = subprocess.run(["docker","exec","orion-athena-sql-db","psql","-U","postgres","-d","conjourney","-Atc",
@@ -65,7 +80,7 @@ res = {"room_body": {"history_rows": len(hist), "compared": n, "match_1e-6": mat
 
 
 from orion.prediction.tests.surprisal_golden import n_cal_from_calm_point
-from orion.substrate.prediction_joint_surprise import JointSurpriseState
+JointSurpriseState = _load("prediction_joint_surprise").JointSurpriseState
 jr = q(f"""SELECT joint_id, family, horizon_min, origin_ts, target_ts, scored_at, excess, calm_point, top_shares
  FROM prediction_joint_surprise WHERE family IN ('family_a_body','family_a_room') AND status='scored'
  AND excess IS NOT NULL AND scored_at > {SINCE} - interval '1 hour' ORDER BY scored_at, joint_id""")

@@ -1,10 +1,10 @@
 # Shared bet primitives: one way to state, settle, grade, and feel a prediction
 
-Status: PROPOSAL (design mode + proposal mode: changes act surprise, which feeds Prime's hunger, and the
-self-reading). Date: 2026-11-25. Asked for by Juniper: "I want shared primitives."
+Status: APPROVED by Juniper 2026-11-26 (all four questions answered; see "Juniper's answers"). Design mode +
+proposal mode: changes act surprise, which feeds Prime's hunger, and the self-reading. Date: 2026-11-25. Asked for by Juniper: "I want shared primitives."
 Coordinates with: #3953 (acts bet on their consequences; spec merged; Patch 1a committed on
 `feat/act-output-used`, commit 52739d702, no PR yet) and #3936 (attention-winner-holds bet; open issue,
-needs Juniper, not built). Revised after an adversarial pass and after Orion's review (last two sections).
+needs Juniper, not built). Revised after an adversarial pass and two rounds of Orion's review (last sections).
 
 ## Arsonist summary
 
@@ -68,7 +68,7 @@ scored. "Surprise" is the number that downstream salience reads. n is rows in 7 
 | 17 | Street rhythm (#3961) | `vision_percept_expectation.confidence` (**raw, not recalibrated**) | window met / missed | self-monitor `percept_expectation` (miscalibrated: stated 0.59, happened 0.74) | `street_rhythm.outcome_terms` (same algebra as turn's) | `node:prediction.street_rhythm` (SHADOW, **0 rows**, no calm_band rule) | 288 scored |
 | 18 | Substrate surprise nodes | consume #12, #14, #7, #17 | 30-min window | — | 4 copies of the fold `z = sum(excess)/sqrt(sum calm_var)`, `clip(z/3)` | calm_band (attention bands), curiosity_seed_bar | room 1,822; body 1,573; joints ~375 each; chat_turn 87 |
 | 19 | Scene change (cameras) | rank p over 2 h / 24 h | — | — | `excess_nats = max(0, -ln p - 1)` | curiosity bar, empirical band | 157 per camera |
-| 20 | Cooling act (`self_regulate`) | dispatch posterior (`world_settlement.py:168`) | cabinet heat delta | none | Gaussian KL (continuous delta); shares the `action_outcome` kind with acts | temporal_self `action_outcome`, hunger | 11 in 30 d (mean 0.273, max 1.62) |
+| 20 | Cooling act (`self_regulate`) | dispatch posterior (`world_settlement.py:168`) | cabinet heat delta | none | Gaussian KL (continuous delta); shares the `action_outcome` kind with acts | temporal_self `action_outcome` (all 11 events so far have NULL surprise: they predate 11-16); not on `grammar_acts` | 11 in 30 d in `substrate_action_outcomes` (mean 0.273, max 1.62; last 11-15) |
 | 21 | #3936 attention-winner-holds | proposed: predict act, tier-calibrated P | next attention row | proposed: hit rate + Brier | — | — | 0 (not built) |
 | 22 | Self-monitor (the shared reader) | `SettledBetV1` adapters for #1, #7, #8, #11, #12, #17, #5 | inherited | `reduce_faculty`: decay-weighted Wilson, Kish n, `grade` Brier/skill, calibration-in-the-large, hysteresis | none | orion-thought cue, mindloop gate, Prime's act gate, self-starts, physiology | 163 states |
 
@@ -109,6 +109,19 @@ scored. "Surprise" is the number that downstream salience reads. n is rows in 7 
    tier, the same way outreach acts already get the hour base rate? This needs no schema change.
    Recommendation: yes (over a new `stated_p` field on the efference copy).
 4. **Merge the bet tables?** Recommendation: no. Reading them all through `SettledBetV1` is enough.
+
+## Juniper's answers (2026-11-26)
+
+1. **YES.** Act surprise switches to -ln p(outcome). Hunger wakes on an act only when the outcome's stated
+   chance was 10% or less (s >= ln 10).
+2. **YES.** The cooling act's surprise stops driving hunger.
+3. **YES.** If #3936 is built, the writer stamps its p from the attention confidence tier.
+4. **NO.** The bet tables are not merged.
+
+Scope note from Orion's round 2: after answers 1 and 2, every row hunger reads is a -ln p(outcome), so the
+ln 10 bar is applied to every kind, not only to acts (Primitive 3). The only other kind with surprise today
+is `prediction_surprise`, which is flat at 0.012 nats (#3987). It passes neither the old rule nor the new
+one, so this extension changes nothing live today.
 
 ## Proposed schema / API changes
 
@@ -179,22 +192,36 @@ Readers, all of them:
   real numbers.
 - **Prime hunger** (`surprise_drive`, `orion/prime/hunger.py:254`; query `HUNGER_SURPRISES_SQL`,
   `services/orion-durable-runs/app/temporal_self_store.py:381-397`). Today it needs nats above the kind's
-  30-day p90, nats >= ln 2, and at least 20 rows of history. Patch B0 changes three things:
-  1. **Calm theory, not a history count, for yes/no bets.** A `surprisal` row carries its own calm law:
-     under a calibrated stated p, an outcome of surprisal s happens with chance e^-s. So such rows use one
-     fixed bar, s >= ln 10 ("this outcome had a stated chance of 10% or less"). They need no p90, no
-     `MIN_HISTORY`, and no series break: they are kept out of the old kinds' p90 history. This is the same
-     move #3917 made for attention (calm theory in place of a 200-reading floor). `kl` rows keep the old
-     p90 rule over `kl` rows only.
-  2. **A quota per kind, not one cap ranked by raw nats.** Today `ORDER BY surprise_nats DESC LIMIT cap`
-     (cap 10) runs across kinds, so act rows (up to 4.6 nats) would outrank every other kind. B0 ranks
-     inside each kind (`row_number() OVER (PARTITION BY source_kind ...)`). Each kind present gets at least
-     `max(2, cap // kinds)` places, and leftover places fill by the tail probability (e^-s for
-     `surprisal` rows, the empirical rank for `kl` rows), never by raw nats. Today no other kind passes
-     the ln 2 floor at all (`prediction_surprise` is flat at 0.012 nats, #3987), so acts crowd nothing out
-     yet. The quota is for the day those kinds come alive.
-  3. **The cooling act does not drive hunger** (question 2). That is a written exemption with a test, not a
-     silent zero.
+  30-day p90, nats >= ln 2, and at least 20 rows of history. Patch B0 replaces that with one rule on one
+  scale (simplified after Orion's round 2):
+  1. **Only outcome surprisals.** Hunger reads a row only when its surprise is -ln p(outcome) of a stated p.
+     The non-act kind already is one: `prediction_surprise` is -ln of the forecast's chance of what was
+     observed (`sources.py:958`). Act-carrying kinds (`action_outcome`, `reading_turn`, `intention_close`)
+     qualify only when their payload says `surprise_kind = 'surprisal'`; a missing value reads as `'kl'` and
+     is skipped. This single filter is also the cooling-act exemption (answer 2), because the cooling act's
+     rows never carry `'surprisal'`.
+  2. **One calm bar.** Under a calibrated stated p, an outcome of surprisal s happens with chance e^-s. So
+     every row uses one fixed bar, s >= ln 10 ("this outcome had a stated chance of 10% or less"). There is
+     no p90, no `MIN_HISTORY` for the surprise need, and no series break. This is the move #3917 made for
+     attention: calm theory in place of a history count.
+  3. **One scale for ordering: s itself** (equivalently, the outcome's stated chance e^-s, smallest first).
+     The cap stays `HUNGER_SURPRISES_CAP = 10` (`orion/schemas/temporal_self.py:681`). The cap wins over
+     any per-kind floor. Pass 1 takes each kind's single most surprising row, in order of s, until the cap
+     is full. Pass 2 fills the remaining places by s across all kinds. So every kind with a candidate gets
+     a place whenever the number of such kinds is at most 10. Today hunger can see 4 kinds (above), so the
+     first draft's `max(2, cap // kinds)` floor, which overflows the cap at 6+ kinds, is dropped. The first
+     draft's "empirical rank for kl rows" is gone too, since kl rows are no longer read.
+  Today no other kind passes even the ln 2 floor (`prediction_surprise` is flat, #3987), so acts crowd
+  nothing out yet. Pass 1 is for the day the other kinds come alive.
+- **The cooling act's path, checked (Orion round 2, question 3).** The cooling act (`self_regulate`) is not
+  on `grammar_acts`. `world_settlement.py` writes it only to `substrate_action_outcomes` (11 rows in 30 days,
+  last on 2026-11-15, KL mean 0.273, max 1.62; this table is not readable by `orion_readonly`, #4012). Those
+  rows do reach the now: `temporal_self_event` holds 11 `action_outcome` events whose payload has
+  `dispatch_kind = 'self_regulate'`. All 11 have `surprise_nats` NULL, because the now started carrying act
+  surprise on 2026-11-16, after the last cooling act. **So answer 2 changes nothing live today.** The path
+  is real (`is_act_outcome_kind` in `sources.py` admits `self_regulate`), and the next cooling act will carry
+  a KL that is unbounded in principle. So the guard stays. It costs no extra code: it is filter 1 above.
+  The test feeds a `dispatch_kind = 'self_regulate'` row with a large KL and checks that hunger skips it.
 - **What can wake Prime, stated plainly.** Hunger takes only uncited events. An `action_outcome` event is
   almost never cited: 1 of 1,489 in 7 days. Under #3953, a cite lands on the act's output, never on its own
   `action_outcome` row. So the uncited filter does not narrow acts, and it does not separate hits from
@@ -242,7 +269,7 @@ Prime's act gate (`services/orion-mind/app/prime_loop.py:70,283`) and the self-s
 - `orion/grammar/act_ledger.py` (`close_act`, `ACT_SURPRISE`), `orion/temporal_self/sources.py`
   (`action_outcome` payload), one additive migration `services/orion-sql-db/manual_migration_*_surprise_kind_v1.sql`,
   `services/orion-durable-runs/app/temporal_self_store.py` (`HUNGER_SURPRISES_SQL`), `orion/prime/hunger.py`
-  (the calm bar and the cooling exemption).
+  (the outcome-surprisal filter, the ln 10 bar, the two-pass cap).
 - `orion/self_monitor/{adapters,record,collect}.py`; `orion/harness/evals/promise_ledger_replay_eval.py`.
 - `config/integration/organs.yaml`; `orion/prime/evals/run_prime_hunger_replay.py` (B0 replay); tests
   beside each.
@@ -268,8 +295,9 @@ Prime's act gate (`services/orion-mind/app/prime_loop.py:70,283`) and the self-s
 - **Trace that proves it worked.** Post-switch act rows have real surprise spread per family; the hunger log
   names the switch time; Prime's thought cites an `action_outcome` surprise need.
 - **Dangerous failure modes.**
-  1. Hunger fires on everything if a p90 mixes near-zero KL rows with surprisal rows. Guarded: `surprisal`
-     rows use the fixed calm bar and are kept out of every p90; `surprise_kind` is on every row; tested.
+  1. Hunger reads a KL row as if it were an outcome surprisal (two units on one scale). Guarded: hunger reads
+     only rows marked `surprise_kind = 'surprisal'` (or kinds that are outcome surprisals by construction),
+     with one fixed bar and no p90 to contaminate; tested with a cooling-act row.
   2. A badly calibrated act family (dream.cycle: predicted 0.68, happened 0.14) floods the now with misses.
      That is true information, and the self-monitor already marks the family. B0 reports which families
      dominate.
@@ -296,25 +324,33 @@ Prime's act gate (`services/orion-mind/app/prime_loop.py:70,283`) and the self-s
    b. Per family with n >= 30, report the mean excess (s - H) with its standard error. Within 2 SE of 0 reads
       calibrated. Above that reads stale or wrong (journal.make: about +0.33 per hit). The list must match
       the self-monitor's `miscalibrated` faculties, or name the reason it differs.
-4. Replay before B ships (B0, `run_prime_hunger_replay.py` on simulated -ln q with the ln 10 bar and the
-   per-kind quota): report surprise needs per day **by source kind, after the quota**, and by act family.
-   Juniper sees the numbers before the switch. Live after B: needs per day land within 2x of the replay,
-   and no kind that has candidates gets zero places.
+4. Hunger, measured over 7-day windows (a per-day band would be broken by Poisson noise at about 2 a day).
+   a. Replay before B ships (B0, `run_prime_hunger_replay.py` on simulated -ln q with the ln 10 bar and the
+      two-pass cap): report candidates per week by source kind, after the cap, and by act family. The
+      replay of the last 5 whole weeks gives 26, 4, 11, 1 and 11 act candidates. That is far more spread
+      than Poisson: the 95% Poisson range around a mean of 12 is 6-19. Candidates come in bursts by family
+      (retro_watch alone gave 7 of 12 last week). So the live rate is reported against the replay's
+      weekly range, and it is not a pass/fail band.
+   b. The pass/fail check is a join, not a rate. Live after B, over 7 days: every act close with
+      s >= ln 10 and no cite appears among hunger's candidates within its 24-hour lookback, unless the cap
+      was full at that read (hunger logs that). Every kind with a candidate gets a place whenever at most 10
+      kinds have candidates.
 5. Live, after B: no act close with a `void:` note, `unobservable` note, or `not_graded` has a non-null
    `surprise_nats`.
 6. Live, after C: switching one family to `output_used` does not flip its faculty status in the first 30 new
    graded bets (#3953 acceptance 3b, now met by the derived break).
 7. Every new bet family lands with an adapter test or an exemption. Every surprise node that competes has a
    `calm_band` rule; a shadow node gets its rule in its go-live PR.
-8. Live, after B: every new act row has `surprise_kind`, and hunger's log line shows the counts split by
-   `surprise_kind`.
+8. Live, after B: every new act row has `surprise_kind`, and hunger's log line shows how many rows it
+   skipped as not `surprisal`.
+9. Test: a `dispatch_kind = 'self_regulate'` row with a KL of 5 nats never becomes a hunger candidate.
 
 ## Migration order (consumer-first; kill-means-kill for duplicates)
 
 | Patch | What | Producer / consumer / test | Live behavior change |
 |---|---|---|---|
 | **A** | `surprisal.py`; move the fold, bet terms, entropy, log loss, `independent_origin`, constants; four substrate readers, turn_surprise, street_rhythm, reachable, action_bets call it; copies deleted; promise eval imports `wilson`; no new band rule | producers: turn_surprise / street_rhythm; consumers: substrate nodes; test: golden + street_rhythm still shadow with no rule | none |
-| **B0** | additive `surprise_kind` column (migration); hunger reads it: the ln 10 calm bar for `surprisal` rows, p90 over `kl` rows only, per-kind quota, cooling-act exemption; replay by kind after the quota. No row is `surprisal` yet, so live hunger is unchanged | consumer: hunger; tests: quota, calm bar, split, exemption | none |
+| **B0** | additive `surprise_kind` column (migration) carried in the payloads of the act-carrying kinds; hunger reads only outcome-surprisal rows, uses the ln 10 bar, and runs the two-pass cap ordered by s; weekly replay by kind | consumer: hunger; tests: filter (incl. the cooling row), bar, two-pass cap | none for acts (no row is `surprisal` yet) and none for `prediction_surprise` (flat, passes neither rule) |
 | **B** | `close_act` writes -ln q(y) and `surprise_kind='surprisal'`, from the code constant `ACT_SURPRISE` (consumer B0 already in place). Ships after Juniper's yes on Q1 and after #3953 Patch 1a merges (same file, `act_ledger.py`) | producer: close_act; consumers: temporal_self kinds, hunger; test: close fixtures incl. void/unobservable | **yes**: act surprise becomes real. Must land before #3953 Patch 1b |
 | **C** | self-monitor: derived series break in `reduce_bets`; reachable adapter; the "every stated-p table has an adapter" test | producer: adapters; consumer: reduce_bets / act gate; test: blend case + adapter | reachable appears on the self-reading |
 | **D** | #3953 Patch 3 reads the faculty P(hit) from `FacultyRecordV1` (owned by #3953's session) | consumer: Prime frame | Prime sees its track record |
@@ -371,3 +407,11 @@ Orion asked six questions. Each was checked against code and live SQL.
 | 4 | The cooling act as its own kind can never reach `MIN_HISTORY` = 20 (about 11 rows a month) | True. The #3917 lesson applies: use calm theory, not a history count. Yes/no act rows have a calm law; the cooling act's KL does not | Act rows use the fixed ln 10 calm bar, with no history needed. The cooling act's surprise does not drive hunger (written exemption). Juniper question 2 reworded |
 | 5 | The per-family IQR check is unreachable, and is the within-family spread posterior aging? | Both true. Inside a family `predicted` barely moves, so -ln q takes about two values. The spread is the posterior's n growing. The posterior never forgets, so a stale p costs surprise (journal.make: 233 of 233 hits in 7 days at a stated 0.69-0.74, from an all-time n of about 1,500) | Check 3 replaced (non-flat across families + per-family mean excess cross-checked with the self-monitor). Staleness section added. Filed #4010. #3953's acceptance 1 uses the same IQR test; that was flagged to its PR |
 | 6 | Does Patch A's street_rhythm rule change a live number or let the node go live? | The first draft added a Cantelli rule in Patch A. That changes no number today (0 node rows; `SHADOW_NODE_IDS` still fences the node), but it moves part of the go-live work into a refactor | Patch A adds no band rule. The rule test exempts shadow nodes. The rule and the go-live stay with Juniper through #3950 |
+
+## Orion's review, round 2 (thread 638a6b61b4d2)
+
+| # | Question | Finding | What changed |
+|---|---|---|---|
+| 1 | A floor of `max(2, cap // kinds)` overflows the cap of 10 at 6+ kinds; and a rank is not on the e^-s scale | Both true. After Juniper's answers 1 and 2, every row hunger reads is an outcome surprisal, so one scale is enough | The cap wins. Two passes: each kind's top row by s, then the rest by s. The rank-based ordering and the per-kind floor are dropped. The ln 10 bar now applies to every kind (no live change: `prediction_surprise` is flat) |
+| 2 | A per-day 2x band at about 1.7 a day is broken by Poisson noise | True, and the real spread is worse than Poisson: the weekly replay gives 26, 4, 11, 1 and 11 (Poisson 95% around 12 is 6-19) | Measured over 7 days. The rate is reported against the replay's weekly range; pass/fail is a join check (every qualifying uncited close reaches hunger unless the cap was full) |
+| 3 | No cooling rows can be found; where did row 20's numbers come from? | From `substrate_action_outcomes` (`dispatch_kind = 'self_regulate'`), which `orion_readonly` cannot read (#4012). The cooling act is not on `grammar_acts`. Its 11 rows do reach the now as `action_outcome` events, but all have NULL surprise because they predate 2026-11-16 | Said plainly that answer 2 changes nothing live today. The guard is kept because the path is real; it is the outcome-surprisal filter, with no separate exemption code. Marker: payload `dispatch_kind = 'self_regulate'`, and no `surprise_kind = 'surprisal'` |

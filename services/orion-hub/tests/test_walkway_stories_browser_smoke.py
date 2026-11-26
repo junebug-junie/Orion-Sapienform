@@ -774,11 +774,14 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
     """Nothing jumps (2026-11-26, Juniper: "when i click a button, it randomly moves me around the
     screen"). The Back / Next bar stays pinned under Hub's fixed top bar while a story scrolls; a
     story finished from far down its card moves on with the new story starting right under the bar
-    (not hidden under the top bar, not halfway down); Back / Next then never scroll the page."""
+    (not hidden under the top bar, not halfway down); Back / Next then never scroll the page.
+    Also with scroll anchoring off (iPhone Safari has none): the tally, gate and status lines above
+    the story change length after a save, and the story she is reading must not move."""
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
     html = _html()
+    saves = [0]
     stories = [_story(i, persons=[_pp(f"ind-{i}a"), _pp(f"ind-{i}b")],
                       parts={"stated": ["people", "direction", "place"], "answers": {}}) for i in (1, 2, 3)]
 
@@ -802,8 +805,11 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             done = len(s["parts"]["answers"]) == 3
             if done:
                 s["verdict"] = "right"
+            # Each save changes the tally's length (and so its line count on a phone).
+            saves[0] += 1
+            tally = _tally(1 + saves[0] * 7, 1, wrong_name=saves[0] % 2, cant_tell=saves[0] * 3)
             return route.fulfill(body=json.dumps({"ok": True, "story": s, "story_verdict": "right" if done else None,
-                                                  "tally": _tally(1, 1)}), content_type="application/json")
+                                                  "tally": tally}), content_type="application/json")
         if "/strip/" in path or path.startswith("/api/vision/crop-thumbs/"):
             return route.fulfill(body=PIXEL, content_type="image/gif")
         return route.fulfill(status=404, body="")
@@ -814,11 +820,13 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
                y: Math.round(scrollY), pos: document.getElementById('walkwayStoriesPos').textContent }; }"""
     vis = "#walkwayStoriesList [data-story-id]:not(.hidden) "
     with sync_playwright() as p:
-        for width, height in ((390, 844), (1280, 900)):
+        for width, height, anchor in ((390, 844, True), (390, 844, False), (1280, 900, True)):
             for s in stories:
                 s["parts"]["answers"], s["verdict"] = {}, None
             browser, page = _page(p, html, handle, height=height)
             page.set_viewport_size({"width": width, "height": height})
+            if not anchor:
+                page.add_style_tag(content="*{overflow-anchor:none!important}")
             page.wait_for_selector(vis + "[data-story-part='place']")
             top_bar = 56   # Hub's fixed header, h-14
             # Down inside the story: the bar is still on screen, just under the top bar.
@@ -836,4 +844,11 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
                 page.wait_for_function(f"() => document.getElementById('walkwayStoriesPos').textContent === '{pos}'")
                 h = page.evaluate(geometry)
                 assert (h["y"], h["pager"], h["story"]) == (g["y"], g["pager"], g["story"]), (btn, g, h)
+            # Down inside story 3, answer a part: the tally and status above rewrite, the story stays.
+            row = page.locator(vis + "[data-story-part='direction']")
+            row.scroll_into_view_if_needed()
+            before = row.evaluate("e => Math.round(e.getBoundingClientRect().top)")
+            row.locator("[data-part-verdict='no']").click()
+            page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes('more part')")
+            assert row.evaluate("e => Math.round(e.getBoundingClientRect().top)") == before
             browser.close()

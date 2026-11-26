@@ -54,7 +54,16 @@ No build. Static files only.
 
 ## Review findings fixed
 
-See the PR comment once the review finishes.
+- Finding: during the 600 ms pause the finished story was still live, so a correction or a held name pick could be pulled away by the move.
+  - Fix: any tap or typing in the story list during the pause, or a held answer, cancels the advance. She sees "Staying on this story; press Next when you are done."
+  - Evidence: jsdom test "a tap on the story during the Saved pause keeps her on it".
+- Finding: the tally, gate and status lines above the story change length after every save. iPhone Safari has no scroll anchoring, so the story moved by a line or two.
+  - Fix: `steady()` wraps those writes and scrolls by exactly how far the shown story moved.
+  - Evidence: the smoke test with `overflow-anchor: none` keeps a part row at the same pixel. Without `steady()` it moved 688 -> 669.
+- Finding: a reload during the pause that dropped the finished story left her partway down the next one.
+  - Fix: `load()` calls `startUnderPager()` when the shown story changed.
+- Finding: the "off the bottom" branch scrolled by about 0 px.
+  - Fix: it now brings the pager up under the top bar.
 
 ## Restart required
 

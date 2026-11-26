@@ -93,7 +93,8 @@
   // never innerHTML.
 
   const VIEW_VALUE = "walkway-live";
-  const ADVANCE_PAUSE_MS = 600;   // "Saved" stays on screen this long before the next story
+  const ADVANCE_PAUSE_MS = 600;
+  const TOP_BAR_PX = 64;          // Hub's fixed top bar (h-14 = 56 px) plus a small gap   // "Saved" stays on screen this long before the next story
   const POLL_MS = 60000;
   const VERDICTS = [
     { value: "right", label: "Right" },
@@ -1049,8 +1050,10 @@
       const pagerBottom = pager.getBoundingClientRect().bottom;
       const top = item.getBoundingClientRect().top;
       const bottomEdge = global.innerHeight || 0;
-      // Hidden behind the pinned pager, or off the bottom of the screen: bring it right under the pager.
-      if (top < pagerBottom - 1 || (bottomEdge && top > bottomEdge - 80)) global.scrollBy(0, top - pagerBottom - 8);
+      // Hidden behind the pinned pager: bring its top right under the pager.
+      if (top < pagerBottom - 1) global.scrollBy(0, top - pagerBottom - 8);
+      // Pager low on the screen, story below it off the bottom: bring the pager up under the top bar.
+      else if (bottomEdge && top > bottomEdge - 80) global.scrollBy(0, pager.getBoundingClientRect().top - TOP_BAR_PX);
     }
 
     // Story ``storyId`` got its verdict: show the one after it, but only if she is still on it
@@ -1063,8 +1066,14 @@
       if (at < 0) { say(savedText); return; }            // no longer listed: not "the last one"
       if (at < all.length - 1) {
         say(`${savedText} Next story…`);
+        const mark = touches;
         await new Promise((r) => setTimeout(r, ADVANCE_PAUSE_MS));
-        if (currentId !== storyId) { say(savedText); return; }   // she moved during the pause
+        if (currentId !== storyId) return;                        // she moved, or a reload moved her
+        if (touches !== mark || pending) {
+          // She touched the story during the pause (fixing an answer, picking a name): stay with her.
+          say(`${savedText} Staying on this story; press Next when you are done.`);
+          return;
+        }
         if (await step(1)) {
           const shown = items()[current];
           if (shown) {
@@ -1082,8 +1091,22 @@
     }
 
     function showTally(t) {
-      if (tallyEl) tallyEl.textContent = tallyLine(t);
-      if (gateEl) gateEl.textContent = gateLine(t);
+      steady(() => {
+        if (tallyEl) tallyEl.textContent = tallyLine(t);
+        if (gateEl) gateEl.textContent = gateLine(t);
+      });
+    }
+
+    // The tally, gate and status lines sit above the story and change length after every save.
+    // Chrome's scroll anchoring hides that; iPhone Safari has none, so the story she is reading
+    // would move by a line or two. Keep the shown story where it was on screen.
+    function steady(change) {
+      const item = items()[current];
+      const before = item ? item.getBoundingClientRect().top : null;
+      change();
+      if (before === null || typeof global.scrollBy !== "function") return;
+      const moved = item.getBoundingClientRect().top - before;
+      if (Math.abs(moved) >= 1) global.scrollBy(0, moved);
     }
 
     async function onVerdict(story, verdict, item) {
@@ -1114,7 +1137,12 @@
     const ctx = { cursor, names, answer, undo, go, say, onNotSame, onPart, onSameName, onUndoLink,
       get pending() { return pending; }, get flushing() { return flushing; } };
 
-    function say(text) { if (status) status.textContent = text; }
+    function say(text) { if (status) steady(() => { status.textContent = text; }); }
+
+    // Any tap or typing inside the story list: a pending auto-advance then stays on the story.
+    let touches = 0;
+    list.addEventListener("click", () => { touches += 1; }, true);
+    list.addEventListener("input", () => { touches += 1; }, true);
 
     function rerender(storyId, fresh, focus) {
       const item = list.querySelector(`[data-story-id="${storyId}"]`);
@@ -1393,8 +1421,11 @@
         list.textContent = "";
         const stories = body.stories || [];
         stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
+        const was = currentId;
         current = startIndex(stories, currentId, current);
         applyView();
+        // The story she was on dropped out (e.g. "only unchecked" after she graded it): start the new one in view.
+        if (was && currentId !== was) startUnderPager();
         if (status) {
           const which = checkable === "true" ? "checkable: daylight, with a picture" : "all, including dark or no picture";
           status.textContent = stories.length

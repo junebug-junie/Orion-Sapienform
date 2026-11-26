@@ -413,3 +413,28 @@ test('Next counts from the story she is on after a reload rebuilt the list mid-m
   doc.getElementById('visionSource').value = 'off';
   api.sync();
 });
+
+test('a tap on the story during the "Saved" pause keeps her on it', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b')];
+  const fetchFn = async (url, opts) => {
+    if (opts && opts.method === 'POST') return { ok: true, status: 200, json: async () => ({ tally: {} }) };
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  const shown = () => doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)');
+  shown().querySelector('[data-story-verdict="right"]').click();
+  for (let i = 0; i < 5; i += 1) await tick();
+  shown().querySelector('div').click();          // she touches the story while "Saved. Next story…" shows
+  await new Promise((r) => setTimeout(r, 700));
+  assert.deepEqual(visible(), ['a']);
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /Staying on this story/);
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});

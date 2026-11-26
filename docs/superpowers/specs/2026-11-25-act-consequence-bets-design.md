@@ -221,7 +221,11 @@ No new ledger, no new store, no new status words.
   within 14 days, not per day. An episode whose serving acts all fell in hours where Juniper's reply
   base rate (`orion/grammar/reply_base_rate.py`, the rate that already stamps outreach acts) is below
   0.1 closes **void**, not failed: "she was asleep" is not "my acts failed" (live 7 d: 22 say acts at
-  1 am Denver). The 0.1 cut is a starting prior, UNVERIFIED against the hourly rates.
+  1 am Denver). The 0.1 cut, measured 2026-11-26 with `juniper_reply_base_rate` at the median `say`
+  horizon (1,800 s; 28 d, Denver hours): 00-02 h 0.22-0.26, 03-10 h 0.02, 11-16 h 0.05-0.12,
+  17-23 h 0.12-0.26. So the mask voids 03-10 h (asleep) and 12-16 h (rarely at chat), and does NOT
+  void 01-02 h: she is often up then (Orion's 7-day say outcomes there, 0.95 and 0.45, agree). The
+  rate is per act, so a long-horizon act opened at night is judged on its own window.
 - **Shadow first.** Patch 2b writes verdicts and the `goal_episode` events only. The discount stays
   off until 7 days of verdicts show the completed/failed split per target. Expected split: UNKNOWN
   today. If more than 90% of episodes read `completed`, the bind rule is still too loose, and the

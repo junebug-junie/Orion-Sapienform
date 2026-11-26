@@ -55,6 +55,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Sequence
 
+from orion.prediction import surprisal as sp
+from orion.prediction.surprisal import log_loss, node_value  # noqa: F401  (node_value: re-exported for evals)
+
 USED_FACULTIES: tuple[str, ...] = ("turn.self.asks_question", "turn.self.more_steps_than_usual")
 SCOPE_CALLER = "chat"
 CAL_WINDOW = timedelta(days=7)
@@ -66,23 +69,14 @@ RIDGE = 1.0              # pull toward the identity map, in units of one bet's w
 MAX_TURN_AGE = timedelta(minutes=60)
 
 
-def _clip(p: float) -> float:
-    return min(1.0 - P_CLIP, max(P_CLIP, float(p)))
-
-
 def logit(p: float) -> float:
-    q = _clip(p)
+    q = sp.clip_p(p, P_CLIP)
     return math.log(q / (1.0 - q))
 
 
 def _sigmoid(x: float) -> float:
     x = max(-30.0, min(30.0, x))
     return 1.0 / (1.0 + math.exp(-x))
-
-
-def log_loss(p: float, hit: bool) -> float:
-    q = _clip(p)
-    return -math.log(q if hit else 1.0 - q)
 
 
 def fit_calibration(history: Sequence[tuple[float, bool]], ridge: float = RIDGE) -> tuple[float, float]:
@@ -130,12 +124,10 @@ class BetTerms:
 
 
 def bet_terms(faculty: str, stated_p: float, q: float, happened: bool) -> BetTerms:
-    q = _clip(q)
-    lg = math.log(q / (1.0 - q))
-    s = -math.log(q if happened else 1.0 - q)
-    h = -q * math.log(q) - (1.0 - q) * math.log(1.0 - q)
-    return BetTerms(faculty=faculty, stated_p=float(stated_p), calibrated_p=q, happened=bool(happened),
-                    surprisal=s, expected_surprisal=h, excess=s - h, calm_var=q * (1.0 - q) * lg * lg)
+    """One used bet's terms at its recalibrated q (the math: ``orion.prediction.surprisal.bet_terms``)."""
+    t = sp.bet_terms(q, happened, P_CLIP)
+    return BetTerms(faculty=faculty, stated_p=float(stated_p), calibrated_p=t.q, happened=t.happened,
+                    surprisal=t.surprisal, expected_surprisal=t.entropy, excess=t.excess, calm_var=t.calm_var)
 
 
 @dataclass(frozen=True)
@@ -151,17 +143,11 @@ class TurnSurprise:
 def turn_surprise(correlation_id: str, placed_at: datetime, bets: Sequence[BetTerms]) -> TurnSurprise | None:
     """One turn's joint surprise, or None when no used bet carries any (empty, or all 50/50)."""
     bets = tuple(bets)
-    var = sum(b.calm_var for b in bets)
-    if not bets or var <= 1e-12:
+    f = sp.fold([(b.excess, b.calm_var) for b in bets], min_var=1e-12)
+    if f is None:
         return None
-    total = sum(b.excess for b in bets)
-    return TurnSurprise(correlation_id=correlation_id, placed_at=placed_at, bets=bets, excess=total,
-                        calm_var=var, z=total / math.sqrt(var))
-
-
-def node_value(z: float) -> float:
-    """What the node stores: 3 sigma = 1.0, a calm (z <= 0) turn = exactly 0."""
-    return max(0.0, min(1.0, z / 3.0))
+    return TurnSurprise(correlation_id=correlation_id, placed_at=placed_at, bets=bets, excess=f.total,
+                        calm_var=f.var, z=f.z)
 
 
 class CalibrationHistory:
@@ -246,7 +232,7 @@ def heldout_skill(rows: Sequence[Mapping], faculty: str, caller: str | None = SC
         p = float(r["stated_p"])
         if recalibrate:
             p = calibrated(p, fit_calibration([(float(q["stated_p"]), bool(q["hit"])) for q in prior]))
-        diffs.append((r["placed_at"].date(), log_loss(base, y) - log_loss(p, y)))
+        diffs.append((r["placed_at"].date(), log_loss(base, y, P_CLIP) - log_loss(p, y, P_CLIP)))
         hits.append(y)
     n = len(diffs)
     if n < 2:

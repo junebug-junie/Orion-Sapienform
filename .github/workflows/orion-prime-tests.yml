@@ -9,6 +9,7 @@ name: orion-prime-tests
 on:
   pull_request:
     paths:
+      - "orion/prediction/**"
       - "orion/prime/**"
       # The concern contest's rules (design 2026-11-17 patch 2): Prime's slots are decided by them.
       - "orion/attention/concern_contest.py"
@@ -53,6 +54,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "orion/prediction/**"
       - "orion/prime/**"
       # The concern contest's rules (design 2026-11-17 patch 2): Prime's slots are decided by them.
       - "orion/attention/concern_contest.py"

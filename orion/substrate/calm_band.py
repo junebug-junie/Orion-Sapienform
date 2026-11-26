@@ -51,6 +51,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence
 
+# The shared surprise library owns the constants and the floored calm variance; this module keeps the
+# exact calm tails and the band-rule table.
+from orion.prediction import surprisal as _sp
+from orion.prediction.surprisal import P_FLOOR, Z_FULL_SCALE, calm_excess_variance  # noqa: F401  (re-exported)
+
 ROOM_NODE_ID = "node:prediction.room"
 BODY_NODE_ID = "node:prediction.body"
 ROOM_JOINT_NODE_ID = "node:prediction.room_joint"
@@ -59,10 +64,8 @@ CHAT_TURN_NODE_ID = "node:prediction.chat_turn"
 PERCEPTION_NODE_ID = "node:substrate.perception"
 PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 
-# Every forecast-surprise node stores clip(z / Z_FULL_SCALE, 0, 1).
-Z_FULL_SCALE = 3.0
-# orion-prediction's surprise floor (services/orion-prediction/app/surprise.py P_FLOOR).
-P_FLOOR = 0.05
+# Every forecast-surprise node stores clip(z / Z_FULL_SCALE, 0, 1); P_FLOOR is orion-prediction's
+# conformal floor. Both come from orion.prediction.surprisal (imported above).
 # A 30-min window holds at most ~6 five-min and 2 fifteen-min outcomes (prediction_surprise.py);
 # 12 leaves margin. Larger windows are covered by the normal limit.
 MAX_WINDOW_OUTCOMES = 12
@@ -124,12 +127,6 @@ def standardized_gamma_tail(n: int, z: float) -> float:
     return gamma_tail(n, n + z * math.sqrt(n))
 
 
-def calm_excess_variance(p_floor: float = P_FLOOR) -> float:
-    """Var[-ln max(p, P)] for p uniform (== prediction_surprise.calm_excess_variance(1 - P))."""
-    p = float(p_floor)
-    return 2.0 - 2.0 * p * (1.0 + math.log(1.0 / p)) - (1.0 - p) ** 2
-
-
 def floored_sum_tail(n: int, s: float, p_floor: float = P_FLOOR) -> float:
     """P(sum of n iid min(E, c) >= s), E ~ Exp(1), c = -ln P. Exact.
 
@@ -161,23 +158,25 @@ def normal_tail(z: float) -> float:
 
 
 def bet_window_atoms(qs: Iterable[float]) -> list[tuple[float, float]]:
-    """Every outcome of a window of calibrated yes/no bets as (z, calm probability)
-    (prediction_turn_surprise.py / turn_surprise.py: excess = -(y - q) logit q, calm var
-    q (1 - q) logit(q)^2)."""
+    """Every outcome of a window of calibrated yes/no bets as (z, calm probability). One form of the bet
+    terms: ``orion.prediction.surprisal.bet_terms`` (excess = s - H, calm var q (1 - q) logit(q)^2), the
+    same terms the chat-turn node's own value is built from. Before PR #4013 this used the closed form
+    -(y - q) logit q; the two differ by at most 3.6e-15 in z on the live q mix, five orders of magnitude
+    inside the closest atom tolerance edge (test_calm_band.py pins the margin)."""
     qs = [float(q) for q in qs if q is not None and 0.0 < float(q) < 1.0]
     if not qs:
         return []
-    lgs = [math.log(q / (1.0 - q)) for q in qs]
-    var = sum(q * (1.0 - q) * lg * lg for q, lg in zip(qs, lgs))
+    terms = [(_sp.bet_terms(q, True, 0.0), _sp.bet_terms(q, False, 0.0)) for q in qs]
+    var = sum(hit.calm_var for hit, _ in terms)
     if var <= 0.0:
         return []
     sd = math.sqrt(var)
     atoms: list[tuple[float, float]] = [(0.0, 1.0)]
-    for q, lg in zip(qs, lgs):
+    for q, (hit, miss) in zip(qs, terms):
         nxt = []
         for e, p in atoms:
-            nxt.append((e - (1.0 - q) * lg, p * q))      # y = 1
-            nxt.append((e + q * lg, p * (1.0 - q)))       # y = 0
+            nxt.append((e + hit.excess, p * q))           # y = 1
+            nxt.append((e + miss.excess, p * (1.0 - q)))  # y = 0
         atoms = nxt
     return [(e / sd, p) for e, p in atoms]
 

@@ -53,6 +53,8 @@ from types import MappingProxyType
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from orion.prediction.surprisal import bernoulli_entropy
+
 # Confidences are clamped away from 0 and 1 before any log: Orion does write
 # 0.0 / 1.0 on refutation, and KL against an exact 0 or 1 is infinite. The
 # clamp bounds a full reversal at ~4.5 nats and H at >= 0.056 nats.
@@ -118,8 +120,7 @@ def entropy_nats(p: Optional[float]) -> float:
     p = valid_confidence(p)
     if p is None:
         return math.log(2.0)
-    q = _clamp(p)
-    return -(q * math.log(q) + (1.0 - q) * math.log(1.0 - q))
+    return bernoulli_entropy(_clamp(p))
 
 
 def kl_nats(after: float, before: float) -> float:

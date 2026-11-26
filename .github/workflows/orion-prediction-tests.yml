@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "services/orion-prediction/**"
+      - "orion/curiosity/value.py"
+      - "orion/harness/evals/promise_ledger_replay_eval.py"
       - "orion/schemas/prediction.py"
       - "orion/schemas/grammar.py"
       - "orion/schemas/registry.py"
@@ -34,6 +36,8 @@ on:
     branches: [main]
     paths:
       - "services/orion-prediction/**"
+      - "orion/curiosity/value.py"
+      - "orion/harness/evals/promise_ledger_replay_eval.py"
       - "orion/schemas/prediction.py"
       - "orion/schemas/grammar.py"
       - "orion/schemas/registry.py"

@@ -20,7 +20,8 @@ def test_ids_match_the_producers() -> None:
     assert cb.CHAT_TURN_NODE_ID == pt.CHAT_TURN_NODE_ID
     assert cb.PERCEPTION_NODE_ID == ac.PERCEPTION_NODE_ID
     assert cb.PERCEPTION_WALKWAY_NODE_ID == ac.PERCEPTION_WALKWAY_NODE_ID
-    assert ps.Z_FULL_SCALE == pj.Z_FULL_SCALE == pt.Z_FULL_SCALE == cb.Z_FULL_SCALE
+    # One shared scale since PR #4013 (comparing the copies to each other would be a tautology): pin it.
+    assert cb.Z_FULL_SCALE == 3.0
 
 
 def test_the_table() -> None:
@@ -161,9 +162,16 @@ def test_p_floor_matches_orion_prediction() -> None:
 
     src = Path(__file__).resolve().parents[3] / "services" / "orion-prediction" / "app" / "surprise.py"
     tree = ast.parse(src.read_text())
-    vals = [n.value.value for n in tree.body if isinstance(n, ast.Assign)
-            and any(getattr(t, "id", None) == "P_FLOOR" for t in n.targets)]
-    assert vals == [cb.P_FLOOR]
+    # One floor: orion-prediction imports it from the shared library this module also reads (Patch A of
+    # the shared-bet-primitives design), and assigns no copy of its own.
+    assigned = [n for n in tree.body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "P_FLOOR" for t in n.targets)]
+    imported = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "orion.prediction.surprisal"
+                and any(a.name == "P_FLOOR" for a in n.names)]
+    assert not assigned and len(imported) == 1
+    from orion.prediction import surprisal
+
+    assert cb.P_FLOOR is surprisal.P_FLOOR == 0.05
 
 
 def test_bet_atoms_match_brute_force() -> None:
@@ -180,3 +188,32 @@ def test_bet_atoms_match_brute_force() -> None:
             e = sum(-(y - q) * lg for q, y, lg in zip(qs, ys, lgs))
             want += p if e / sd >= zcut - 1e-12 else 0.0
         assert cb.bet_window_tail(qs, zcut) == pytest.approx(want)
+
+
+def test_one_form_of_bet_terms_cannot_flip_a_chat_band() -> None:
+    """Orion's review of #4013, point 5. bet_window_atoms now builds z from surprisal.bet_terms (s - H) instead
+    of the closed form -(y - q) logit q. On the live q mix the two differ by ulps; a stored value can only
+    change band if an atom sits within that difference of a tolerance edge on the 6-decimal stored grid.
+    Pin a margin of at least 1000x."""
+    turns = cb.chat_turn_q_mix()
+    windows = ([list(t) for t in turns] + [list(a) + list(b) for a, b in zip(turns, turns[1:])]
+               + [list(a) + list(b) + list(c) for a, b, c in zip(turns, turns[1:], turns[2:])])
+
+    def closed_form(qs):
+        lgs = [math.log(q / (1.0 - q)) for q in qs]
+        sd = math.sqrt(sum(q * (1.0 - q) * lg * lg for q, lg in zip(qs, lgs)))
+        atoms = [(0.0, 1.0)]
+        for q, lg in zip(qs, lgs):
+            atoms = [x for e, p in atoms for x in ((e - (1.0 - q) * lg, p * q), (e + q * lg, p * (1.0 - q)))]
+        return [(e / sd, p) for e, p in atoms]
+
+    dz, zs = 0.0, []
+    for qs in windows:
+        new, old = cb.bet_window_atoms(qs), closed_form([float(q) for q in qs])
+        assert [p for _, p in new] == [p for _, p in old]
+        dz = max(dz, max(abs(a - b) for (a, _), (b, _) in zip(new, old)))
+        zs += [z for z, _ in new]
+    assert dz < 1e-13
+    margin = min(abs((z + s * cb._ATOM_TOL) / cb.Z_FULL_SCALE - round((z + s * cb._ATOM_TOL) / cb.Z_FULL_SCALE, 6))
+                 for z in zs if 0.0 < z < cb.Z_FULL_SCALE for s in (-1, 1))
+    assert margin > 1000 * dz / cb.Z_FULL_SCALE

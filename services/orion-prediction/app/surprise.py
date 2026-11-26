@@ -39,10 +39,10 @@ import numpy as np
 
 from app.backtest import COVERAGE_BAND
 from app.models import BASELINES
+# P_FLOOR: the outermost stored central interval is 95 % (quantiles 0.025 / 0.975), so p cannot be
+# resolved below 0.05. One constant, shared with the substrate calm tails (orion/substrate/calm_band.py).
+from orion.prediction.surprisal import P_FLOOR, conformal_terms
 
-# Outermost stored central interval is 95 % (quantiles 0.025 / 0.975), so p cannot be resolved
-# below 0.05.
-P_FLOOR = 0.05
 CALM_SURPRISAL = 1.0 - P_FLOOR
 MIN_GATE_SCORES = 200   # same count engine.MIN_LIVE_COVERAGE_N requires before judging coverage
 # Measured method bias: a perfectly calibrated normal forecaster reads this mean excess through the
@@ -80,11 +80,11 @@ def conformal_p_value(actual: float, quantiles: Mapping[str, float]) -> tuple[fl
 
 
 def surprisal(p: float) -> float:
-    return -math.log(max(P_FLOOR, min(1.0, p)))
+    return conformal_terms(p, P_FLOOR).surprisal
 
 
 def excess(p: float) -> float:
-    return surprisal(p) - CALM_SURPRISAL
+    return conformal_terms(p, P_FLOOR).excess
 
 
 ADAPTIVE_SOURCE = "adaptive"

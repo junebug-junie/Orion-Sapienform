@@ -20,7 +20,7 @@ Aggregation (the node's value), same shape as ``node:prediction.room`` / ``.body
 target bucket (the shortest horizon wins). ``z = sum(excess) / sqrt(sum(calm_var))``, stored as
 ``clip(z / 3, 0, 1)``. In practice nearly every counted outcome is a 5-min one: a 15-min outcome counts
 only when its bucket has no 5-min outcome (same rule as ``node:prediction.body``). ``calm_var`` is the variance of ``-ln p`` for a conformal p uniform on
-``{1..n_cal+1} / (n_cal+1)`` (``calm_excess_variance``): 1.0 in the continuous limit, set by theory, not tuned.
+``{1..n_cal+1} / (n_cal+1)`` (``orion.prediction.surprisal.calm_excess_variance_discrete``): 1.0 in the continuous limit, set by theory, not tuned.
 
 - calm: z ~ N(0, 1) when calibrated -> exact 0 about half the time. Rest point 0.
 - a coupled load spike (one big joint miss, p ~0.01, excess ~ +3.6) among 5 calm outcomes: z ~ 1.5 ->
@@ -38,37 +38,28 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Mapping
 
+from orion.prediction.surprisal import (  # noqa: F401  (Z_FULL_SCALE: re-exported for readers)
+    Z_FULL_SCALE,
+    calm_excess_variance_discrete,
+    fold,
+    independent_origin,
+    shortest_horizon_per_target,
+)
+
 BODY_JOINT_NODE_ID = "node:prediction.body_joint"
 ROOM_JOINT_NODE_ID = "node:prediction.room_joint"
 GROUP_NODE_IDS: dict[str, str] = {"body": BODY_JOINT_NODE_ID, "room": ROOM_JOINT_NODE_ID}
 PREDICTION_JOINT_SURPRISE_NODE_IDS: frozenset[str] = frozenset(GROUP_NODE_IDS.values())
 WINDOW = timedelta(minutes=30)
 REDUCER_KEY = "prediction_joint_surprise"
-Z_FULL_SCALE = 3.0
 
-
-@lru_cache(maxsize=64)
-def calm_excess_variance(n_cal: int) -> float:
-    """Var[-ln p] for p uniform on {1, ..., m} / m, m = n_cal + 1 (a calibrated conformal p): the calm
-    spread of one outcome's excess. -> 1.0 (Var of -ln U) as n_cal grows; 0.98-0.99 at the ~1000-row pools
-    seen live."""
-    m = int(n_cal) + 1
-    if m < 2:
-        raise ValueError(f"n_cal {n_cal!r}: need at least one calibration row")
-    logs = [math.log(k / m) for k in range(1, m + 1)]
-    mean = sum(logs) / m
-    return sum((x - mean) ** 2 for x in logs) / m
+# Var[-ln p] for a calibrated conformal p from a pool of n_cal rows (orion.prediction.surprisal), cached:
+# a live pool size repeats for hours.
+_calm_var = lru_cache(maxsize=64)(calm_excess_variance_discrete)
 
 
 def _aware(ts: datetime) -> datetime:
     return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
-
-
-def independent_origin(origin_ts: datetime, horizon_min: int) -> bool:
-    """True when this origin starts a horizon-long block on the clock (one independent forecast per block).
-    Every 5-min origin passes at h=5; one in three at h=15. Same rule as prediction_surprise."""
-    minute = int(_aware(origin_ts).timestamp()) // 60
-    return minute % max(1, int(horizon_min)) == 0
 
 
 @dataclass(frozen=True)
@@ -133,7 +124,7 @@ class JointSurpriseState:
         if not math.isfinite(excess):
             return node_id, "non_finite_excess"
         try:
-            var = calm_excess_variance(int(get("n_cal")))
+            var = _calm_var(int(get("n_cal")))
         except (TypeError, ValueError):
             return node_id, "no_calibration_size"
         shares = get("top_shares") or {}
@@ -150,19 +141,12 @@ class JointSurpriseState:
         with self._lock:
             self._prune(node_id, now)
             held = list((self.samples.get(node_id) or {}).values())
-        # One outcome per target bucket: a 5- and a 15-min forecast of the same bucket share its actual,
-        # so counting both overstates the evidence. The shortest horizon wins.
-        by_target: dict[datetime, JointSample] = {}
-        for smp in held:
-            cur = by_target.get(smp.target_ts)
-            if cur is None or smp.horizon_min < cur.horizon_min:
-                by_target[smp.target_ts] = smp
-        rows = sorted(by_target.values(), key=lambda s: s.target_ts)
-        if not rows:
+        # One outcome per target bucket, the shortest horizon wins (surprisal.shortest_horizon_per_target).
+        rows = shortest_horizon_per_target(held)
+        f = fold([(s.excess, s.calm_var) for s in rows])
+        if f is None:
             return None
-        total = sum(s.excess for s in rows)
-        z = total / math.sqrt(sum(s.calm_var for s in rows))
         return JointSurpriseReading(
-            node_id=node_id, mean_excess=total / len(rows), z=z, value=max(0.0, min(1.0, z / Z_FULL_SCALE)),
-            n=len(rows), newest_target_ts=rows[-1].target_ts, joint_ids=tuple(s.joint_id for s in rows),
+            node_id=node_id, mean_excess=f.mean_excess, z=f.z, value=f.value,
+            n=f.n, newest_target_ts=rows[-1].target_ts, joint_ids=tuple(s.joint_id for s in rows),
             top_reading=rows[-1].top_reading)

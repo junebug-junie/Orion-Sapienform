@@ -46,8 +46,16 @@ def test_ids_match_the_producers() -> None:
     assert csb.CHAT_TURN_NODE_ID == pt.CHAT_TURN_NODE_ID
     assert csb.PERCEPTION_NODE_ID == ac.PERCEPTION_NODE_ID
     assert csb.PERCEPTION_WALKWAY_NODE_ID == ac.PERCEPTION_WALKWAY_NODE_ID
-    # every producer stores clip(z / 3, 0, 1): the bars are in those units
-    assert ps.Z_FULL_SCALE == pj.Z_FULL_SCALE == pt.Z_FULL_SCALE == csb.Z_FULL_SCALE
+    # Every producer stores clip(z / 3, 0, 1), so the bars are in those units. Since PR #4013 the scale is
+    # one shared constant, so comparing the modules' copies to each other proves nothing: pin the number
+    # and the bars it produces instead.
+    assert csb.Z_FULL_SCALE == 3.0
+    assert csb.CURIOSITY_SEED_BAR_BY_NODE_ID[csb.ROOM_NODE_ID] == pytest.approx(2.0 / 3.0)
+    assert csb.CURIOSITY_SEED_BAR_BY_NODE_ID[csb.CHAT_TURN_NODE_ID] == pytest.approx(0.8)
+    assert csb.CURIOSITY_SEED_BAR_BY_NODE_ID[csb.STREET_RHYTHM_NODE_ID] == pytest.approx(0.6)
+    from orion.prediction.surprisal import node_value
+
+    assert node_value(3.0) == 1.0 and node_value(1.8) == pytest.approx(0.6)  # the street bar is z 1.8
 
 
 def _gamma_tail(n: int, x: float) -> float:
@@ -58,10 +66,10 @@ def _gamma_tail(n: int, x: float) -> float:
 def test_floored_room_body_cut() -> None:
     """Floored p (room / body): the same z 2.0 cut is <= 5 % for windows of 2+ outcomes and
     ~7.3 % for a one-outcome window (exact: U <= exp(-(0.95 + 2 sd)))."""
-    from orion.substrate.prediction_surprise import calm_excess_variance
+    from orion.prediction.surprisal import calm_excess_variance
 
-    assert cb.calm_excess_variance(cb.P_FLOOR) == pytest.approx(calm_excess_variance(0.95))
-    sd = math.sqrt(calm_excess_variance(0.95))
+    assert cb.calm_excess_variance(cb.P_FLOOR) == pytest.approx(calm_excess_variance(1.0 - 0.95))
+    sd = math.sqrt(calm_excess_variance(1.0 - 0.95))
     assert math.exp(-(0.95 + csb.FORECAST_Z_CUT * sd)) == pytest.approx(0.073, abs=0.002)
     assert cb.standardized_floored_tail(1, csb.FORECAST_Z_CUT) == pytest.approx(0.073, abs=0.002)
     for n in (2, 3, 6):

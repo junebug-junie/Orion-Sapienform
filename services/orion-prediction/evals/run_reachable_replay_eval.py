@@ -32,8 +32,8 @@ def _paired(pairs) -> dict:
     a, b = {}, {}
     for r, q in pairs:
         d = r["origin"].astimezone(R.LOCAL_TZ).date()
-        a.setdefault(d, []).append(R.log_loss(r["p"], r["happened"]))
-        b.setdefault(d, []).append(R.log_loss(q, r["happened"]))
+        a.setdefault(d, []).append(R.log_loss(r["p"], r["happened"], R.P_CLIP))
+        b.setdefault(d, []).append(R.log_loss(q, r["happened"], R.P_CLIP))
     days = sorted(a)
     return {"n_hours": len(pairs), "n_days": len(days), "n_hours_with_message": sum(1 for r, _ in pairs if r["happened"]),
             "log_loss": {"hub": sum(map(sum, a.values())) / len(pairs), "no_hub": sum(map(sum, b.values())) / len(pairs)},

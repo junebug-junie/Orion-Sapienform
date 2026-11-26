@@ -27,12 +27,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from orion.prediction.surprisal import Z_FULL_SCALE, fold  # noqa: F401  (Z_FULL_SCALE: re-exported)
+
 CHAT_TURN_NODE_ID = "node:prediction.chat_turn"
 PREDICTION_TURN_SURPRISE_NODE_IDS: frozenset[str] = frozenset({CHAT_TURN_NODE_ID})
 CALLER_NODE_IDS: dict[str, str] = {"chat": CHAT_TURN_NODE_ID}
 WINDOW = timedelta(minutes=30)
 REDUCER_KEY = "prediction_turn_surprise"
-Z_FULL_SCALE = 3.0
 
 
 def _aware(ts: datetime) -> datetime:
@@ -106,13 +107,12 @@ class TurnSurpriseState:
         with self._lock:
             self._prune(node_id, now)
             rows = sorted((self.samples.get(node_id) or {}).values(), key=lambda s: s.settled_at)
-        if not rows:
+        f = fold([(s.excess, s.calm_var) for s in rows])
+        if f is None:
             return None
-        total = sum(s.excess for s in rows)
-        z = total / math.sqrt(sum(s.calm_var for s in rows))
         return TurnSurpriseReading(
-            node_id=node_id, mean_excess=total / len(rows), z=z,
-            value=max(0.0, min(1.0, z / Z_FULL_SCALE)), n=len(rows),
+            node_id=node_id, mean_excess=f.mean_excess, z=f.z,
+            value=f.value, n=f.n,
             newest_settled_at=rows[-1].settled_at,
             correlation_ids=tuple(s.correlation_id for s in rows),
         )

@@ -70,6 +70,8 @@ from scipy.optimize import minimize
 from scipy.special import expit
 
 from app.backtest import paired_gap
+from orion.prediction.grading import calibration as grading_calibration
+from orion.prediction.grading import log_loss  # always clipped with P_CLIP here; evals read R.log_loss
 
 logger = logging.getLogger("orion-prediction.reachable")
 
@@ -311,16 +313,11 @@ def outcome(messages: Iterable[datetime], origin: datetime) -> tuple[bool, int]:
     return n > 0, n
 
 
-def log_loss(p: float, happened: bool) -> float:
-    p = min(1 - P_CLIP, max(P_CLIP, float(p)))
-    return -float(np.log(p if happened else 1 - p))
-
-
 def _day_means(rows: Sequence[dict], key: str) -> dict:
     by: dict = {}
     for r in rows:
         day = r["origin"].astimezone(LOCAL_TZ).date()
-        by.setdefault(day, []).append(log_loss(r[key], r["happened"]))
+        by.setdefault(day, []).append(log_loss(r[key], r["happened"], P_CLIP))
     return {d: float(np.mean(v)) for d, v in by.items()}
 
 
@@ -344,7 +341,7 @@ def _subset_verdict(rows: Sequence[dict]) -> dict:
     m = np.array([model[d] for d in days]); b = np.array([base[d] for d in days])
     s = np.array([state[d] for d in days])
     n_pos = int(sum(1 for r in rows if r["happened"]))
-    ll = lambda key: float(np.mean([log_loss(r[key], r["happened"]) for r in rows])) if rows else None  # noqa: E731
+    ll = lambda key: float(np.mean([log_loss(r[key], r["happened"], P_CLIP) for r in rows])) if rows else None  # noqa: E731
     out = {"n_hours": len(rows), "n_days": len(days), "n_hours_with_message": n_pos,
            "log_loss": {"model": ll("p"), "state": ll("p_state"), "baseline": ll("p_baseline")},
            "skill_vs_baseline": None, "vs_baseline": None, "activity_vs_state": None}
@@ -357,13 +354,11 @@ def _subset_verdict(rows: Sequence[dict]) -> dict:
 
 
 def calibration(rows: Sequence[dict], key: str = "p") -> list[dict]:
-    out = []
-    for lo, hi in zip(CALIBRATION_BINS[:-1], CALIBRATION_BINS[1:]):
-        sel = [r for r in rows if lo <= r[key] < hi or (hi == 1.0 and r[key] == 1.0)]
-        if sel:
-            out.append({"bin": [lo, hi], "n": len(sel), "mean_p": float(np.mean([r[key] for r in sel])),
-                        "observed_rate": float(np.mean([r["happened"] for r in sel]))})
-    return out
+    """The grader's binary bins (orion.prediction.grading.calibration) on this forecast's own edges, in
+    the shape the live grade has always shown."""
+    bins = grading_calibration([r[key] for r in rows], [r["happened"] for r in rows], CALIBRATION_BINS)
+    return [{"bin": [b["from"], b["to"]], "n": b["n"], "mean_p": b["mean_p"], "observed_rate": b["observed"]}
+            for b in bins]
 
 
 def verdict(rows: Iterable[dict]) -> dict:

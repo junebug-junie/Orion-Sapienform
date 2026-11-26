@@ -82,12 +82,14 @@ class Ungradeable:
     unlock: str
 
 
-def wilson(share: float, n_eff: float) -> tuple[float, float]:
+def wilson(share: float, n_eff: float, z: float = Z) -> tuple[float, float]:
+    """Wilson score interval (``z`` = 1.96: 95 %) for a share over ``n_eff`` (effective) trials; (0, 1) with
+    none. The one Wilson in the bet primitives (promise_ledger_replay_eval imports it)."""
     if n_eff <= 0:
         return 0.0, 1.0
-    denom = 1 + Z * Z / n_eff
-    centre = (share + Z * Z / (2 * n_eff)) / denom
-    half = Z * math.sqrt(share * (1 - share) / n_eff + Z * Z / (4 * n_eff * n_eff)) / denom
+    denom = 1 + z * z / n_eff
+    centre = (share + z * z / (2 * n_eff)) / denom
+    half = z * math.sqrt(share * (1 - share) / n_eff + z * z / (4 * n_eff * n_eff)) / denom
     return max(0.0, centre - half), min(1.0, centre + half)
 
 

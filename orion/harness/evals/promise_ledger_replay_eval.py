@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -157,11 +156,11 @@ def wilson(successes: int, n: int, *, z: float = 1.96) -> dict[str, float | int 
     """Point estimate and 95% Wilson score interval for a proportion (stdlib only)."""
     if n <= 0:
         return {"k": successes, "n": n, "p": None, "lo95": None, "hi95": None}
+    from orion.self_monitor.record import wilson as wilson_interval
+
     p = successes / n
-    denom = 1 + z * z / n
-    centre = (p + z * z / (2 * n)) / denom
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
-    return {"k": successes, "n": n, "p": p, "lo95": max(0.0, centre - half), "hi95": min(1.0, centre + half)}
+    lo, hi = wilson_interval(p, n, z)
+    return {"k": successes, "n": n, "p": p, "lo95": lo, "hi95": hi}
 
 
 # --- live replay --------------------------------------------------------------------------

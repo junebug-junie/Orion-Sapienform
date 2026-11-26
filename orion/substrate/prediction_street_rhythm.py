@@ -40,11 +40,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from orion.prediction.surprisal import Z_FULL_SCALE, fold  # noqa: F401  (Z_FULL_SCALE: re-exported)
+
 STREET_RHYTHM_NODE_ID = "node:prediction.street_rhythm"
 PREDICTION_STREET_RHYTHM_NODE_IDS: frozenset[str] = frozenset({STREET_RHYTHM_NODE_ID})
 WINDOW = timedelta(minutes=30)
 REDUCER_KEY = "prediction_street_rhythm"
-Z_FULL_SCALE = 3.0
+# A window whose summed calm variance is at or below this holds only 50/50 forecasts: no z.
+MIN_WINDOW_VAR = 1e-12
 
 
 def _aware(ts: datetime) -> datetime:
@@ -125,16 +128,12 @@ class StreetRhythmState:
         with self._lock:
             self._prune(now)
             rows = sorted(self.samples.values(), key=lambda s: s.scored_at)
-        if not rows:
+        f = fold([(s.excess, s.calm_var) for s in rows], min_var=MIN_WINDOW_VAR)
+        if f is None:
             return None
-        var = sum(s.calm_var for s in rows)
-        if var <= 1e-12:
-            return None
-        total = sum(s.excess for s in rows)
-        z = total / math.sqrt(var)
         return StreetRhythmReading(
-            node_id=STREET_RHYTHM_NODE_ID, mean_excess=total / len(rows), z=z,
-            value=max(0.0, min(1.0, z / Z_FULL_SCALE)), n=len(rows),
+            node_id=STREET_RHYTHM_NODE_ID, mean_excess=f.mean_excess, z=f.z,
+            value=f.value, n=f.n,
             newest_scored_at=rows[-1].scored_at,
             expectation_ids=tuple(s.expectation_id for s in rows),
         )
@@ -148,9 +147,8 @@ def replay_node_values(samples: list[RhythmSample]) -> list[tuple[datetime, floa
     out: list[tuple[datetime, float]] = []
     for k, cur in enumerate(rows):
         win = [s for s in rows[: k + 1] if s.scored_at >= cur.scored_at - WINDOW]
-        var = sum(s.calm_var for s in win)
-        if var <= 1e-12:
+        f = fold([(s.excess, s.calm_var) for s in win], min_var=MIN_WINDOW_VAR)
+        if f is None:
             continue
-        z = sum(s.excess for s in win) / math.sqrt(var)
-        out.append((cur.scored_at, max(0.0, min(1.0, z / Z_FULL_SCALE))))
+        out.append((cur.scored_at, f.value))
     return out

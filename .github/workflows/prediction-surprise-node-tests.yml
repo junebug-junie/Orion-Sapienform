@@ -9,6 +9,9 @@ name: prediction-surprise-node-tests
 on:
   pull_request:
     paths:
+      - "orion/prediction/surprisal.py"
+      - "orion/prediction/tests/**"
+      - "orion/substrate/prediction_street_rhythm.py"
       - "orion/substrate/prediction_surprise.py"
       - "orion/substrate/tests/test_prediction_surprise.py"
       - "orion/substrate/prediction_turn_surprise.py"
@@ -36,6 +39,9 @@ on:
   push:
     branches: [main]
     paths:
+      - "orion/prediction/surprisal.py"
+      - "orion/prediction/tests/**"
+      - "orion/substrate/prediction_street_rhythm.py"
       - "orion/substrate/prediction_surprise.py"
       - "orion/substrate/prediction_turn_surprise.py"
       - "orion/substrate/prediction_joint_surprise.py"
@@ -65,6 +71,8 @@ jobs:
       - name: Fold (pure) + readers accept surprise_excess
         run: |
           python -m pytest -q -p no:cacheprovider \
+            orion/prediction/tests \
+            orion/substrate/tests/test_prediction_street_rhythm.py \
             orion/substrate/tests/test_prediction_surprise.py \
             orion/substrate/tests/test_prediction_turn_surprise.py \
             orion/substrate/tests/test_prediction_joint_surprise.py \

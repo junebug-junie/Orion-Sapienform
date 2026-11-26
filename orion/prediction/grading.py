@@ -7,6 +7,11 @@ probability in each bin with how often it actually happened.
 
 ``skill`` is None when the base rate is 0 or 1 (no crossing, or always crossing, in the window): the
 reference then has zero error and there is nothing to beat. Read the Brier score and the bins then.
+
+The one grader for yes/no bets (docs/superpowers/specs/2026-11-25-shared-bet-primitives-design.md,
+Primitive 2): ``grade``, ``sorting_score``, ``calibration`` (binary bins), and ``log_loss`` /
+``bernoulli_entropy``. The last two are defined in the stdlib-only ``orion.prediction.surprisal`` (the bet
+terms need them without numpy) and re-exported here as part of the grader's API.
 """
 from __future__ import annotations
 
@@ -15,8 +20,27 @@ from typing import Hashable, Sequence
 
 import numpy as np
 
+from orion.prediction.surprisal import bernoulli_entropy, log_loss  # noqa: F401  (re-exported)
+
 BINS = (0.0, 0.05, 0.15, 0.3, 0.5, 0.7, 1.0000001)
 MIN_GRADED = 50
+
+
+def calibration(probs: Sequence[float], hits: Sequence[bool], bins: Sequence[float] = BINS) -> list[dict]:
+    """Binary calibration bins: per non-empty bin ``[lo, hi)``, the mean stated p and how often it happened.
+    A last edge of exactly 1.0 closes the bin (p = 1.0 lands in it), so either convention for the top edge
+    (``BINS`` ends past 1.0) counts every p in [0, 1]. ``to`` is the edge, capped at 1.0."""
+    p = np.asarray(probs, dtype=float)
+    y = np.asarray(hits, dtype=float)
+    out = []
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        m = (p >= lo) & (p < hi)
+        if hi == 1.0:
+            m |= p == 1.0
+        if m.any():
+            out.append({"from": lo, "to": min(hi, 1.0), "n": int(m.sum()), "mean_p": float(p[m].mean()),
+                        "observed": float(y[m].mean())})
+    return out
 
 
 def grade(probs: Sequence[float], hits: Sequence[bool]) -> dict:
@@ -29,12 +53,7 @@ def grade(probs: Sequence[float], hits: Sequence[bool]) -> dict:
     base = float(y.mean())
     brier = float(np.mean((p - y) ** 2))
     brier_ref = float(np.mean((base - y) ** 2))
-    bins = []
-    for lo, hi in zip(BINS[:-1], BINS[1:]):
-        m = (p >= lo) & (p < hi)
-        if m.any():
-            bins.append({"from": lo, "to": min(hi, 1.0), "n": int(m.sum()), "mean_p": float(p[m].mean()),
-                         "observed": float(y[m].mean())})
+    bins = calibration(p, y)
     return {"n": n, "brier": brier, "base_rate": base, "brier_base_rate": brier_ref,
             "skill": (1 - brier / brier_ref) if brier_ref > 0 else None, "bins": bins,
             "enough": n >= MIN_GRADED}

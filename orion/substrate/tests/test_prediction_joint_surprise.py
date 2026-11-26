@@ -12,8 +12,8 @@ from orion.substrate.prediction_joint_surprise import (
     ROOM_JOINT_NODE_ID,
     WINDOW,
     JointSurpriseState,
-    calm_excess_variance,
 )
+from orion.prediction.surprisal import calm_excess_variance_discrete as calm_excess_variance
 
 NOW = datetime(2026, 11, 18, 9, 30, tzinfo=timezone.utc)
 

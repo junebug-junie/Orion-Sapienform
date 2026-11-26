@@ -70,6 +70,9 @@ from __future__ import annotations
 
 from typing import Mapping
 
+# Every node stores clip(z / Z_FULL_SCALE, 0, 1). Stdlib-only import, so this module stays import-light.
+from orion.prediction.surprisal import Z_FULL_SCALE  # noqa: F401  (re-exported)
+
 # Ids are literals so this module stays import-light; tests check them against the producers.
 ROOM_NODE_ID = "node:prediction.room"
 BODY_NODE_ID = "node:prediction.body"
@@ -80,8 +83,6 @@ STREET_RHYTHM_NODE_ID = "node:prediction.street_rhythm"
 PERCEPTION_NODE_ID = "node:substrate.perception"
 PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 
-# Every node stores clip(z / Z_FULL_SCALE, 0, 1).
-Z_FULL_SCALE = 3.0
 # Standardized Gamma(n) 95th percentile is <= this for every n >= 1 (1.996 at n = 1).
 FORECAST_Z_CUT = 2.0
 # Chat turns: exact calm crossing rate of the live bets <= 5 % (4.6 % on 2026-11-17..24).

@@ -32,7 +32,6 @@ against the p each bet was served, on the same settled bets, with the same per-s
 from __future__ import annotations
 
 import logging
-import math
 import os
 import time
 from collections import defaultdict
@@ -44,7 +43,7 @@ from scipy import special, stats
 
 from app.backtest import paired_win_p
 from orion.embodiment.transition import TransitionWeights, success_p
-from orion.prediction.grading import grade
+from orion.prediction.grading import bernoulli_entropy, grade
 from app.live import LIVE_ALPHA, MIN_INDEPENDENT
 
 logger = logging.getLogger("orion-prediction.action_bets")
@@ -63,12 +62,6 @@ LIVE_TOP_PLACES = 20
 
 
 # --- pure model -------------------------------------------------------------------------------------
-def bernoulli_entropy(p: float) -> float:
-    if p <= 0.0 or p >= 1.0:
-        return 0.0
-    return -(p * math.log(p) + (1 - p) * math.log(1 - p))
-
-
 def beta_eig(a: float, b: float) -> float:
     """Mutual information (nats) between the next outcome and the rate under Beta(a, b):
     H(mean) - E[H(theta)], with E[H(theta)] = psi(a+b+1) - m psi(a+1) - (1-m) psi(b+1)."""

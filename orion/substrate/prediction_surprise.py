@@ -51,6 +51,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+from orion.prediction.surprisal import (  # noqa: F401  (Z_FULL_SCALE: re-exported for readers)
+    Z_FULL_SCALE,
+    calm_excess_variance as _floored_calm_var,
+    fold,
+    independent_origin,
+    shortest_horizon_per_target,
+)
+
 ROOM_NODE_ID = "node:prediction.room"
 BODY_NODE_ID = "node:prediction.body"
 SERIES_NODE_IDS: dict[str, str] = {
@@ -60,29 +68,10 @@ SERIES_NODE_IDS: dict[str, str] = {
 PREDICTION_SURPRISE_NODE_IDS: frozenset[str] = frozenset(SERIES_NODE_IDS.values())
 WINDOW = timedelta(minutes=30)
 REDUCER_KEY = "prediction_surprise"
-Z_FULL_SCALE = 3.0
-
-
-def calm_excess_variance(calm_surprisal: float) -> float:
-    """Variance of one outcome's excess under a calibrated forecaster, from the floor the producer
-    used (``P = 1 - calm_surprisal``, since E[-ln max(p, P)] = 1 - P). 0.698 at P = 0.05."""
-    p_floor = 1.0 - float(calm_surprisal)
-    if not 0.0 < p_floor < 1.0:
-        raise ValueError(f"calm_surprisal {calm_surprisal!r} implies no valid p floor")
-    return 2.0 - 2.0 * p_floor * (1.0 + math.log(1.0 / p_floor)) - (1.0 - p_floor) ** 2
 
 
 def _aware(ts: datetime) -> datetime:
     return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
-
-
-def independent_origin(origin_ts: datetime, horizon_min: int) -> bool:
-    """True when this origin starts a horizon-long block on the clock (one independent forecast per
-    block). Every 5-min origin passes at h=5; one in three at h=15."""
-    # Whole minutes since the epoch: tolerant of seconds on an origin (bucket starts are on the
-    # minute today, live 2026-11-11), never silently dropping every sample if they drift.
-    minute = int(_aware(origin_ts).timestamp()) // 60
-    return minute % max(1, int(horizon_min)) == 0
 
 
 @dataclass(frozen=True)
@@ -147,7 +136,8 @@ class PredictionSurpriseState:
         if target < _aware(now) - WINDOW:
             return node_id, "older_than_window"
         excess = float(get("excess"))
-        calm_var = calm_excess_variance(float(get("calm_surprisal")))
+        # The producer's floor P is read off the event (E[-ln max(p, P)] = 1 - P = calm_surprisal).
+        calm_var = _floored_calm_var(1.0 - float(get("calm_surprisal")))
         if not math.isfinite(excess):
             return node_id, "non_finite_excess"
         with self._lock:
@@ -163,25 +153,17 @@ class PredictionSurpriseState:
         with self._lock:
             self._prune(node_id, now)
             held = list((self.samples.get(node_id) or {}).values())
-        # One outcome per target bucket: a 5- and a 15-min forecast of the same bucket share its
-        # actual (live correlation of their excess 0.25), so counting both overstates the evidence.
-        # The shortest horizon wins (the freshest forecast of that bucket).
-        by_target: dict[datetime, SurpriseSample] = {}
-        for smp in held:
-            cur = by_target.get(smp.target_ts)
-            if cur is None or smp.horizon_min < cur.horizon_min:
-                by_target[smp.target_ts] = smp
-        rows = sorted(by_target.values(), key=lambda s: s.target_ts)
-        if not rows:
+        # One outcome per target bucket, the shortest horizon wins (surprisal.shortest_horizon_per_target).
+        rows = shortest_horizon_per_target(held)
+        f = fold([(s.excess, s.calm_var) for s in rows])
+        if f is None:
             return None
-        total = sum(s.excess for s in rows)
-        z = total / math.sqrt(sum(s.calm_var for s in rows))
         return SurpriseReading(
             node_id=node_id,
-            mean_excess=total / len(rows),
-            z=z,
-            value=max(0.0, min(1.0, z / Z_FULL_SCALE)),
-            n=len(rows),
+            mean_excess=f.mean_excess,
+            z=f.z,
+            value=f.value,
+            n=f.n,
             newest_target_ts=rows[-1].target_ts,
             forecast_ids=tuple(s.forecast_id for s in rows),
         )

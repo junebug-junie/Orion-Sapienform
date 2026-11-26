@@ -13,9 +13,14 @@ from orion.substrate.prediction_surprise import (
     ROOM_NODE_ID,
     WINDOW,
     PredictionSurpriseState,
-    calm_excess_variance,
     independent_origin,
 )
+from orion.prediction.surprisal import calm_excess_variance as _floored_var
+
+
+def event_calm_var(calm_surprisal: float) -> float:
+    """The node's calm variance for an event's calm surprisal (floor P = 1 - calm_surprisal)."""
+    return _floored_var(1.0 - calm_surprisal)
 
 NOW = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc)
 CALM = 0.95
@@ -30,9 +35,9 @@ def _ev(series="office.temp_c", hm=5, origin_min_ago=10, excess=0.0, fid="1"):
 
 def test_calm_variance_is_the_floored_exponential_variance():
     # -ln max(U, 0.05): mean 0.95, variance 2 - 2P(1 + ln 1/P) - (1 - P)^2.
-    assert calm_excess_variance(CALM) == pytest.approx(0.69793, abs=1e-5)
+    assert event_calm_var(CALM) == pytest.approx(0.69793, abs=1e-5)
     with pytest.raises(ValueError):
-        calm_excess_variance(1.0)
+        event_calm_var(1.0)
 
 
 def test_series_map_to_one_node_each_and_unknown_series_is_ignored():
@@ -57,7 +62,7 @@ def test_reading_is_summed_excess_over_its_calm_spread():
     for i, x in enumerate((2.05, -0.2, -0.2, -0.2), start=1):
         st.add(_ev(origin_min_ago=5 * i + 5, excess=x, fid=str(i)), now=NOW)
     r = st.reading(ROOM_NODE_ID, now=NOW)
-    z = (2.05 - 0.6) / math.sqrt(4 * calm_excess_variance(CALM))
+    z = (2.05 - 0.6) / math.sqrt(4 * event_calm_var(CALM))
     assert r.n == 4 and r.z == pytest.approx(z) and r.value == pytest.approx(z / 3)
     assert r.mean_excess == pytest.approx((2.05 - 0.6) / 4)
     assert r.forecast_ids == ("4", "3", "2", "1")       # oldest target first

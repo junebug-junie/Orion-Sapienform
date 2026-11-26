@@ -58,10 +58,10 @@ def _gamma_tail(n: int, x: float) -> float:
 def test_floored_room_body_cut() -> None:
     """Floored p (room / body): the same z 2.0 cut is <= 5 % for windows of 2+ outcomes and
     ~7.3 % for a one-outcome window (exact: U <= exp(-(0.95 + 2 sd)))."""
-    from orion.substrate.prediction_surprise import calm_excess_variance
+    from orion.prediction.surprisal import calm_excess_variance
 
-    assert cb.calm_excess_variance(cb.P_FLOOR) == pytest.approx(calm_excess_variance(0.95))
-    sd = math.sqrt(calm_excess_variance(0.95))
+    assert cb.calm_excess_variance(cb.P_FLOOR) == pytest.approx(calm_excess_variance(1.0 - 0.95))
+    sd = math.sqrt(calm_excess_variance(1.0 - 0.95))
     assert math.exp(-(0.95 + csb.FORECAST_Z_CUT * sd)) == pytest.approx(0.073, abs=0.002)
     assert cb.standardized_floored_tail(1, csb.FORECAST_Z_CUT) == pytest.approx(0.073, abs=0.002)
     for n in (2, 3, 6):

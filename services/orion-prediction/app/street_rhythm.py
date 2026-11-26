@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
+from orion.prediction import surprisal as sp
+
 STREAM_ID = "walkway"
 P_MIN, P_MAX = 0.02, 0.98
 STALE_KEY_AFTER = timedelta(days=7)
@@ -56,7 +58,7 @@ def _aware(ts: datetime) -> datetime:
 
 
 def clamp_p(p: float) -> float:
-    return min(P_MAX, max(P_MIN, float(p)))
+    return sp.clip_p(p, P_MIN)   # [P_MIN, 1 - P_MIN] == [P_MIN, P_MAX] (tested)
 
 
 @dataclass(frozen=True)
@@ -70,12 +72,10 @@ class OutcomeTerms:
 
 
 def outcome_terms(stated_p: float, happened: bool) -> OutcomeTerms:
-    p = clamp_p(stated_p)
-    s = -math.log(p if happened else 1.0 - p)
-    h = -p * math.log(p) - (1.0 - p) * math.log(1.0 - p)
-    lg = math.log(p / (1.0 - p))
-    return OutcomeTerms(p=p, happened=bool(happened), surprisal=s, calm_surprisal=h, excess=s - h,
-                        calm_var=p * (1.0 - p) * lg * lg)
+    """The raw stated p's terms (the math: ``orion.prediction.surprisal.bet_terms``, clamp P_MIN)."""
+    t = sp.bet_terms(stated_p, happened, P_MIN)
+    return OutcomeTerms(p=t.q, happened=t.happened, surprisal=t.surprisal, calm_surprisal=t.entropy,
+                        excess=t.excess, calm_var=t.calm_var)
 
 
 def subject_kind(subject_key: str) -> str | None:

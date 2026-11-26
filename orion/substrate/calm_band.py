@@ -51,6 +51,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence
 
+# The shared surprise library owns the constants and the floored calm variance; this module keeps the
+# exact calm tails and the band-rule table.
+from orion.prediction.surprisal import P_FLOOR, Z_FULL_SCALE, calm_excess_variance  # noqa: F401  (re-exported)
+
 ROOM_NODE_ID = "node:prediction.room"
 BODY_NODE_ID = "node:prediction.body"
 ROOM_JOINT_NODE_ID = "node:prediction.room_joint"
@@ -59,10 +63,8 @@ CHAT_TURN_NODE_ID = "node:prediction.chat_turn"
 PERCEPTION_NODE_ID = "node:substrate.perception"
 PERCEPTION_WALKWAY_NODE_ID = "node:substrate.perception_walkway"
 
-# Every forecast-surprise node stores clip(z / Z_FULL_SCALE, 0, 1).
-Z_FULL_SCALE = 3.0
-# orion-prediction's surprise floor (services/orion-prediction/app/surprise.py P_FLOOR).
-P_FLOOR = 0.05
+# Every forecast-surprise node stores clip(z / Z_FULL_SCALE, 0, 1); P_FLOOR is orion-prediction's
+# conformal floor. Both come from orion.prediction.surprisal (imported above).
 # A 30-min window holds at most ~6 five-min and 2 fifteen-min outcomes (prediction_surprise.py);
 # 12 leaves margin. Larger windows are covered by the normal limit.
 MAX_WINDOW_OUTCOMES = 12
@@ -122,12 +124,6 @@ def gamma_tail(n: int, x: float) -> float:
 def standardized_gamma_tail(n: int, z: float) -> float:
     """Joint nodes: P((G - n) / sqrt(n) >= z), G ~ Gamma(n, 1)."""
     return gamma_tail(n, n + z * math.sqrt(n))
-
-
-def calm_excess_variance(p_floor: float = P_FLOOR) -> float:
-    """Var[-ln max(p, P)] for p uniform (== prediction_surprise.calm_excess_variance(1 - P))."""
-    p = float(p_floor)
-    return 2.0 - 2.0 * p * (1.0 + math.log(1.0 / p)) - (1.0 - p) ** 2
 
 
 def floored_sum_tail(n: int, s: float, p_floor: float = P_FLOOR) -> float:

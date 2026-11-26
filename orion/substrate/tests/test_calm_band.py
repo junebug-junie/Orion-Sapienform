@@ -161,9 +161,16 @@ def test_p_floor_matches_orion_prediction() -> None:
 
     src = Path(__file__).resolve().parents[3] / "services" / "orion-prediction" / "app" / "surprise.py"
     tree = ast.parse(src.read_text())
-    vals = [n.value.value for n in tree.body if isinstance(n, ast.Assign)
-            and any(getattr(t, "id", None) == "P_FLOOR" for t in n.targets)]
-    assert vals == [cb.P_FLOOR]
+    # One floor: orion-prediction imports it from the shared library this module also reads (Patch A of
+    # the shared-bet-primitives design), and assigns no copy of its own.
+    assigned = [n for n in tree.body if isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) == "P_FLOOR" for t in n.targets)]
+    imported = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "orion.prediction.surprisal"
+                and any(a.name == "P_FLOOR" for a in n.names)]
+    assert not assigned and len(imported) == 1
+    from orion.prediction import surprisal
+
+    assert cb.P_FLOOR is surprisal.P_FLOOR == 0.05
 
 
 def test_bet_atoms_match_brute_force() -> None:

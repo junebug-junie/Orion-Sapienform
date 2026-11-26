@@ -79,10 +79,10 @@ def _defs_and_assigns():
         except (SyntaxError, UnicodeDecodeError):
             continue
         rel = str(path.relative_to(REPO))
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef):
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 defs.setdefault(node.name, []).append(rel)
-            elif isinstance(node, ast.Assign):
+            elif isinstance(node, ast.Assign) and node in tree.body:
                 for t in node.targets:
                     if isinstance(t, ast.Name):
                         assigns.setdefault(t.id, []).append(rel)

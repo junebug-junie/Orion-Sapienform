@@ -8,6 +8,7 @@ name: Promise ledger
 on:
   pull_request:
     paths:
+      - "orion/prediction/**"
       - "orion/harness/promise_gate.py"
       - "orion/harness/finalize.py"
       - "orion/harness/tests/test_promise_gate.py"

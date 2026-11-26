@@ -160,6 +160,8 @@ def bet_window_atoms(qs: Iterable[float]) -> list[tuple[float, float]]:
     """Every outcome of a window of calibrated yes/no bets as (z, calm probability)
     (prediction_turn_surprise.py / turn_surprise.py: excess = -(y - q) logit q, calm var
     q (1 - q) logit(q)^2)."""
+    # Deliberately keeps its own closed form (excess = -(y - q) logit q), not surprisal.bet_terms' s - H:
+    # the atoms are compared within _EPS, and the two forms differ by a few ulps. Patch A changes no number.
     qs = [float(q) for q in qs if q is not None and 0.0 < float(q) < 1.0]
     if not qs:
         return []

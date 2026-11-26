@@ -3,8 +3,9 @@ node value. Pure, stdlib only, so orion-prediction, substrate-runtime and the sq
 
 Spec: docs/superpowers/specs/2026-11-25-shared-bet-primitives-design.md (Primitive 3, Patch A). Before
 this module the same math lived in up to six places (the window fold four times, ``Z_FULL_SCALE`` six
-times, the yes/no bet terms three times). Patch A moved it here without changing any number; the golden
-tests (``orion/prediction/tests/test_surprisal_golden.py``) pin that to 1e-9 on live stored rows.
+times, the yes/no bet terms three times). Patch A moved it here without changing any number beyond 1e-9:
+every node value is bit-identical; reachable's log loss moved from np.log to math.log (<= 1 ulp). The
+golden tests (``orion/prediction/tests/test_surprisal_golden.py``) pin that on live stored rows.
 
 Two kinds of stated forecast, one unit (nats), calm point set by math:
 

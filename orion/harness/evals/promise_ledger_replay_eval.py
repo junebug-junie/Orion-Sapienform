@@ -153,7 +153,7 @@ def beta_summary(successes: int, failures: int, *, draws: int = 200_000, seed: i
 
 
 def wilson(successes: int, n: int, *, z: float = 1.96) -> dict[str, float | int | None]:
-    """Point estimate and 95% Wilson score interval for a proportion (stdlib only)."""
+    """Point estimate and 95% Wilson score interval for a proportion (the interval: self_monitor.record.wilson)."""
     if n <= 0:
         return {"k": successes, "n": n, "p": None, "lo95": None, "hi95": None}
     from orion.self_monitor.record import wilson as wilson_interval

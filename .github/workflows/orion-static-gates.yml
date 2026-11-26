@@ -363,8 +363,14 @@ jobs:
       # 20.20.2, red on the runner's 22.23.2. `find` also picks up any future
       # test file in a subdirectory, which a single-level glob would silently
       # skip. Node is preinstalled on ubuntu-latest, so no setup step needed.
+      # jsdom (Hub devDependency) so the DOM interaction tests run instead of
+      # reporting "skipped" with exit 0 (Orion's review of PR #4014). Installed
+      # alone, outside the repo: `npm ci` would also pull puppeteer's Chromium.
       - name: Hub frontend unit tests (node:test)
         run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/hub-jsdom" jsdom@25.0.1
+          export NODE_PATH="$RUNNER_TEMP/hub-jsdom/node_modules"
+          node -e "require('jsdom')"
           files=$(find services/orion-hub/static/js -name '*.test.js' | sort)
           if [ -z "$files" ]; then
             echo "no hub JS test files found -- discovery is broken, not the suite empty"

@@ -226,3 +226,186 @@ test('a verdict from the old buttons shows while parts are still open', () => {
   assert.equal(ws.resultLine(story, ['people', 'direction']),
     'Counted as right so far; answering every part replaces it.');
 });
+
+// One story at a time (2026-11-26).
+test('start index: first ungraded story on first load, the same story after a refresh', () => {
+  const s = (id, verdict) => ({ story_id: id.repeat(32), verdict: verdict || null });
+  const stories = [s('a', 'right'), s('b'), s('c')];
+  assert.equal(ws.startIndex(stories, null, 0), 1);
+  assert.equal(ws.startIndex([s('a', 'right')], null, 0), 0);
+  assert.equal(ws.startIndex(stories, 'c'.repeat(32), 0), 2);
+  // Gone (e.g. "only unchecked" dropped it): stay at the same place, clamped to the list.
+  assert.equal(ws.startIndex(stories, 'z'.repeat(32), 1), 1);
+  assert.equal(ws.startIndex(stories, 'z'.repeat(32), 9), 2);
+  assert.equal(ws.startIndex([], 'z'.repeat(32), 3), 0);
+  assert.equal(ws.positionText(2, 20), 'Story 3 of 20');
+  assert.equal(ws.positionText(0, 0), 'No stories');
+});
+
+// The interaction itself, in a real DOM (jsdom). Skipped where jsdom is not installed.
+let JSDOM = null;
+try { ({ JSDOM } = require('jsdom')); } catch (_) { JSDOM = null; }
+
+const CARD_HTML = `<select id="visionSource"><option value="walkway-live" selected>w</option><option value="off">o</option></select>
+  <div id="walkwayStoriesCard" class="hidden">
+    <input id="walkwayStoriesCheckable" type="checkbox" checked><input id="walkwayStoriesUnchecked" type="checkbox">
+    <div id="walkwayStoriesTally"></div><div id="walkwayStoriesGate"></div><div id="walkwayStoriesStatus"></div>
+    <div id="walkwayStoriesPager"><button id="walkwayStoriesBack"></button><span id="walkwayStoriesPos"></span>
+    <button id="walkwayStoriesNext"></button></div><div id="walkwayStoriesList"></div></div>`;
+
+function storyFixture(c, verdict) {
+  return { story_id: c.repeat(32), sentence: `story ${c}`, display_sentence: `story ${c}`, verdict: verdict || null,
+           started_at: '2026-11-26T10:00:00Z', people: [], persons: [] };
+}
+
+test('one story shows at a time; Back / Next move; a verdict moves on to the next story', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a', 'right'), storyFixture('b'), storyFixture('c')];
+  const posts = [];
+  const fetchFn = async (url, opts) => {
+    if (opts && opts.method === 'POST') {
+      posts.push(url);
+      return { ok: true, status: 200, json: async () => ({ tally: {} }) };
+    }
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  const pos = () => doc.getElementById('walkwayStoriesPos').textContent;
+  const back = doc.getElementById('walkwayStoriesBack');
+  const next = doc.getElementById('walkwayStoriesNext');
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  // Opens on the first story not graded yet.
+  assert.deepEqual(visible(), ['b']);
+  assert.equal(pos(), 'Story 2 of 3');
+  back.click(); await tick();
+  assert.deepEqual(visible(), ['a']);
+  assert.equal(back.disabled, true);
+  next.click(); await tick();
+  assert.deepEqual(visible(), ['b']);
+
+  // Grading story b moves on to c by itself.
+  const shown = doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)');
+  shown.querySelector('[data-story-verdict="right"]').click();
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.equal(posts.length, 1);
+  assert.match(posts[0], new RegExp(`${'b'.repeat(32)}/verdict$`));
+  assert.deepEqual(visible(), ['c']);
+  assert.equal(next.disabled, true);
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /Showing the next story/);
+
+  // A refresh keeps the story she is on.
+  await api.load(true);
+  assert.deepEqual(visible(), ['c']);
+
+  // Leave the walkway view: stops the 60 s refresh timer.
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});
+
+test('a verdict saved after she moved away does not move her again', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b'), storyFixture('c'), storyFixture('d')];
+  let release = null;
+  const fetchFn = async (url, opts) => {
+    if (opts && opts.method === 'POST') {
+      await new Promise((r) => { release = r; });
+      return { ok: true, status: 200, json: async () => ({ tally: {} }) };
+    }
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden) [data-story-verdict="right"]').click();
+  await tick();
+  doc.getElementById('walkwayStoriesNext').click();   // she moves on before the save answers
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['b']);
+  release();
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['b']);                  // not skipped on to c
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});
+
+test('a second Back / Next tap during a move is refused and says so', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b'), storyFixture('c')];
+  const fetchFn = async (url) => {
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  const next = doc.getElementById('walkwayStoriesNext');
+  next.click(); next.click();             // the second lands while the first is still moving
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /Still moving/);
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['b']);     // one step, not two
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});
+
+test('a refresh held by unsent text on a hidden story says which story', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b')];
+  const fetchFn = async (url) => {
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  // A typed draft on story 1 (the input stands in for a person's "why" box).
+  const first = doc.querySelector('#walkwayStoriesList [data-story-id]');
+  const input = doc.createElement('input');
+  input.setAttribute('data-person-why-input', '');
+  input.value = 'pushing a stroller';
+  first.appendChild(input);
+  doc.getElementById('walkwayStoriesNext').click();
+  for (let i = 0; i < 5; i += 1) await tick();
+  await api.load(true);
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /story 1 has text you have not sent/);
+  assert.equal(doc.querySelector('[data-person-why-input]').value, 'pushing a stroller');   // never wiped
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});
+
+test('Next counts from the story she is on after a reload rebuilt the list mid-move', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  let stories = [storyFixture('b'), storyFixture('c'), storyFixture('d')];
+  const fetchFn = async (url) => {
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  assert.deepEqual(visible(), ['b']);
+  // A newer story arrives and a filter-change reload lands while Next is in flight.
+  stories = [storyFixture('a'), storyFixture('b'), storyFixture('c'), storyFixture('d')];
+  doc.getElementById('walkwayStoriesNext').click();
+  await api.load(false);
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['c']);   // the story after b, not two off
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});

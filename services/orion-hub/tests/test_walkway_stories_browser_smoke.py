@@ -135,17 +135,15 @@ def test_walkway_stories_card_browser_smoke():
         assert first.locator("img[data-story-crop]").count() == 2
         assert "frame already gone" in first.text_content()
         assert first.locator("[data-story-verdict='cant_tell']").count() == 1   # an unclear picture is not "wrong"
+        # Only the story shown loads its pictures (lazy): the second story's frame waits for Next.
         page.wait_for_function("() => document.querySelectorAll('img[data-story-frame]').length === 2 && "
-                               "[...document.querySelectorAll('img[data-story-frame]')].every(i => i.complete)")
+                               "document.querySelector('img[data-story-frame]').complete")
         assert any(p.endswith("/strip/frame.jpg") for p in strips)
         assert "named" in items.nth(1).text_content()
         # No strip: says so, shows the vision-host thumb that exists, and offers "Can't tell".
+        # (Its thumbs are lazy: checked below, once it is the story shown.)
         third = items.nth(2)
-        page.wait_for_function("() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[2]"
-                               ".textContent.includes('(picture gone)')")
         assert "No full picture saved for this story" in third.text_content()
-        assert third.locator(f"img[data-story-thumb='{H}']").count() == 1
-        assert third.locator(f"img[data-story-thumb='{GONE}']").count() == 0
         assert third.locator("[data-story-verdict]").count() == 5
         assert page.locator("#walkwayStoriesTally").text_content().startswith("Checked 3 of 50")
         # The tally sits above the list, at the top of the card.
@@ -158,22 +156,52 @@ def test_walkway_stories_card_browser_smoke():
         # The card's pictures must not push the page itself sideways.
         assert page.evaluate("() => document.documentElement.scrollWidth") <= 360
 
+        # One story at a time (2026-11-26): only the first ungraded story shows, with Back / Next.
+        pos = page.locator("#walkwayStoriesPos")
+        assert pos.text_content() == "Story 1 of 3"
+        assert first.is_visible() and not items.nth(1).is_visible() and not third.is_visible()
+        assert page.locator("#walkwayStoriesBack").is_disabled()
+        # Hidden stories' lazy pictures are not fetched: one frame request so far, the shown story's.
+        assert sum(p.endswith("/strip/frame.jpg") for p in strips) == 1
+        page.locator("#walkwayStoriesNext").click()
+        items.nth(1).wait_for(state="visible")
+        assert pos.text_content() == "Story 2 of 3" and not first.is_visible()
+        page.wait_for_function("() => [...document.querySelectorAll('img[data-story-frame]')].every(i => i.complete)")
+        assert sum(p.endswith("/strip/frame.jpg") for p in strips) == 2
+
+        # A verdict saves and moves on to the next story by itself.
         btn = items.nth(1).locator("[data-story-verdict='wrong_name']")
         btn.click()
-        page.wait_for_function(
-            "() => document.querySelector(\"#walkwayStoriesList [data-story-id] + [data-story-id] "
-            "[data-story-verdict='wrong_name']\").getAttribute('aria-pressed') === 'true'")
+        third.wait_for(state="visible")
+        assert pos.text_content() == "Story 3 of 3"
+        page.wait_for_function("() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[2]"
+                               ".textContent.includes('(picture gone)')")
+        assert third.locator(f"img[data-story-thumb='{H}']").count() == 1
+        assert third.locator(f"img[data-story-thumb='{GONE}']").count() == 0
+        assert page.locator("#walkwayStoriesNext").is_disabled()
+        assert "Showing the next story" in page.locator("#walkwayStoriesStatus").text_content()
+        # Focus follows the move (it was on a button inside the now-hidden story).
+        assert page.evaluate("() => document.activeElement.getAttribute('data-story-id')") == f"{3:032x}"
+        assert items.nth(1).locator("[data-story-verdict='wrong_name']").get_attribute("aria-pressed") == "true"
         assert posts == [(f"{2:032x}", {"verdict": "wrong_name"})]
         assert "wrong names 1" in page.locator("#walkwayStoriesTally").text_content()
         assert "a wrong name was found" in page.locator("#walkwayStoriesGate").text_content()
 
+        # The last story stays put and says so.
         third.locator("[data-story-verdict='cant_tell']").click()
         page.wait_for_function(
             "() => document.querySelectorAll('#walkwayStoriesList [data-story-id]')[2]"
             ".querySelector(\"[data-story-verdict='cant_tell']\").getAttribute('aria-pressed') === 'true'")
         assert posts[-1] == (f"{3:032x}", {"verdict": "cant_tell"})
+        assert third.is_visible()
+        assert "last story loaded" in page.locator("#walkwayStoriesStatus").text_content()
+        assert "only unchecked" in page.locator("#walkwayStoriesStatus").text_content()
         assert "can't tell 1 (not counted)" in page.locator("#walkwayStoriesTally").text_content()
         assert "Checked 4 of 50" in page.locator("#walkwayStoriesTally").text_content()
+        # Back goes to the story before.
+        page.locator("#walkwayStoriesBack").click()
+        items.nth(1).wait_for(state="visible")
+        assert pos.text_content() == "Story 2 of 3"
 
         # Unticking "only checkable" asks for everything.
         before = len(lists)
@@ -331,7 +359,11 @@ def test_walkway_story_one_person_at_a_time_browser_smoke():
         assert posts[-1][1:] == ("ind-dog", {"action": "unsure", "name": "", "why": "", "group": True,
                                              "card": "one_at_a_time", "dont_know": False, "crop_ids": ["c1"]})
         # A named person: "Is this Alex?", the list leaves out Alex, a typed name saves at once.
+        # One story at a time: Next shows the second story.
+        page.locator("#walkwayStoriesNext").click()
         second = items.nth(1)
+        second.wait_for(state="visible")
+        assert not first.is_visible()
         assert second.locator("[data-story-reopened]").count() == 1 and first.locator("[data-story-reopened]").count() == 0
         assert second.locator("[data-person-question]").text_content() == "Is this Alex?"
         assert second.locator("[data-person-action='yes']").text_content() == "Yes, that's Alex"

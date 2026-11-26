@@ -221,14 +221,13 @@ def _log_loss(mod: Any, p: float, y: bool) -> float:
     return mod.log_loss(p, y)
 
 
-def compute_service(inp: dict) -> dict:
+def compute_service(inp: dict, *, separate: bool = True) -> dict:
     import app.action_bets as ab
     import app.reachable as rc
     import app.street_rhythm as sr
     import app.surprise as su
     import app.turn_surprise as tsu
     from orion.curiosity.value import entropy_nats
-    from orion.harness.evals.promise_ledger_replay_eval import wilson as promise_wilson
     from orion.prediction.grading import grade
     from orion.self_monitor.record import wilson as record_wilson
 
@@ -289,8 +288,20 @@ def compute_service(inp: dict) -> dict:
     out["beta_eig"] = [[a, b, ab.beta_eig(a, b)] for a, b in ((1, 1), (2, 8), (30, 3), (0.5, 0.5))]
     out["entropy_nats"] = [[p, entropy_nats(p)] for p in [None, -0.1, 1.7] + grid]
     out["record_wilson"] = [[s, n, *record_wilson(s, n)] for s, n in ((0.0, 0), (0.5, 4.2), (0.9, 30.0), (1.0, 7.5))]
-    out["promise_wilson"] = [[k, n, promise_wilson(k, n)] for k, n in ((0, 0), (21, 29), (5, 5), (0, 9))]
+    if separate:
+        out["promise_wilson"] = compute_promise_wilson()
     return out
+
+
+# Kept apart: the promise eval imports jinja2, which orion-prediction's CI does not install. The service
+# golden skips this key; orion/prediction/tests (requirements-dev) checks it.
+SEPARATE_SERVICE_KEYS = ("promise_wilson",)
+
+
+def compute_promise_wilson() -> list:
+    from orion.harness.evals.promise_ledger_replay_eval import wilson as promise_wilson
+
+    return [[k, n, promise_wilson(k, n)] for k, n in ((0, 0), (21, 29), (5, 5), (0, 9))]
 
 
 # --- build ---------------------------------------------------------------------------------------------

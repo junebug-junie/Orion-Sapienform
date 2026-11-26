@@ -14,10 +14,10 @@ EXPECTED = DATA["expected"]["service"]
 
 @pytest.fixture(scope="module")
 def got() -> dict:
-    return golden.compute_service(DATA["inputs"])
+    return golden.compute_service(DATA["inputs"], separate=False)
 
 
-@pytest.mark.parametrize("key", sorted(EXPECTED))
+@pytest.mark.parametrize("key", sorted(set(EXPECTED) - set(golden.SEPARATE_SERVICE_KEYS)))
 def test_service_output_reproduces_the_pre_refactor_value(got, key):
     assert golden.diffs(got[key], EXPECTED[key], key) == []
 

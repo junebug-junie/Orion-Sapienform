@@ -49,12 +49,6 @@ def test_the_golden_fixture_is_not_degenerate(key, node_ids):
     assert sum(v > 0 for v in values) >= 50 and sum(v == 0 for v in values) >= 50
 
 
-def test_promise_eval_wilson_reproduces_the_pre_refactor_value():
-    """Checked here, not in the orion-prediction golden: the promise eval needs jinja2."""
-    want = DATA["expected"]["service"]["promise_wilson"]
-    assert golden.diffs(golden.compute_promise_wilson(), want, "promise_wilson") == []
-
-
 def test_street_rhythm_stays_shadow_with_no_band_rule():
     """Patch A adds no calm_band rule for street_rhythm: its rule ships with the go-live decision (#3950)."""
     from orion.schemas import attention_candidate as ac

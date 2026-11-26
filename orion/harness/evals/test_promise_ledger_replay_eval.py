@@ -258,3 +258,12 @@ def test_merge_reports_joins_partial_runs_by_turn(tmp_path) -> None:
     c = tmp_path / "c.json"
     c.write_text(json.dumps({"turns": [{"correlation_id": "c1", "at": "2026-11-01T00:00:00", "error": "http 503"}]}))
     assert "error" not in merge_reports([a, b, c])["turns"][1]
+
+
+def test_wilson_reproduces_its_pre_refactor_value_after_delegating_to_the_self_monitor() -> None:
+    """Shared-bet-primitives Patch A: the eval's Wilson now calls orion.self_monitor.record.wilson.
+    Golden: orion/prediction/tests/surprisal_golden.py (built from the pre-refactor tree)."""
+    from orion.prediction.tests import surprisal_golden as golden
+
+    want = golden.load()["expected"]["service"]["promise_wilson"]
+    assert golden.diffs(golden.compute_promise_wilson(), want, "promise_wilson") == []

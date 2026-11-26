@@ -293,8 +293,8 @@ def compute_service(inp: dict, *, separate: bool = True) -> dict:
     return out
 
 
-# Kept apart: the promise eval imports jinja2, which orion-prediction's CI does not install. The service
-# golden skips this key; orion/prediction/tests (requirements-dev) checks it.
+# Kept apart: the promise eval needs jinja2 + numpy, which only promise-ledger-tests installs. The service
+# golden skips this key; orion/harness/evals/test_promise_ledger_replay_eval.py checks it.
 SEPARATE_SERVICE_KEYS = ("promise_wilson",)
 
 

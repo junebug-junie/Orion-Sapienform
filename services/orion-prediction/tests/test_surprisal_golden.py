@@ -49,3 +49,13 @@ def test_callers_import_the_shared_math():
     assert rc.log_loss is ts.log_loss is grading.log_loss is surprisal.log_loss
     assert ts.node_value is surprisal.node_value
     assert su.P_FLOOR is surprisal.P_FLOOR
+
+
+def test_the_self_monitor_wilson_is_95_percent_and_keeps_its_empty_reading():
+    """The one Wilson (orion/self_monitor/record.py). Fractional Kish n_eff is pinned in the golden
+    ``record_wilson`` key. Empty: the self-monitor reads (0, 1) (an unknown share); the promise eval keeps its
+    own None reading before delegating. Both homes keep their pre-refactor empty behavior."""
+    from orion.self_monitor import record
+
+    assert record.Z == 1.96
+    assert record.wilson(0.5, 0.0) == (0.0, 1.0) and record.wilson(0.5, -2.0) == (0.0, 1.0)

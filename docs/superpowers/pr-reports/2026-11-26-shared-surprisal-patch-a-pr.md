@@ -14,6 +14,10 @@ math that was copied into up to six files now lives in one place, and no live nu
   every node value and bet term of the new code to 1e-9. Result: all 6 substrate nodes are bit-identical;
   the only inexact values are 10 reachable log losses at 1 ulp (6.9e-18, numpy log vs math log).
 - street_rhythm stays shadow with no `calm_band` rule; a test pins it.
+- Live anchor (Orion's review): replaying stored rows through the fold reproduces 95.6 % (room/body) and
+  96.4 % (joint) of the node values the live substrate wrote in the last 24 h, the same on main and here.
+  All 44 forecast series' conformal excess (84,500 scored rows, 3 days) are bit-identical old vs new.
+  "No live change" on the running substrate stays UNVERIFIED until #4017 runs after the rebuild.
 
 ## Outcome moved
 
@@ -158,6 +162,30 @@ Minor findings and what was done:
   scored forecast (one every few seconds).
 - Finding: PR report not committed. Fix: committed.
 
+## Orion's review (thread 05720fc6ebaf) and what changed
+
+1. Fixture anchored to the bus: new read-only eval `services/orion-prediction/evals/run_surprise_node_live_parity_eval.py`
+   replays stored rows against the node values the live substrate wrote: room/body 525/549, joint 541/561
+   (24 h, identical on main). Off the n_cal grid the inversion raises (loud); live n_cal is 950-1010.
+2. Bit-identical was measured on fixtures; live is UNVERIFIED until the post-rebuild run (#4017, verify-live).
+3. One-off compare of every series' conformal excess: 44 series, 84,500 rows, 0 differences at ==.
+   The fixture is refreshed only by a patch allowed to move a number (`surprisal_golden.py dump` + `build`
+   against the pre-change tree).
+4. `fold` now returns None whenever summed calm variance is not > `min_var` (default 0), for every caller.
+   No live path reached a zero sum before (room/body/joint variances are > 0, turn rejects var <= 0,
+   street already passed 1e-12), so this guards, it does not move a number.
+5. One form: `calm_band.bet_window_atoms` now uses `surprisal.bet_terms`. Atoms move by <= 3.6e-15 in z;
+   the closest atom tolerance edge to a stored 6-decimal value is 1.1e-10 away. `test_calm_band.py` pins a
+   1000x margin; z_tail golden is unchanged at tolerance 0. Patch B uses -ln q(y) (`surprisal`) only.
+6. Wilson: golden now pins fractional Kish n_eff (0.37 .. 163.4) and n_eff <= 0; `record.Z == 1.96` pinned.
+   Each home keeps its own empty reading: record (0, 1), promise eval None/None.
+7. No 2-arg `log_loss` call remains (grep). The golden helper no longer sniffs the signature: `build`
+   passes `pre_change=True` explicitly.
+8. Street pin fails with an "update deliberately" message and notes the 0.59/0.74 miscalibration; the
+   tautological Z_FULL_SCALE checks now pin 3.0 and the bars; `test_curiosity_value.py` runs in CI; the
+   promise lane pins its Wilson as literals and imports no golden code (its numpy/jinja2 installs predate
+   this PR); unmerged items listed in #4018.
+
 ## Restart required
 
 No restart is needed for correctness: no live number changes. The new code goes live when the images
@@ -176,7 +204,9 @@ on their next rebuild; none of them needs one for this patch.
 - Severity: low. Concern: a later patch moves a number by accident. Mitigation: the golden tests fail at
   1e-9; re-building the fixture is a deliberate, documented step (`surprisal_golden.py build`).
 - Severity: low. Concern: the delete check scans `orion/`, `services/`, `scripts/` on every run (~1 s).
-- Issues opened: none. Issues closed: none (Refs #3989; Patch B, C, D follow).
+- Severity: medium. Concern: "no live change" is UNVERIFIED on the running substrate (windows are in memory).
+  Mitigation: #4017 (verify-live), run `run_surprise_node_live_parity_eval.py --since <rebuild> --check`.
+- Issues opened: #4017 (verify-live), #4018 (unmerged near-duplicates reference). Closed: none (Refs #3989).
 
 ## PR link
 

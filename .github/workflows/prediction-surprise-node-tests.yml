@@ -11,6 +11,8 @@ on:
     paths:
       - "orion/prediction/surprisal.py"
       - "orion/prediction/tests/**"
+      - "orion/curiosity/value.py"
+      - "orion/curiosity/tests/test_curiosity_value.py"
       - "orion/substrate/prediction_street_rhythm.py"
       - "orion/substrate/prediction_surprise.py"
       - "orion/substrate/tests/test_prediction_surprise.py"
@@ -41,6 +43,8 @@ on:
     paths:
       - "orion/prediction/surprisal.py"
       - "orion/prediction/tests/**"
+      - "orion/curiosity/value.py"
+      - "orion/curiosity/tests/test_curiosity_value.py"
       - "orion/substrate/prediction_street_rhythm.py"
       - "orion/substrate/prediction_surprise.py"
       - "orion/substrate/prediction_turn_surprise.py"
@@ -72,6 +76,7 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             orion/prediction/tests \
+            orion/curiosity/tests/test_curiosity_value.py \
             orion/substrate/tests/test_prediction_street_rhythm.py \
             orion/substrate/tests/test_prediction_surprise.py \
             orion/substrate/tests/test_prediction_turn_surprise.py \

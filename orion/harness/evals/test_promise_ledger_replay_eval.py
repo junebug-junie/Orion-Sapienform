@@ -260,10 +260,18 @@ def test_merge_reports_joins_partial_runs_by_turn(tmp_path) -> None:
     assert "error" not in merge_reports([a, b, c])["turns"][1]
 
 
-def test_wilson_reproduces_its_pre_refactor_value_after_delegating_to_the_self_monitor() -> None:
-    """Shared-bet-primitives Patch A: the eval's Wilson now calls orion.self_monitor.record.wilson.
-    Golden: orion/prediction/tests/surprisal_golden.py (built from the pre-refactor tree)."""
-    from orion.prediction.tests import surprisal_golden as golden
 
-    want = golden.load()["expected"]["service"]["promise_wilson"]
-    assert golden.diffs(golden.compute_promise_wilson(), want, "promise_wilson") == []
+def test_wilson_reproduces_its_pre_refactor_value_after_delegating_to_the_self_monitor() -> None:
+    """Shared-bet-primitives Patch A (PR #4013): this Wilson now calls orion.self_monitor.record.wilson.
+    Values recorded from the pre-refactor code (cf5889fdd); literals, so this lane imports no golden code."""
+    import pytest
+
+    from orion.harness.evals.promise_ledger_replay_eval import wilson
+
+    assert wilson(0, 0) == {"k": 0, "n": 0, "p": None, "lo95": None, "hi95": None}
+    for (k, n), (p, lo, hi) in {(21, 29): (0.7241379310344828, 0.5428252365556403, 0.8530141866149725),
+                                (5, 5): (1.0, 0.5655085052479191, 1.0),
+                                (0, 9): (0.0, 0.0, 0.2991527535509594)}.items():
+        w = wilson(k, n)
+        assert (w["k"], w["n"]) == (k, n)
+        assert (w["p"], w["lo95"], w["hi95"]) == pytest.approx((p, lo, hi), abs=1e-12)

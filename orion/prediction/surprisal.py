@@ -176,13 +176,14 @@ class Fold:
         return node_value(self.z)
 
 
-def fold(terms: Sequence[tuple[float, float]], *, min_var: float | None = None) -> Fold | None:
-    """Fold a window's (excess, calm_var) pairs into one z. None for an empty window, or, with ``min_var``,
-    for a window whose summed calm variance is at or below it (only 50/50 bets: no information)."""
+def fold(terms: Sequence[tuple[float, float]], *, min_var: float = 0.0) -> Fold | None:
+    """Fold a window's (excess, calm_var) pairs into one z. None for an empty window, or for a window whose
+    summed calm variance is at or below ``min_var`` (default 0: never a division by zero; a window of only
+    50/50 bets carries no information). Callers that held a 1e-12 floor before the move pass it."""
     if not terms:
         return None
     var = sum(v for _, v in terms)
-    if min_var is not None and var <= min_var:
+    if not var > min_var:   # also catches a NaN sum
         return None
     total = sum(e for e, _ in terms)
     return Fold(total=total, var=var, n=len(terms), z=total / math.sqrt(var))

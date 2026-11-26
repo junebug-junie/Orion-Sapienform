@@ -127,7 +127,7 @@ def _reading(r: Any) -> list[float] | None:
 # --- substrate side (stdlib + orion.substrate) ----------------------------------------------------------
 
 
-def compute_substrate(inp: dict) -> dict:
+def compute_substrate(inp: dict, *, pre_change: bool = False) -> dict:
     from orion.substrate import calm_band as cb
     from orion.substrate import curiosity_seed_bar as csb
     from orion.substrate import prediction_joint_surprise as pj
@@ -180,7 +180,7 @@ def compute_substrate(inp: dict) -> dict:
     out["street_rhythm"] = rows
     out["street_rhythm_replay"] = [[t.isoformat(), v] for t, v in psr.replay_node_values(samples)]
 
-    # Constants and the two calm variances (old homes resolved by getattr so the same code runs after).
+    # Constants and the two calm variances.
     out["z_full_scale"] = [ps.Z_FULL_SCALE, pj.Z_FULL_SCALE, pt.Z_FULL_SCALE, psr.Z_FULL_SCALE, cb.Z_FULL_SCALE,
                            csb.Z_FULL_SCALE]
     out["calm_band_p_floor"] = cb.P_FLOOR
@@ -193,35 +193,28 @@ def compute_substrate(inp: dict) -> dict:
     origins = [datetime(2026, 11, 11, 8, m, s, tzinfo=timezone.utc) for m in range(0, 60, 5) for s in (0, 3)]
     out["independent_origin"] = [[o.isoformat(), h, ps.independent_origin(o, h), pj.independent_origin(o, h)]
                                  for o in origins for h in (5, 15)]
-    joint_var = getattr(pj, "calm_excess_variance", None)        # pre-change home
-    if joint_var is None:
-        from orion.prediction.surprisal import calm_excess_variance_discrete as joint_var
-    out["joint_calm_excess_variance"] = [[n, joint_var(n)] for n in (1, 2, 10, 101, 1009, 5000)]
-    # prediction_surprise's calm variance for the producer's calm surprisal (0.95): what every room/body
-    # sample carries.
-    old_var = getattr(ps, "calm_excess_variance", None)
-    if old_var is not None:
-        out["room_body_calm_var"] = old_var(0.95)
+    # The moved calm variances, read from their home on each side of the change (``pre_change``: build only).
+    if pre_change:
+        joint_var = pj.calm_excess_variance
+        out["room_body_calm_var"] = ps.calm_excess_variance(0.95)   # took the calm surprisal
     else:
-        from orion.prediction.surprisal import calm_excess_variance
-        out["room_body_calm_var"] = calm_excess_variance(1.0 - 0.95)
+        from orion.prediction.surprisal import calm_excess_variance, calm_excess_variance_discrete as joint_var
+        out["room_body_calm_var"] = calm_excess_variance(1.0 - 0.95)  # takes the floor
+    out["joint_calm_excess_variance"] = [[n, joint_var(n)] for n in (1, 2, 10, 101, 1009, 5000)]
     return out
 
 
 # --- service side (orion-prediction app.*, numpy/scipy) -------------------------------------------------
 
 
-def _log_loss(mod: Any, p: float, y: bool) -> float:
-    """``mod.log_loss`` before the change took (p, y) and clipped with the module's own P_CLIP; after it,
-    the shared ``log_loss(p, y, clip)`` takes the clip."""
-    import inspect
-
-    if len(inspect.signature(mod.log_loss).parameters) == 3:
-        return mod.log_loss(p, y, mod.P_CLIP)
-    return mod.log_loss(p, y)
+def _log_loss(mod: Any, p: float, y: bool, pre_change: bool) -> float:
+    """Before the change ``mod.log_loss`` took (p, y) and clipped with the module's own P_CLIP; after it,
+    the shared ``log_loss(p, y, clip)`` takes the clip. Chosen explicitly by ``pre_change`` (set only by
+    ``build``), never by inspecting the signature, so a later signature change fails the test loudly."""
+    return mod.log_loss(p, y) if pre_change else mod.log_loss(p, y, mod.P_CLIP)
 
 
-def compute_service(inp: dict, *, separate: bool = True) -> dict:
+def compute_service(inp: dict, *, pre_change: bool = False, separate: bool = True) -> dict:
     import app.action_bets as ab
     import app.reachable as rc
     import app.street_rhythm as sr
@@ -261,7 +254,7 @@ def compute_service(inp: dict, *, separate: bool = True) -> dict:
     out["turn_bet_terms_grid"] = [[q, y, *(lambda b: [b.calibrated_p, b.surprisal, b.expected_surprisal, b.excess,
                                                      b.calm_var])(tsu.bet_terms("f", q, q, y))]
                                   for q in grid for y in (True, False)]
-    out["turn_log_loss_grid"] = [[q, y, _log_loss(tsu, q, y)] for q in grid for y in (True, False)]
+    out["turn_log_loss_grid"] = [[q, y, _log_loss(tsu, q, y, pre_change)] for q in grid for y in (True, False)]
     out["turn_node_value"] = [[z, tsu.node_value(z)] for z in (-1.0, 0.0, 0.5, 1.5, 2.999, 3.0, 7.0)]
 
     # Street: raw stated p terms per live row.
@@ -273,9 +266,9 @@ def compute_service(inp: dict, *, separate: bool = True) -> dict:
 
     # Reachable: log loss per row and model, the calibration bins.
     rr = [dict(r) for r in inp["reachable"]]
-    out["reachable_log_loss"] = [[_log_loss(rc, r[k], r["happened"]) for k in ("p", "p_state", "p_baseline")]
+    out["reachable_log_loss"] = [[_log_loss(rc, r[k], r["happened"], pre_change) for k in ("p", "p_state", "p_baseline")]
                                  for r in rr]
-    out["reachable_log_loss_grid"] = [[q, y, _log_loss(rc, q, y)] for q in grid + [1e-5, 1 - 1e-5]
+    out["reachable_log_loss_grid"] = [[q, y, _log_loss(rc, q, y, pre_change)] for q in grid + [1e-5, 1 - 1e-5]
                                       for y in (True, False)]
     out["reachable_calibration"] = {k: rc.calibration(rr, k) for k in ("p", "p_state", "p_baseline")}
     edge = [{"p": v, "happened": h} for v, h in ((1.0, True), (0.0, False), (0.02, True), (0.4, False))]
@@ -287,14 +280,17 @@ def compute_service(inp: dict, *, separate: bool = True) -> dict:
     out["bernoulli_entropy"] = [[p, ab.bernoulli_entropy(p)] for p in [-0.1] + grid + [1.1]]
     out["beta_eig"] = [[a, b, ab.beta_eig(a, b)] for a, b in ((1, 1), (2, 8), (30, 3), (0.5, 0.5))]
     out["entropy_nats"] = [[p, entropy_nats(p)] for p in [None, -0.1, 1.7] + grid]
-    out["record_wilson"] = [[s, n, *record_wilson(s, n)] for s, n in ((0.0, 0), (0.5, 4.2), (0.9, 30.0), (1.0, 7.5))]
+    # n_eff is a fractional Kish count live (record.py reduce_faculty); <= 0 reads (0, 1).
+    out["record_wilson"] = [[s, n, *record_wilson(s, n)] for s, n in (
+        (0.0, 0), (0.5, -1.0), (0.5, 0.37), (0.5, 4.2), (0.9, 30.0), (1.0, 7.5), (0.0, 2.718),
+        (0.3712, 12.8317), (0.8125, 163.402), (0.07, 1.0001))]
     if separate:
         out["promise_wilson"] = compute_promise_wilson()
     return out
 
 
-# Kept apart: the promise eval needs jinja2 + numpy, which only promise-ledger-tests installs. The service
-# golden skips this key; orion/harness/evals/test_promise_ledger_replay_eval.py checks it.
+# Kept apart: the promise eval needs jinja2. The service golden skips this key; the promise eval's own test
+# pins these values as literals (test_promise_ledger_replay_eval.py), so that lane imports no golden code.
 SEPARATE_SERVICE_KEYS = ("promise_wilson",)
 
 
@@ -347,7 +343,7 @@ def _events(raw: dict, code_root: Path) -> dict:
 def build(code_root: Path, inputs: Path, out: Path) -> None:
     raw = json.loads(inputs.read_text())
     inp = {**raw, **_events(raw, code_root)}
-    expected = {"substrate": compute_substrate(inp), "service": compute_service(inp)}
+    expected = {"substrate": compute_substrate(inp, pre_change=True), "service": compute_service(inp, pre_change=True)}
     for mod in list(sys.modules):  # nothing imported from the pre-change tree may leak into a later run
         if mod == "app" or mod.startswith(("app.", "orion")):
             del sys.modules[mod]

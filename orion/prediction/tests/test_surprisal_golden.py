@@ -55,11 +55,15 @@ def test_street_rhythm_stays_shadow_with_no_band_rule():
     from orion.substrate import calm_band as cb
     from orion.substrate.prediction_street_rhythm import STREET_RHYTHM_NODE_ID
 
-    assert ac.STREET_RHYTHM_SHADOW is True
-    assert STREET_RHYTHM_NODE_ID in ac.SHADOW_NODE_IDS
-    assert STREET_RHYTHM_NODE_ID not in cb.ATTENTION_BAND_RULE_BY_NODE_ID
-    assert cb.band_rule(STREET_RHYTHM_NODE_ID) == cb.RULE_EMPIRICAL
-    assert not cb.has_calm_band(STREET_RHYTHM_NODE_ID)
+    # The node scores the RAW stated p, which is miscalibrated (self-monitor percept_expectation: stated 0.59,
+    # happened 0.74, 2026-11-25). Its band rule and go-live are one deliberate decision (Juniper, #3950).
+    msg = ("street_rhythm gained a calm_band rule or left shadow. That is the go-live decision (#3950), not a "
+           "refactor: update this pin deliberately in the go-live PR, with its calm check.")
+    assert ac.STREET_RHYTHM_SHADOW is True, msg
+    assert STREET_RHYTHM_NODE_ID in ac.SHADOW_NODE_IDS, msg
+    assert STREET_RHYTHM_NODE_ID not in cb.ATTENTION_BAND_RULE_BY_NODE_ID, msg
+    assert cb.band_rule(STREET_RHYTHM_NODE_ID) == cb.RULE_EMPIRICAL, msg
+    assert not cb.has_calm_band(STREET_RHYTHM_NODE_ID), msg
 
 
 def _py_files():
@@ -149,6 +153,9 @@ def test_conformal_terms_rest_at_their_calm_point():
 def test_fold_and_node_value():
     assert sp.fold([]) is None
     assert sp.fold([(0.0, 0.0)], min_var=1e-12) is None
+    # Every fold is guarded, not only the callers that pass min_var (Orion's review of #4013, point 4).
+    assert sp.fold([(0.0, 0.0)]) is None and sp.fold([(1.0, 0.0), (-1.0, 0.0)]) is None
+    assert sp.fold([(1.0, 1e-300)]) is not None
     f = sp.fold([(2.0, 1.0), (-1.0, 3.0)])
     assert f.n == 2 and f.total == 1.0 and f.z == 0.5 and f.mean_excess == 0.5
     assert f.value == sp.node_value(0.5) == pytest.approx(0.5 / 3)

@@ -83,10 +83,17 @@
   // first load opens on the first story not graded yet; a refresh keeps the
   // story she is on.
   //
+  // Nothing jumps (2026-11-26, Juniper: "when i click a button, it randomly moves
+  // me around the screen"). The Back / Next bar is pinned under Hub's top bar. A
+  // new story always starts right under that bar: the page scrolls only when the
+  // new story's top would be hidden. A finished story says "Saved" for a moment
+  // before the card moves on. Refocusing a control never scrolls the page.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
   const VIEW_VALUE = "walkway-live";
+  const ADVANCE_PAUSE_MS = 600;   // "Saved" stays on screen this long before the next story
   const POLL_MS = 60000;
   const VERDICTS = [
     { value: "right", label: "Right" },
@@ -1026,11 +1033,24 @@
         if (i < 0 || i > items().length - 1) return false;
         current = i;
         applyView();
-        if (pager && typeof pager.scrollIntoView === "function") pager.scrollIntoView({ block: "nearest" });
+        startUnderPager();
         return true;
       } finally {
         moving = false;
       }
+    }
+
+    // Scroll only when the story shown starts above the pager's bottom edge (she was down inside
+    // the last story) or below the screen: then put its top right under the pager. Otherwise leave
+    // the page alone, so whatever she is looking at stays where it is.
+    function startUnderPager() {
+      const item = items()[current];
+      if (!item || !pager || typeof global.scrollBy !== "function") return;
+      const pagerBottom = pager.getBoundingClientRect().bottom;
+      const top = item.getBoundingClientRect().top;
+      const bottomEdge = global.innerHeight || 0;
+      // Hidden behind the pinned pager, or off the bottom of the screen: bring it right under the pager.
+      if (top < pagerBottom - 1 || (bottomEdge && top > bottomEdge - 80)) global.scrollBy(0, top - pagerBottom - 8);
     }
 
     // Story ``storyId`` got its verdict: show the one after it, but only if she is still on it
@@ -1042,6 +1062,9 @@
       const at = all.findIndex((it) => it.getAttribute("data-story-id") === storyId);
       if (at < 0) { say(savedText); return; }            // no longer listed: not "the last one"
       if (at < all.length - 1) {
+        say(`${savedText} Next story…`);
+        await new Promise((r) => setTimeout(r, ADVANCE_PAUSE_MS));
+        if (currentId !== storyId) { say(savedText); return; }   // she moved during the pause
         if (await step(1)) {
           const shown = items()[current];
           if (shown) {
@@ -1101,7 +1124,7 @@
       applyView();
       if (focus) {
         const target = next.querySelector(focus);
-        if (target && typeof target.focus === "function") target.focus();
+        if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
       }
     }
 

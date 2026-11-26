@@ -777,9 +777,11 @@
           </div>
           <div id="walkwayStoriesTally" class="text-[11px] text-gray-300">Checked 0 of 50</div>
           <div id="walkwayStoriesGate" class="text-[11px] text-amber-300"></div>
-          <div id="walkwayStoriesStatus" class="text-[11px] text-gray-500" aria-live="polite">Loading walkway stories…</div>
-          <!-- One story at a time (2026-11-26): Back / Next, and a finished story moves on. -->
-          <div id="walkwayStoriesPager" class="flex items-center justify-between gap-2">
+          <div id="walkwayStoriesStatus" class="text-[11px] text-gray-500" style="min-height: 3em;" aria-live="polite">Loading walkway stories…</div>
+          <!-- One story at a time (2026-11-26): Back / Next, and a finished story moves on.
+               Pinned under Hub's fixed top bar (h-14 = 3.5rem) while a tall story scrolls, so
+               "Story N of M" and Back / Next never leave the screen. -->
+          <div id="walkwayStoriesPager" class="flex items-center justify-between gap-2 bg-gray-900 py-1" style="position: sticky; top: 3.5rem; z-index: 30;">
             <button id="walkwayStoriesBack" type="button" class="min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-40">&larr; Back</button>
             <span id="walkwayStoriesPos" class="text-[11px] text-gray-300"></span>
             <button id="walkwayStoriesNext" type="button" class="min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-40">Next &rarr;</button>

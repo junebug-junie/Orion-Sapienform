@@ -293,6 +293,10 @@ test('one story shows at a time; Back / Next move; a verdict moves on to the nex
   const shown = doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)');
   shown.querySelector('[data-story-verdict="right"]').click();
   for (let i = 0; i < 5; i += 1) await tick();
+  // "Saved" stays a moment before the card moves on (ADVANCE_PAUSE_MS), so she sees it happen.
+  assert.deepEqual(visible(), ['b']);
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /Next story/);
+  await new Promise((r) => setTimeout(r, 700));
   assert.equal(posts.length, 1);
   assert.match(posts[0], new RegExp(`${'b'.repeat(32)}/verdict$`));
   assert.deepEqual(visible(), ['c']);

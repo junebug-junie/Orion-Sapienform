@@ -768,3 +768,72 @@ def test_walkway_story_same_name_question_and_link_undo_browser_smoke():
         assert posts[-1] == (f"/api/vision/individual-links/ask-{'a' * 32}/undo", {})
         assert page.locator("[data-person-link-undo]").count() == 0
         browser.close()
+
+
+def test_walkway_story_moves_never_jump_the_page_browser_smoke():
+    """Nothing jumps (2026-11-26, Juniper: "when i click a button, it randomly moves me around the
+    screen"). The Back / Next bar stays pinned under Hub's fixed top bar while a story scrolls; a
+    story finished from far down its card moves on with the new story starting right under the bar
+    (not hidden under the top bar, not halfway down); Back / Next then never scroll the page."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    html = _html()
+    stories = [_story(i, persons=[_pp(f"ind-{i}a"), _pp(f"ind-{i}b")],
+                      parts={"stated": ["people", "direction", "place"], "answers": {}}) for i in (1, 2, 3)]
+
+    def handle(route):
+        url = route.request.url
+        path = url.split("http://hub.test", 1)[1].split("?", 1)[0]
+        if path == "/":
+            return route.fulfill(body=html, content_type="text/html")
+        if path.startswith("/static/"):
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
+        if path == "/api/vision/motion-stories":
+            return route.fulfill(body=json.dumps({"ok": True, "stories": stories, "tally": _tally(1, 1)}),
+                                 content_type="application/json")
+        if path.endswith("/parts"):
+            sid = path.split("/")[4]
+            sent = json.loads(route.request.post_data or "{}")
+            s = next(x for x in stories if x["story_id"] == sid)
+            s["parts"]["answers"][sent["part"]] = {"verdict": sent["verdict"], "source": "juniper"}
+            done = len(s["parts"]["answers"]) == 3
+            if done:
+                s["verdict"] = "right"
+            return route.fulfill(body=json.dumps({"ok": True, "story": s, "story_verdict": "right" if done else None,
+                                                  "tally": _tally(1, 1)}), content_type="application/json")
+        if "/strip/" in path or path.startswith("/api/vision/crop-thumbs/"):
+            return route.fulfill(body=PIXEL, content_type="image/gif")
+        return route.fulfill(status=404, body="")
+
+    geometry = """() => { const pg = document.getElementById('walkwayStoriesPager').getBoundingClientRect();
+      const it = document.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)').getBoundingClientRect();
+      return { pager: Math.round(pg.top), pagerBottom: Math.round(pg.bottom), story: Math.round(it.top),
+               y: Math.round(scrollY), pos: document.getElementById('walkwayStoriesPos').textContent }; }"""
+    vis = "#walkwayStoriesList [data-story-id]:not(.hidden) "
+    with sync_playwright() as p:
+        for width, height in ((390, 844), (1280, 900)):
+            for s in stories:
+                s["parts"]["answers"], s["verdict"] = {}, None
+            browser, page = _page(p, html, handle, height=height)
+            page.set_viewport_size({"width": width, "height": height})
+            page.wait_for_selector(vis + "[data-story-part='place']")
+            top_bar = 56   # Hub's fixed header, h-14
+            # Down inside the story: the bar is still on screen, just under the top bar.
+            page.locator(vis + "[data-story-part='place']").scroll_into_view_if_needed()
+            assert page.evaluate(geometry)["pager"] == top_bar
+            for part in ("people", "direction", "place"):
+                page.locator(vis + f"[data-story-part='{part}'] [data-part-verdict='yes']").click()
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 2 of 3'")
+            page.wait_for_timeout(200)
+            g = page.evaluate(geometry)
+            assert top_bar <= g["pager"] < 120, g                       # visible, not under the top bar
+            assert g["pagerBottom"] <= g["story"] <= g["pagerBottom"] + 12, g   # new story starts right under it
+            for btn, pos in (("Next", "Story 3 of 3"), ("Back", "Story 2 of 3"), ("Next", "Story 3 of 3")):
+                page.click(f"#walkwayStories{btn}")
+                page.wait_for_function(f"() => document.getElementById('walkwayStoriesPos').textContent === '{pos}'")
+                h = page.evaluate(geometry)
+                assert (h["y"], h["pager"], h["story"]) == (g["y"], g["pager"], g["story"]), (btn, g, h)
+            browser.close()

@@ -307,3 +307,33 @@ test('one story shows at a time; Back / Next move; a verdict moves on to the nex
   doc.getElementById('visionSource').value = 'off';
   api.sync();
 });
+
+test('a verdict saved after she moved away does not move her again', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b'), storyFixture('c'), storyFixture('d')];
+  let release = null;
+  const fetchFn = async (url, opts) => {
+    if (opts && opts.method === 'POST') {
+      await new Promise((r) => { release = r; });
+      return { ok: true, status: 200, json: async () => ({ tally: {} }) };
+    }
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden) [data-story-verdict="right"]').click();
+  await tick();
+  doc.getElementById('walkwayStoriesNext').click();   // she moves on before the save answers
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['b']);
+  release();
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['b']);                  // not skipped on to c
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});

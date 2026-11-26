@@ -1003,21 +1003,35 @@
     }
 
     // Move to story ``i``. A held name answer is sent first (as when moving to the next person).
+    // One move at a time: a second tap while a held answer is still being sent is ignored, so the
+    // story shown is always the last move that finished and a failed send stays on the story it is about.
+    let moving = false;
     async function show(i) {
-      const all = items();
-      if (i < 0 || i > all.length - 1) return false;
-      if (!(await flush(false))) return false;
-      current = i;
-      applyView();
-      if (pager && typeof pager.scrollIntoView === "function") pager.scrollIntoView({ block: "nearest" });
-      return true;
+      if (moving || flushing) return false;
+      if (i < 0 || i > items().length - 1) return false;
+      moving = true;
+      try {
+        if (!(await flush(false))) return false;
+        current = Math.min(i, items().length - 1);
+        applyView();
+        if (pager && typeof pager.scrollIntoView === "function") pager.scrollIntoView({ block: "nearest" });
+        return true;
+      } finally {
+        moving = false;
+      }
     }
 
-    // A story got its verdict: show the next one, and say so.
-    async function finished(savedText) {
-      const last = current >= items().length - 1;
-      if (!last && await show(current + 1)) say(`${savedText} Showing the next story.`);
-      else say(last ? `${savedText} That was the last story loaded.` : savedText);
+    // Story ``storyId`` got its verdict: show the one after it, but only if she is still on it
+    // (she may have tapped Back or Next while the answer was being saved).
+    async function finished(storyId, savedText) {
+      if (currentId !== storyId) { say(savedText); return; }
+      const at = items().findIndex((it) => it.getAttribute("data-story-id") === storyId);
+      if (at >= 0 && at < items().length - 1) {
+        if (await show(at + 1)) say(`${savedText} Showing the next story.`);
+        else say(savedText);
+      } else {
+        say(`${savedText} That was the last story loaded.`);
+      }
     }
 
     function showTally(t) {
@@ -1037,7 +1051,7 @@
         story.verdict = verdict;
         buttons.forEach((b) => setPressed(b, b.getAttribute("data-story-verdict") === verdict));
         showTally(body.tally);
-        await finished("Saved.");
+        await finished(story.story_id, "Saved.");
       } catch (err) {
         if (status) status.textContent = `Could not save that verdict (${err.message}). Try again.`;
       } finally {
@@ -1205,7 +1219,7 @@
           return !a;
         }).length;
         if (body.story_verdict) {
-          await finished(`Saved. Every part answered: this story counts as ${VERDICT_WORDS[body.story_verdict] || body.story_verdict}.`);
+          await finished(story.story_id, `Saved. Every part answered: this story counts as ${VERDICT_WORDS[body.story_verdict] || body.story_verdict}.`);
         } else {
           say(`Saved. ${left} more ${left === 1 ? "part" : "parts"} to answer before this story counts.`);
         }

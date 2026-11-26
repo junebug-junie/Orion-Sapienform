@@ -76,6 +76,13 @@
   // "Linked as the same person - Undo" for 7 days; Undo asks Orion's next pass to
   // remove it, and the card then says whether it was undone or why not.
   //
+  // One story at a time (2026-11-26, Juniper: "I want a fixed view where I go one
+  // at a time"). The list shows one story; Back / Next move between them and the
+  // line between says "Story 3 of 20". A story that gets its verdict (a button,
+  // or the last sentence part answered) moves on to the next one by itself. The
+  // first load opens on the first story not graded yet; a refresh keeps the
+  // story she is on.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
@@ -937,6 +944,24 @@
     return `This story counts as ${VERDICT_WORDS[story.verdict] || story.verdict}${why}.`;
   }
 
+  // Which story to show after a load: the one she was on if it is still listed, else the same
+  // place; with none yet (first load), the first story not graded yet.
+  function startIndex(stories, prevId, prevIndex) {
+    const n = Array.isArray(stories) ? stories.length : 0;
+    if (!n) return 0;
+    if (prevId) {
+      const i = stories.findIndex((s) => s && s.story_id === prevId);
+      if (i >= 0) return i;
+      return Math.min(Math.max(Number(prevIndex) || 0, 0), n - 1);
+    }
+    const open = stories.findIndex((s) => s && !s.verdict);
+    return open >= 0 ? open : 0;
+  }
+
+  function positionText(index, count) {
+    return count ? `Story ${index + 1} of ${count}` : "No stories";
+  }
+
   function setPressed(btn, on) {
     btn.setAttribute("aria-pressed", on ? "true" : "false");
     btn.className = "min-h-[2.25rem] rounded-lg border px-3 py-1 text-xs " + (on
@@ -954,7 +979,46 @@
     const gateEl = doc.getElementById("walkwayStoriesGate");
     const uncheckedBox = doc.getElementById("walkwayStoriesUnchecked");
     const checkableBox = doc.getElementById("walkwayStoriesCheckable");
+    const pager = doc.getElementById("walkwayStoriesPager");
+    const backBtn = doc.getElementById("walkwayStoriesBack");
+    const nextBtn = doc.getElementById("walkwayStoriesNext");
+    const posEl = doc.getElementById("walkwayStoriesPos");
     let timer = null;
+    let current = 0;                   // index of the story shown
+    let currentId = null;              // its story_id, so a refresh keeps her place
+
+    function items() {
+      return Array.from(list.children).filter((c) => c.getAttribute && c.getAttribute("data-story-id"));
+    }
+
+    // Show only the current story; set the position line and the Back / Next buttons.
+    function applyView() {
+      const all = items();
+      if (current > all.length - 1) current = Math.max(0, all.length - 1);
+      all.forEach((it, i) => it.classList.toggle("hidden", i !== current));
+      currentId = all[current] ? all[current].getAttribute("data-story-id") : null;
+      if (posEl) posEl.textContent = positionText(current, all.length);
+      if (backBtn) backBtn.disabled = current <= 0;
+      if (nextBtn) nextBtn.disabled = current >= all.length - 1;
+    }
+
+    // Move to story ``i``. A held name answer is sent first (as when moving to the next person).
+    async function show(i) {
+      const all = items();
+      if (i < 0 || i > all.length - 1) return false;
+      if (!(await flush(false))) return false;
+      current = i;
+      applyView();
+      if (pager && typeof pager.scrollIntoView === "function") pager.scrollIntoView({ block: "nearest" });
+      return true;
+    }
+
+    // A story got its verdict: show the next one, and say so.
+    async function finished(savedText) {
+      const last = current >= items().length - 1;
+      if (!last && await show(current + 1)) say(`${savedText} Showing the next story.`);
+      else say(last ? `${savedText} That was the last story loaded.` : savedText);
+    }
 
     function showTally(t) {
       if (tallyEl) tallyEl.textContent = tallyLine(t);
@@ -973,7 +1037,7 @@
         story.verdict = verdict;
         buttons.forEach((b) => setPressed(b, b.getAttribute("data-story-verdict") === verdict));
         showTally(body.tally);
-        if (status) status.textContent = "Saved.";
+        await finished("Saved.");
       } catch (err) {
         if (status) status.textContent = `Could not save that verdict (${err.message}). Try again.`;
       } finally {
@@ -996,6 +1060,7 @@
       if (!item || !fresh) return;
       const next = renderStory(doc, fresh, onVerdict, ctx);
       item.replaceWith(next);
+      applyView();
       if (focus) {
         const target = next.querySelector(focus);
         if (target && typeof target.focus === "function") target.focus();
@@ -1139,9 +1204,11 @@
           const a = body.story && body.story.parts && body.story.parts.answers ? body.story.parts.answers[p] : null;
           return !a;
         }).length;
-        say(body.story_verdict
-          ? `Saved. Every part answered: this story counts as ${VERDICT_WORDS[body.story_verdict] || body.story_verdict}.`
-          : `Saved. ${left} more ${left === 1 ? "part" : "parts"} to answer before this story counts.`);
+        if (body.story_verdict) {
+          await finished(`Saved. Every part answered: this story counts as ${VERDICT_WORDS[body.story_verdict] || body.story_verdict}.`);
+        } else {
+          say(`Saved. ${left} more ${left === 1 ? "part" : "parts"} to answer before this story counts.`);
+        }
       } catch (err) {
         say(`Could not save that (${err.message}). Try again.`);
         buttons.forEach((b) => { b.disabled = false; });
@@ -1213,7 +1280,10 @@
         }
         const body = await res.json();
         const item = wrap.closest("[data-story-id]");
-        if (body.story && item) item.replaceWith(renderStory(doc, body.story, onVerdict, ctx));
+        if (body.story && item) {
+          item.replaceWith(renderStory(doc, body.story, onVerdict, ctx));
+          applyView();
+        }
         if (status) status.textContent = "Saved: not the same person. Orion unlinks them on its next pass; they then show as two people.";
       } catch (err) {
         if (status) status.textContent = `Could not save that (${err.message}). Try again.`;
@@ -1252,6 +1322,8 @@
         list.textContent = "";
         const stories = body.stories || [];
         stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
+        current = startIndex(stories, currentId, current);
+        applyView();
         if (status) {
           const which = checkable === "true" ? "checkable: daylight, with a picture" : "all, including dark or no picture";
           status.textContent = stories.length
@@ -1289,6 +1361,8 @@
     if (select) select.addEventListener("change", sync);
     if (uncheckedBox) uncheckedBox.addEventListener("change", () => load(false));
     if (checkableBox) checkableBox.addEventListener("change", () => load(false));
+    if (backBtn) backBtn.addEventListener("click", () => { show(current - 1); });
+    if (nextBtn) nextBtn.addEventListener("click", () => { show(current + 1); });
     sync();
     return { load, sync, flush };
   }
@@ -1296,7 +1370,8 @@
   const api = { VIEW_VALUE, VERDICTS, CANT_TELL, tallyLine, gateLine, pickThumbs, stripModel, hasPicture,
                 personTitle, actionLine, whyLine, handoffText, renderStory, mount,
                 storyPeople, personPictures, isPictured, cropOwners, boxesText, groupsText, notSameChoices,
-                questionText, nameChoices, answerSpec, partQuestion, correctedName, resultLine, pendingText, cursorIndex, sourceText, storyParts, linkState };
+                questionText, nameChoices, answerSpec, partQuestion, correctedName, resultLine, pendingText, cursorIndex, sourceText, storyParts, linkState,
+                startIndex, positionText };
 
   global.OrionWalkwayStories = api;
   if (typeof module !== "undefined" && module.exports) {

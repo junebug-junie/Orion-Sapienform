@@ -778,7 +778,13 @@
           <div id="walkwayStoriesTally" class="text-[11px] text-gray-300">Checked 0 of 50</div>
           <div id="walkwayStoriesGate" class="text-[11px] text-amber-300"></div>
           <div id="walkwayStoriesStatus" class="text-[11px] text-gray-500" aria-live="polite">Loading walkway stories…</div>
-          <div id="walkwayStoriesList" class="space-y-2 max-h-[40rem] overflow-y-auto pr-1"></div>
+          <!-- One story at a time (2026-11-26): Back / Next, and a finished story moves on. -->
+          <div id="walkwayStoriesPager" class="flex items-center justify-between gap-2">
+            <button id="walkwayStoriesBack" type="button" class="min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-40">&larr; Back</button>
+            <span id="walkwayStoriesPos" class="text-[11px] text-gray-300"></span>
+            <button id="walkwayStoriesNext" type="button" class="min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-40">Next &rarr;</button>
+          </div>
+          <div id="walkwayStoriesList" class="space-y-2"></div>
         </div>
         <!-- Walkway history (walkway rollups, 2026-10-18): shown under the live picture
              only while "Walkway (live)" is selected. Deterministic counts by hour, day,

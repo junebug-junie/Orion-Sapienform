@@ -161,6 +161,8 @@ def test_walkway_stories_card_browser_smoke():
         assert pos.text_content() == "Story 1 of 3"
         assert first.is_visible() and not items.nth(1).is_visible() and not third.is_visible()
         assert page.locator("#walkwayStoriesBack").is_disabled()
+        # Hidden stories' lazy pictures are not fetched: one frame request so far, the shown story's.
+        assert sum(p.endswith("/strip/frame.jpg") for p in strips) == 1
         page.locator("#walkwayStoriesNext").click()
         items.nth(1).wait_for(state="visible")
         assert pos.text_content() == "Story 2 of 3" and not first.is_visible()
@@ -178,6 +180,8 @@ def test_walkway_stories_card_browser_smoke():
         assert third.locator(f"img[data-story-thumb='{GONE}']").count() == 0
         assert page.locator("#walkwayStoriesNext").is_disabled()
         assert "Showing the next story" in page.locator("#walkwayStoriesStatus").text_content()
+        # Focus follows the move (it was on a button inside the now-hidden story).
+        assert page.evaluate("() => document.activeElement.getAttribute('data-story-id')") == f"{3:032x}"
         assert items.nth(1).locator("[data-story-verdict='wrong_name']").get_attribute("aria-pressed") == "true"
         assert posts == [(f"{2:032x}", {"verdict": "wrong_name"})]
         assert "wrong names 1" in page.locator("#walkwayStoriesTally").text_content()
@@ -191,6 +195,7 @@ def test_walkway_stories_card_browser_smoke():
         assert posts[-1] == (f"{3:032x}", {"verdict": "cant_tell"})
         assert third.is_visible()
         assert "last story loaded" in page.locator("#walkwayStoriesStatus").text_content()
+        assert "only unchecked" in page.locator("#walkwayStoriesStatus").text_content()
         assert "can't tell 1 (not counted)" in page.locator("#walkwayStoriesTally").text_content()
         assert "Checked 4 of 50" in page.locator("#walkwayStoriesTally").text_content()
         # Back goes to the story before.

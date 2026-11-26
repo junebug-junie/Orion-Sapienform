@@ -1007,11 +1007,14 @@
     // story shown is always the last move that finished and a failed send stays on the story it is about.
     let moving = false;
     async function show(i) {
-      if (moving || flushing) return false;
+      if (moving || flushing) {
+        say(flushing ? "Still saving your last answer. Try again in a moment." : "Still moving. Try again in a moment.");
+        return false;
+      }
       if (i < 0 || i > items().length - 1) return false;
       moving = true;
       try {
-        if (!(await flush(false))) return false;
+        if (!(await flush(false))) return false;   // send() already said why it failed
         current = Math.min(i, items().length - 1);
         applyView();
         if (pager && typeof pager.scrollIntoView === "function") pager.scrollIntoView({ block: "nearest" });
@@ -1022,16 +1025,28 @@
     }
 
     // Story ``storyId`` got its verdict: show the one after it, but only if she is still on it
-    // (she may have tapped Back or Next while the answer was being saved).
+    // (she may have tapped Back or Next while the answer was being saved). The next story takes
+    // focus, so a keyboard or screen reader follows the move.
     async function finished(storyId, savedText) {
       if (currentId !== storyId) { say(savedText); return; }
-      const at = items().findIndex((it) => it.getAttribute("data-story-id") === storyId);
-      if (at >= 0 && at < items().length - 1) {
-        if (await show(at + 1)) say(`${savedText} Showing the next story.`);
-        else say(savedText);
-      } else {
-        say(`${savedText} That was the last story loaded.`);
+      const all = items();
+      const at = all.findIndex((it) => it.getAttribute("data-story-id") === storyId);
+      if (at < 0) { say(savedText); return; }            // no longer listed: not "the last one"
+      if (at < all.length - 1) {
+        if (await show(at + 1)) {
+          const shown = items()[current];
+          if (shown) {
+            shown.setAttribute("tabindex", "-1");
+            if (typeof shown.focus === "function") shown.focus({ preventScroll: true });
+          }
+          say(`${savedText} Showing the next story.`);
+        }
+        return;
       }
+      // The list holds the newest 20 only: with "only unchecked" on, a reload brings the next ungraded ones.
+      const more = uncheckedBox && !uncheckedBox.checked
+        ? " Tick \"only unchecked\" to get the next ungraded stories." : "";
+      say(`${savedText} That was the last story loaded.${more}`);
     }
 
     function showTally(t) {

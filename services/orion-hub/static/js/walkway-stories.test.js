@@ -337,3 +337,25 @@ test('a verdict saved after she moved away does not move her again', { skip: !JS
   doc.getElementById('visionSource').value = 'off';
   api.sync();
 });
+
+test('a second Back / Next tap during a move is refused and says so', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b'), storyFixture('c')];
+  const fetchFn = async (url) => {
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  const next = doc.getElementById('walkwayStoriesNext');
+  next.click(); next.click();             // the second lands while the first is still moving
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /Still moving/);
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.deepEqual(visible(), ['b']);     // one step, not two
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});

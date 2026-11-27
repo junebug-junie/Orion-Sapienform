@@ -438,3 +438,34 @@ test('a tap on the story during the "Saved" pause keeps her on it', { skip: !JSD
   doc.getElementById('visionSource').value = 'off';
   api.sync();
 });
+
+for (const dropped of [true, false]) {
+  test(`the 60 s refresh landing in the "Saved" pause never moves her twice (graded story ${dropped ? 'dropped' : 'kept'})`, { skip: !JSDOM }, async () => {
+    const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+    const doc = dom.window.document;
+    let stories = [storyFixture('a'), storyFixture('b'), storyFixture('c')];
+    const fetchFn = async (url, opts) => {
+      if (opts && opts.method === 'POST') return { ok: true, status: 200, json: async () => ({ tally: {} }) };
+      if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+      return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+    };
+    const api = ws.mount(doc, fetchFn);
+    try {
+      const tick = () => new Promise((r) => setTimeout(r, 0));
+      const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+        .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+      await api.load(false);
+      assert.deepEqual(visible(), ['a']);
+      doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden) [data-story-verdict="right"]').click();
+      for (let i = 0; i < 5; i += 1) await tick();
+      // The timer refresh lands mid-pause: with "only unchecked" it drops the graded story, else keeps it.
+      if (dropped) stories = [storyFixture('b'), storyFixture('c')];
+      await api.load(true);
+      await new Promise((r) => setTimeout(r, 700));
+      assert.deepEqual(visible(), ['b']);   // one step, never on to c
+    } finally {
+      doc.getElementById('visionSource').value = 'off';
+      api.sync();
+    }
+  });
+}

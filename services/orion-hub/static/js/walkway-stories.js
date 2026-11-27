@@ -94,7 +94,7 @@
 
   const VIEW_VALUE = "walkway-live";
   const ADVANCE_PAUSE_MS = 600;
-  const TOP_BAR_PX = 64;          // Hub's fixed top bar (h-14 = 56 px) plus a small gap   // "Saved" stays on screen this long before the next story
+  const TOP_BAR_FALLBACK_PX = 56; // Hub's fixed top bar (h-14) when it cannot be measured   // "Saved" stays on screen this long before the next story
   const POLL_MS = 60000;
   const VERDICTS = [
     { value: "right", label: "Right" },
@@ -1006,6 +1006,7 @@
       all.forEach((it, i) => it.classList.toggle("hidden", i !== current));
       currentId = all[current] ? all[current].getAttribute("data-story-id") : null;
       if (posEl) posEl.textContent = positionText(current, all.length);
+      pinPager();   // re-measure the top bar: its styles (Tailwind) may land after the card first shows
       if (backBtn) backBtn.disabled = current <= 0;
       if (nextBtn) nextBtn.disabled = current >= all.length - 1;
     }
@@ -1032,6 +1033,13 @@
         if (!(await flush(false))) return false;   // send() already said why it failed
         const i = target(delta);
         if (i < 0 || i > items().length - 1) return false;
+        // Never let the page shrink under her: a shorter story would make the browser pull the
+        // scroll up and the bar with it. The list keeps the height of the tallest story shown.
+        const leaving = items()[current];
+        if (leaving && list.style) {
+          const h = Math.ceil(leaving.getBoundingClientRect().height);
+          if (h > (parseFloat(list.style.minHeight) || 0)) list.style.minHeight = `${h}px`;
+        }
         current = i;
         applyView();
         startUnderPager();
@@ -1044,7 +1052,21 @@
     // Scroll only when the story shown starts above the pager's bottom edge (she was down inside
     // the last story) or below the screen: then put its top right under the pager. Otherwise leave
     // the page alone, so whatever she is looking at stays where it is.
+    // Where Hub's fixed top bar ends, measured (never a second copy of its height). The pager is
+    // pinned there, and a story moved into view goes under the pager, not under the bar.
+    const topBar = doc.getElementById("hubTopBar");
+    function topBarBottom() {
+      if (!topBar || typeof global.getComputedStyle !== "function") return TOP_BAR_FALLBACK_PX;
+      if (global.getComputedStyle(topBar).position !== "fixed") return 0;
+      return Math.max(0, Math.round(topBar.getBoundingClientRect().bottom));
+    }
+    function pinPager() {
+      if (pager && pager.style) pager.style.top = `${topBarBottom()}px`;
+    }
+    if (typeof global.addEventListener === "function") global.addEventListener("resize", pinPager);
+
     function startUnderPager() {
+      pinPager();   // the top bar's styles may have landed after the card first showed
       const item = items()[current];
       if (!item || !pager || typeof global.scrollBy !== "function") return;
       const pagerBottom = pager.getBoundingClientRect().bottom;
@@ -1053,7 +1075,7 @@
       // Hidden behind the pinned pager: bring its top right under the pager.
       if (top < pagerBottom - 1) global.scrollBy(0, top - pagerBottom - 8);
       // Pager low on the screen, story below it off the bottom: bring the pager up under the top bar.
-      else if (bottomEdge && top > bottomEdge - 80) global.scrollBy(0, pager.getBoundingClientRect().top - TOP_BAR_PX);
+      else if (bottomEdge && top > bottomEdge - 80) global.scrollBy(0, pager.getBoundingClientRect().top - topBarBottom() - 8);
     }
 
     // Story ``storyId`` got its verdict: show the one after it, but only if she is still on it
@@ -1442,6 +1464,7 @@
     function sync() {
       const on = !!select && select.value === VIEW_VALUE;
       card.classList.toggle("hidden", !on);
+      if (on) pinPager();
       if (on && !timer) {
         load();
         timer = setInterval(() => load(true), POLL_MS);

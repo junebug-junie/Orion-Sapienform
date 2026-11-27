@@ -782,7 +782,9 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
 
     html = _html()
     saves = [0]
-    stories = [_story(i, persons=[_pp(f"ind-{i}a"), _pp(f"ind-{i}b")],
+    # Different heights, like real stories (390 px live: 1,300-1,900 px): 1 and 3 tall, 2 short.
+    people = {1: 4, 2: 1, 3: 4}
+    stories = [_story(i, persons=[_pp(f"ind-{i}{c}") for c in "abcd"[:people[i]]],
                       parts={"stated": ["people", "direction", "place"], "answers": {}}) for i in (1, 2, 3)]
 
     def handle(route):
@@ -827,8 +829,12 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             page.set_viewport_size({"width": width, "height": height})
             if not anchor:
                 page.add_style_tag(content="*{overflow-anchor:none!important}")
+            # Tailwind (a CDN this smoke does not load) draws Hub's top bar as fixed, h-14. Give it
+            # that shape here, so the pager is checked against a real fixed bar, not a constant.
+            page.add_style_tag(content="#hubTopBar{position:fixed;top:0;left:0;right:0;height:3.5rem;z-index:40}")
             page.wait_for_selector(vis + "[data-story-part='place']")
-            top_bar = 56   # Hub's fixed header, h-14
+            top_bar = page.evaluate("() => Math.round(document.getElementById('hubTopBar').getBoundingClientRect().bottom)")
+            assert top_bar == 56
             # Down inside the story: the bar is still on screen, just under the top bar.
             page.locator(vis + "[data-story-part='place']").scroll_into_view_if_needed()
             assert page.evaluate(geometry)["pager"] == top_bar
@@ -844,6 +850,19 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
                 page.wait_for_function(f"() => document.getElementById('walkwayStoriesPos').textContent === '{pos}'")
                 h = page.evaluate(geometry)
                 assert (h["y"], h["pager"], h["story"]) == (g["y"], g["pager"], g["story"]), (btn, g, h)
+            # Back from the very bottom of tall story 3 onto short story 2 (the reported jump):
+            # the bar stays under the top bar and story 2 starts right under it.
+            page.evaluate("() => { const r = document.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)')"
+                          ".getBoundingClientRect(); scrollBy(0, r.bottom - innerHeight + 10); }")
+            before_back = page.evaluate(geometry)
+            page.click("#walkwayStoriesBack")
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 2 of 3'")
+            k = page.evaluate(geometry)
+            # Nothing under her moves: the bar and the scroll stay; the short story starts right under the bar.
+            assert (k["y"], k["pager"]) == (before_back["y"], before_back["pager"]), (before_back, k)
+            assert top_bar <= k["pager"] and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, k
+            page.click("#walkwayStoriesNext")
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 3 of 3'")
             # Down inside story 3, answer a part: the tally and status above rewrite, the story stays.
             row = page.locator(vis + "[data-story-part='direction']")
             row.scroll_into_view_if_needed()

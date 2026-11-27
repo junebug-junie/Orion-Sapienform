@@ -730,12 +730,21 @@
     pics.setAttribute("data-story-strip", model.frame ? "frame" : hasPicture(model) ? "crops" : "none");
     if (model.dark) pics.appendChild(el(doc, "div", "text-[11px] font-semibold text-amber-300", "Dark scene"));
     if (model.frame) {
-      const img = el(doc, "img", "w-full max-w-[20rem] h-auto rounded border border-gray-700");
+      // A square box, reserved before the picture loads: real frames are 640x640 or 640x480 and the
+      // record does not say which, so the story's height never changes when (or if) it arrives.
+      const FRAME_BOX = "width: 100%; max-width: 20rem; aspect-ratio: 1 / 1;";
+      const img = el(doc, "img", "rounded border border-gray-700 bg-black");
+      img.setAttribute("style", `${FRAME_BOX} object-fit: contain;`);
       img.setAttribute("src", model.frame.url);
       img.setAttribute("alt", "the walkway at the moment of this story, boxes drawn");
       img.setAttribute("loading", "lazy");
       img.setAttribute("data-story-frame", "1");
-      img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
+      img.addEventListener("error", () => {
+        const gone = el(doc, "div", "flex items-center justify-center rounded border border-gray-700 text-[10px] text-gray-500",
+          "(picture gone)");
+        gone.setAttribute("style", FRAME_BOX);
+        img.replaceWith(gone);
+      });
       pics.appendChild(img);
       pics.appendChild(el(doc, "div", "text-[10px] text-gray-500",
         `Picture from ${localTime(model.frame.t)}. Boxes: 1 = first (green), last = red. ` +
@@ -1033,16 +1042,11 @@
         if (!(await flush(false))) return false;   // send() already said why it failed
         const i = target(delta);
         if (i < 0 || i > items().length - 1) return false;
-        // Never let the page shrink under her: a shorter story would make the browser pull the
-        // scroll up and the bar with it. The list keeps the height of the tallest story shown.
-        const leaving = items()[current];
-        if (leaving && list.style) {
-          const h = Math.ceil(leaving.getBoundingClientRect().height);
-          if (h > (parseFloat(list.style.minHeight) || 0)) list.style.minHeight = `${h}px`;
-        }
-        current = i;
-        applyView();
-        startUnderPager();
+        holdHeight(() => {
+          current = i;
+          applyView();
+          startUnderPager();
+        });
         return true;
       } finally {
         moving = false;
@@ -1069,6 +1073,42 @@
     }
     // Tailwind styles the bar after this script may have run: re-pin the moment the bar changes size.
     if (topBar && typeof global.ResizeObserver === "function") new global.ResizeObserver(pinPager).observe(topBar);
+
+    // Swap the story shown without the page shrinking under her: a shorter story would make the
+    // browser pull the scroll up (and the bar with it). The list holds the old story's height for
+    // the swap, then lets go at once unless letting go would move the page: then it keeps holding
+    // until a later swap can let go cleanly. No paint happens in between, so she never sees a hold
+    // that was let go.
+    function holdHeight(swap) {
+      const shown = items()[current];
+      if (shown && list.style && shown.getBoundingClientRect) {
+        const h = Math.ceil(shown.getBoundingClientRect().height);
+        if (h > (parseFloat(list.style.minHeight) || 0)) list.style.minHeight = `${h}px`;
+      }
+      swap();
+      relaxHeight();
+    }
+
+    function relaxHeight() {
+      if (!list.style || !list.style.minHeight || typeof global.scrollTo !== "function") return;
+      const held = list.style.minHeight;
+      const y = global.scrollY || 0;
+      list.style.minHeight = "";
+      // The page must still be tall enough for where she is scrolled; else the browser pulls the
+      // scroll up (and not always before this line runs, so test the height, not scrollY).
+      const roomy = doc.documentElement.scrollHeight - (global.innerHeight || 0) >= y - 0.5;
+      if (!roomy) list.style.minHeight = held;
+    }
+
+    // A hold kept because she was near the bottom of the page lets go once she scrolls away from it.
+    let relaxQueued = false;
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("scroll", () => {
+        if (relaxQueued || !list.style || !list.style.minHeight) return;
+        relaxQueued = true;
+        (global.requestAnimationFrame || setTimeout)(() => { relaxQueued = false; relaxHeight(); });
+      }, { passive: true });
+    }
 
     function startUnderPager() {
       pinPager();   // the top bar's styles may have landed after the card first showed
@@ -1445,12 +1485,14 @@
           }
           return;
         }
-        list.textContent = "";
         const stories = body.stories || [];
-        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
         const was = currentId;
-        current = startIndex(stories, currentId, current);
-        applyView();
+        holdHeight(() => {
+          list.textContent = "";
+          stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
+          current = startIndex(stories, currentId, current);
+          applyView();
+        });
         // The story she was on dropped out (e.g. "only unchecked" after she graded it): start the new one in view.
         if (was && currentId !== was) startUnderPager();
         if (status) {

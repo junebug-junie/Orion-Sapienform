@@ -19,6 +19,7 @@ NEW_PAGER = snippet(r'<div id="walkwayStoriesPager".*?</div>')
 NEW_STATUS = snippet(r'<div id="walkwayStoriesStatus"[^>]*>')
 BASE = os.environ.get("HUB_URL", "http://localhost:8080")
 posts = []
+RESULTS = []   # geometry after every Next / Back move
 
 def patch_html(h):
     h = h.replace('<div class="fixed top-0 left-0 right-0 z-40', '<div id="hubTopBar" class="fixed top-0 left-0 right-0 z-40', 1)
@@ -47,7 +48,11 @@ with sync_playwright() as p:
     for anchor in (True, False):
         b = p.chromium.launch(); page = b.new_page(viewport={"width": 390, "height": 844}, device_scale_factor=3, is_mobile=True, has_touch=True)
         page.route("**/*", handle)
-        page.goto(BASE + "/", wait_until="domcontentloaded")
+        try:
+            page.goto(BASE + "/", wait_until="domcontentloaded")
+        except Exception as exc:   # unreachable Hub is a FAIL, never a silent skip
+            print(f"FAIL: cannot reach Hub at {BASE}: {exc}", file=sys.stderr)
+            sys.exit(2)
         page.wait_for_function("() => !!window.OrionWalkwayStories && !!window.tailwind", timeout=60000)
         if not anchor: page.add_style_tag(content="*{overflow-anchor:none!important}")
         page.select_option("#visionSource", "walkway-live")
@@ -69,14 +74,23 @@ with sync_playwright() as p:
         page.wait_for_timeout(300)
         print(tag, "deep in story", page.evaluate(G))
         for i in range(min(n - 1, 6)):
-            page.click("#walkwayStoriesNext"); page.wait_for_timeout(400)
-            g = page.evaluate(G); print(tag, "Next", g)
+            page.click("#walkwayStoriesNext")
+            first = page.evaluate(G)            # first paint of the new story, pictures not loaded yet
+            page.wait_for_timeout(2000)
+            g = page.evaluate(G); g["grewAfterPaint"] = g["storyH"] - first["storyH"]; g["storyMoved"] = g["story"] - first["story"]
+            print(tag, "Next", g); RESULTS.append(g)
             page.evaluate("() => { const it=document.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)'); const r=it.getBoundingClientRect(); scrollBy(0, Math.max(0, r.bottom - innerHeight + 10)); }")
             page.wait_for_timeout(200)
         for i in range(3):
             page.click("#walkwayStoriesBack"); page.wait_for_timeout(400)
-            print(tag, "Back from bottom", page.evaluate(G))
+            g = page.evaluate(G); print(tag, "Back from bottom", g); RESULTS.append(g)
             page.evaluate("() => { const it=document.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)'); const r=it.getBoundingClientRect(); scrollBy(0, Math.max(0, r.bottom - innerHeight + 10)); }")
             page.wait_for_timeout(200)
         b.close()
 print("POSTS (faked, none reached Hub):", posts)
+bad = [r for r in RESULTS if not (r["pager"] == r["bar"] and r["pagerBottom"] <= r["story"] <= r["pagerBottom"] + 12)
+       or abs(r.get("storyMoved", 0)) > 1]   # pictures landing must not move the story she is looking at
+print(f"{'PASS' if not bad else 'FAIL'}: {len(RESULTS) - len(bad)} of {len(RESULTS)} moves left the pager at the top bar and the story under it, unmoved as pictures loaded")
+for r in bad:
+    print("  bad:", r)
+sys.exit(1 if bad or not RESULTS else 0)

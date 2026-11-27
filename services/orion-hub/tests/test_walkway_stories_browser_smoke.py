@@ -129,6 +129,9 @@ def test_walkway_stories_card_browser_smoke():
         # The picture of the moment, never today's view.
         assert first.locator("svg").count() == 0
         assert page.locator("img[src*='/api/vision/frames/latest']").count() == 0
+        # The frame's box is reserved square before the picture lands, so the story never grows later.
+        assert first.locator("img[data-story-frame]").evaluate(
+            "e => { const r = e.getBoundingClientRect(); return Math.round(r.height) === Math.round(r.width) && r.width > 0; }")
         assert first.locator("img[data-story-frame]").get_attribute("src") == \
             f"/api/vision/motion-stories/{1:032x}/strip/frame.jpg"
         assert "Picture from" in first.text_content()
@@ -822,6 +825,11 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
                y: Math.round(scrollY), pos: document.getElementById('walkwayStoriesPos').textContent }; }"""
     vis = "#walkwayStoriesList [data-story-id]:not(.hidden) "
     with sync_playwright() as p:
+        def tap(which):
+            # Tap the pinned bar where it is on screen. page.click() would first scroll a sticky
+            # element to its in-flow spot (a Playwright artifact, not what a finger does).
+            page.evaluate(f"() => document.getElementById('walkwayStories{which}').click()")
+
         for width, height, anchor in ((390, 844, True), (390, 844, False), (1280, 900, True)):
             for s in stories:
                 s["parts"]["answers"], s["verdict"] = {}, None
@@ -848,7 +856,7 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             assert top_bar <= g["pager"] < 120, g                       # visible, not under the top bar
             assert g["pagerBottom"] <= g["story"] <= g["pagerBottom"] + 12, g   # new story starts right under it
             for btn, pos in (("Next", "Story 3 of 3"), ("Back", "Story 2 of 3"), ("Next", "Story 3 of 3")):
-                page.click(f"#walkwayStories{btn}")
+                tap(btn)
                 page.wait_for_function(f"() => document.getElementById('walkwayStoriesPos').textContent === '{pos}'")
                 h = page.evaluate(geometry)
                 assert (h["y"], h["pager"], h["story"]) == (g["y"], g["pager"], g["story"]), (btn, g, h)
@@ -857,13 +865,17 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             page.evaluate("() => { const r = document.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)')"
                           ".getBoundingClientRect(); scrollBy(0, r.bottom - innerHeight + 10); }")
             before_back = page.evaluate(geometry)
-            page.click("#walkwayStoriesBack")
+            tap("Back")
             page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 2 of 3'")
             k = page.evaluate(geometry)
-            # Nothing under her moves: the bar and the scroll stay; the short story starts right under the bar.
-            assert (k["y"], k["pager"]) == (before_back["y"], before_back["pager"]), (before_back, k)
-            assert top_bar <= k["pager"] and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, k
-            page.click("#walkwayStoriesNext")
+            # Its top was off the screen, so the page brings it in: the bar stays at the top bar and
+            # the short story starts right under it, never halfway down and never under the top bar.
+            assert before_back["story"] < before_back["pagerBottom"], before_back
+            assert top_bar <= k["pager"] <= top_bar + 12 and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, k
+            # Any height hold kept for that move lets go once she scrolls away from the page bottom.
+            page.evaluate("() => scrollTo(0, 0)")
+            page.wait_for_function("() => !document.getElementById('walkwayStoriesList').style.minHeight", timeout=3000)
+            tap("Next")
             page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 3 of 3'")
             # Down inside story 3, answer a part: the tally and status above rewrite, the story stays.
             row = page.locator(vis + "[data-story-part='direction']")

@@ -24,7 +24,9 @@ Hub frontend only: `walkway-stories.js` and `index.html`. No API, schema, bus or
 ## Files changed
 
 - `services/orion-hub/static/js/walkway-stories.js`: `startUnderPager()`, `ADVANCE_PAUSE_MS`, and `preventScroll` on the rerender focus.
-- `services/orion-hub/templates/index.html`: the sticky pager and the status line's minimum height.
+- `services/orion-hub/templates/index.html`: the sticky pager, the status line's minimum height, and `id="hubTopBar"` on the header.
+- `services/orion-hub/evals/walkway_pager_live_geometry.py`: a live geometry eval on the real styled page.
+- `services/orion-hub/tests/test_motion_story_routes.py`: a contract test that the header keeps `id="hubTopBar"` and stays fixed.
 - `services/orion-hub/tests/test_walkway_stories_browser_smoke.py`: new test `test_walkway_story_moves_never_jump_the_page_browser_smoke`. It fails on the old code: the bar sat at -374 px instead of 56.
 - `services/orion-hub/static/js/walkway-stories.test.js`: the auto-advance test now waits through the pause and checks for "Next story".
 
@@ -46,7 +48,12 @@ no-jump test against the origin/main JS + template  FAILED as expected (pager -3
 
 ## Evals run
 
-None. This is a UI-only change, and the browser smoke covers the interaction.
+```text
+python services/orion-hub/evals/walkway_pager_live_geometry.py
+PASS: 18 of 18 moves left the pager at the top bar and the story under it, unmoved as pictures loaded
+```
+
+This is a manual eval, not run in CI, because it needs the live Hub. It loads the real Hub page with real Tailwind and 20 real stories at 390 px mobile, using this checkout's JS and pager markup. Every non-GET request is faked, so nothing is written. It walks Next and Back from the bottom of each story, with scroll anchoring on and off. It also checks that no story grows or moves after its pictures load. If Hub cannot be reached, it fails with exit 2; it never skips silently. It is rerun after the deploy as part of #4016.
 
 ## Docker/build/smoke checks
 

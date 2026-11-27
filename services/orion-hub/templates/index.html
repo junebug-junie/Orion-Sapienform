@@ -19,7 +19,7 @@
   ></div>
   <div id="toastContainer" class="fixed top-4 right-4 z-50 space-y-2"></div>
   <div class="w-full max-w-[98%] mx-auto flex flex-col gap-6 pt-16">
-    <div class="fixed top-0 left-0 right-0 z-40 bg-black/95 border-b border-gray-800 h-14 flex items-center justify-between px-6">
+    <div id="hubTopBar" class="fixed top-0 left-0 right-0 z-40 bg-black/95 border-b border-gray-800 h-14 flex items-center justify-between px-6">
       <div class="flex items-center gap-3 min-w-0 flex-1">
         <div class="text-sm font-semibold text-gray-200 shrink-0">Orion Hub</div>
         <!-- Section launcher (Gmail-apps style): every tab lives in the grid
@@ -777,9 +777,12 @@
           </div>
           <div id="walkwayStoriesTally" class="text-[11px] text-gray-300">Checked 0 of 50</div>
           <div id="walkwayStoriesGate" class="text-[11px] text-amber-300"></div>
-          <div id="walkwayStoriesStatus" class="text-[11px] text-gray-500" aria-live="polite">Loading walkway stories…</div>
-          <!-- One story at a time (2026-11-26): Back / Next, and a finished story moves on. -->
-          <div id="walkwayStoriesPager" class="flex items-center justify-between gap-2">
+          <div id="walkwayStoriesStatus" class="text-[11px] text-gray-500" style="min-height: 3em;" aria-live="polite">Loading walkway stories…</div>
+          <!-- One story at a time (2026-11-26): Back / Next, and a finished story moves on.
+               Pinned under Hub's fixed top bar (#hubTopBar) while a tall story scrolls, so
+               "Story N of M" and Back / Next never leave the screen. 3.5rem is only the first-paint
+               value: walkway-stories.js measures the bar's real bottom edge and uses that. -->
+          <div id="walkwayStoriesPager" class="flex items-center justify-between gap-2 bg-gray-900 py-1" style="position: sticky; top: 3.5rem; z-index: 30;">
             <button id="walkwayStoriesBack" type="button" class="min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-40">&larr; Back</button>
             <span id="walkwayStoriesPos" class="text-[11px] text-gray-300"></span>
             <button id="walkwayStoriesNext" type="button" class="min-h-[2.25rem] rounded-lg border border-gray-600 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-40">Next &rarr;</button>

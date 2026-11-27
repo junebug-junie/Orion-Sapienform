@@ -83,10 +83,18 @@
   // first load opens on the first story not graded yet; a refresh keeps the
   // story she is on.
   //
+  // Nothing jumps (2026-11-26, Juniper: "when i click a button, it randomly moves
+  // me around the screen"). The Back / Next bar is pinned under Hub's top bar. A
+  // new story always starts right under that bar: the page scrolls only when the
+  // new story's top would be hidden. A finished story says "Saved" for a moment
+  // before the card moves on. Refocusing a control never scrolls the page.
+  //
   // Everything from the database is rendered with textContent / attributes,
   // never innerHTML.
 
   const VIEW_VALUE = "walkway-live";
+  const ADVANCE_PAUSE_MS = 600;
+  const TOP_BAR_FALLBACK_PX = 56; // Hub's fixed top bar (h-14) when it cannot be measured   // "Saved" stays on screen this long before the next story
   const POLL_MS = 60000;
   const VERDICTS = [
     { value: "right", label: "Right" },
@@ -722,12 +730,21 @@
     pics.setAttribute("data-story-strip", model.frame ? "frame" : hasPicture(model) ? "crops" : "none");
     if (model.dark) pics.appendChild(el(doc, "div", "text-[11px] font-semibold text-amber-300", "Dark scene"));
     if (model.frame) {
-      const img = el(doc, "img", "w-full max-w-[20rem] h-auto rounded border border-gray-700");
+      // A square box, reserved before the picture loads: real frames are 640x640 or 640x480 and the
+      // record does not say which, so the story's height never changes when (or if) it arrives.
+      const FRAME_BOX = "width: 100%; max-width: 20rem; aspect-ratio: 1 / 1;";
+      const img = el(doc, "img", "rounded border border-gray-700 bg-black");
+      img.setAttribute("style", `${FRAME_BOX} object-fit: contain;`);
       img.setAttribute("src", model.frame.url);
       img.setAttribute("alt", "the walkway at the moment of this story, boxes drawn");
       img.setAttribute("loading", "lazy");
       img.setAttribute("data-story-frame", "1");
-      img.addEventListener("error", () => img.replaceWith(el(doc, "span", "text-[10px] text-gray-500", "(picture gone)")));
+      img.addEventListener("error", () => {
+        const gone = el(doc, "div", "flex items-center justify-center rounded border border-gray-700 text-[10px] text-gray-500",
+          "(picture gone)");
+        gone.setAttribute("style", FRAME_BOX);
+        img.replaceWith(gone);
+      });
       pics.appendChild(img);
       pics.appendChild(el(doc, "div", "text-[10px] text-gray-500",
         `Picture from ${localTime(model.frame.t)}. Boxes: 1 = first (green), last = red. ` +
@@ -998,6 +1015,7 @@
       all.forEach((it, i) => it.classList.toggle("hidden", i !== current));
       currentId = all[current] ? all[current].getAttribute("data-story-id") : null;
       if (posEl) posEl.textContent = positionText(current, all.length);
+      pinPager();   // re-measure the top bar: its styles (Tailwind) may land after the card first shows
       if (backBtn) backBtn.disabled = current <= 0;
       if (nextBtn) nextBtn.disabled = current >= all.length - 1;
     }
@@ -1024,13 +1042,85 @@
         if (!(await flush(false))) return false;   // send() already said why it failed
         const i = target(delta);
         if (i < 0 || i > items().length - 1) return false;
-        current = i;
-        applyView();
-        if (pager && typeof pager.scrollIntoView === "function") pager.scrollIntoView({ block: "nearest" });
+        holdHeight(() => {
+          current = i;
+          applyView();
+          startUnderPager();
+        });
         return true;
       } finally {
         moving = false;
       }
+    }
+
+    // Scroll only when the story shown starts above the pager's bottom edge (she was down inside
+    // the last story) or below the screen: then put its top right under the pager. Otherwise leave
+    // the page alone, so whatever she is looking at stays where it is.
+    // Where Hub's fixed top bar ends, measured (never a second copy of its height). The pager is
+    // pinned there, and a story moved into view goes under the pager, not under the bar.
+    const topBar = doc.getElementById("hubTopBar");
+    function topBarBottom() {
+      if (!topBar || typeof global.getComputedStyle !== "function") return TOP_BAR_FALLBACK_PX;
+      if (global.getComputedStyle(topBar).position !== "fixed") return 0;
+      return Math.max(0, Math.round(topBar.getBoundingClientRect().bottom));
+    }
+    function pinPager() {
+      if (pager && pager.style) pager.style.top = `${topBarBottom()}px`;
+    }
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("resize", pinPager);
+      global.addEventListener("load", pinPager);
+    }
+    // Tailwind styles the bar after this script may have run: re-pin the moment the bar changes size.
+    if (topBar && typeof global.ResizeObserver === "function") new global.ResizeObserver(pinPager).observe(topBar);
+
+    // Swap the story shown without the page shrinking under her: a shorter story would make the
+    // browser pull the scroll up (and the bar with it). The list holds the old story's height for
+    // the swap, then lets go at once unless letting go would move the page: then it keeps holding
+    // until a later swap can let go cleanly. No paint happens in between, so she never sees a hold
+    // that was let go.
+    function holdHeight(swap) {
+      const shown = items()[current];
+      if (shown && list.style && shown.getBoundingClientRect) {
+        const h = Math.ceil(shown.getBoundingClientRect().height);
+        if (h > (parseFloat(list.style.minHeight) || 0)) list.style.minHeight = `${h}px`;
+      }
+      swap();
+      relaxHeight();
+    }
+
+    function relaxHeight() {
+      if (!list.style || !list.style.minHeight || typeof global.scrollTo !== "function") return;
+      const held = list.style.minHeight;
+      const y = global.scrollY || 0;
+      list.style.minHeight = "";
+      // The page must still be tall enough for where she is scrolled; else the browser pulls the
+      // scroll up (and not always before this line runs, so test the height, not scrollY).
+      const roomy = doc.documentElement.scrollHeight - (global.innerHeight || 0) >= y - 0.5;
+      if (!roomy) list.style.minHeight = held;
+    }
+
+    // A hold kept because she was near the bottom of the page lets go once she scrolls away from it.
+    let relaxQueued = false;
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("scroll", () => {
+        if (relaxQueued || !list.style || !list.style.minHeight) return;
+        relaxQueued = true;
+        (global.requestAnimationFrame || setTimeout)(() => { relaxQueued = false; relaxHeight(); });
+      }, { passive: true });
+    }
+
+    function startUnderPager() {
+      pinPager();   // the top bar's styles may have landed after the card first showed
+      const item = items()[current];
+      if (!item || !pager || typeof global.scrollBy !== "function") return;
+      const pagerBottom = pager.getBoundingClientRect().bottom;
+      const top = item.getBoundingClientRect().top;
+      const bottomEdge = global.innerHeight || 0;
+      // Hidden behind the pinned pager: bring its top right under the pager.
+      if (top < pagerBottom - 1) global.scrollBy(0, top - pagerBottom - 8);
+      // Pager low on the screen, story below it off the bottom: bring the pager up under the top bar.
+      else if (bottomEdge && top > bottomEdge - 80) global.scrollBy(0, pager.getBoundingClientRect().top - topBarBottom() - 8);
     }
 
     // Story ``storyId`` got its verdict: show the one after it, but only if she is still on it
@@ -1042,6 +1132,15 @@
       const at = all.findIndex((it) => it.getAttribute("data-story-id") === storyId);
       if (at < 0) { say(savedText); return; }            // no longer listed: not "the last one"
       if (at < all.length - 1) {
+        say(`${savedText} Next story…`);
+        const mark = touches;
+        await new Promise((r) => setTimeout(r, ADVANCE_PAUSE_MS));
+        if (currentId !== storyId) return;                        // she moved, or a reload moved her
+        if (touches !== mark || pending) {
+          // She touched the story during the pause (fixing an answer, picking a name): stay with her.
+          say(`${savedText} Staying on this story; press Next when you are done.`);
+          return;
+        }
         if (await step(1)) {
           const shown = items()[current];
           if (shown) {
@@ -1059,8 +1158,22 @@
     }
 
     function showTally(t) {
-      if (tallyEl) tallyEl.textContent = tallyLine(t);
-      if (gateEl) gateEl.textContent = gateLine(t);
+      steady(() => {
+        if (tallyEl) tallyEl.textContent = tallyLine(t);
+        if (gateEl) gateEl.textContent = gateLine(t);
+      });
+    }
+
+    // The tally, gate and status lines sit above the story and change length after every save.
+    // Chrome's scroll anchoring hides that; iPhone Safari has none, so the story she is reading
+    // would move by a line or two. Keep the shown story where it was on screen.
+    function steady(change) {
+      const item = items()[current];
+      const before = item ? item.getBoundingClientRect().top : null;
+      change();
+      if (before === null || typeof global.scrollBy !== "function") return;
+      const moved = item.getBoundingClientRect().top - before;
+      if (Math.abs(moved) >= 1) global.scrollBy(0, moved);
     }
 
     async function onVerdict(story, verdict, item) {
@@ -1091,7 +1204,12 @@
     const ctx = { cursor, names, answer, undo, go, say, onNotSame, onPart, onSameName, onUndoLink,
       get pending() { return pending; }, get flushing() { return flushing; } };
 
-    function say(text) { if (status) status.textContent = text; }
+    function say(text) { if (status) steady(() => { status.textContent = text; }); }
+
+    // Any tap or typing inside the story list: a pending auto-advance then stays on the story.
+    let touches = 0;
+    list.addEventListener("click", () => { touches += 1; }, true);
+    list.addEventListener("input", () => { touches += 1; }, true);
 
     function rerender(storyId, fresh, focus) {
       const item = list.querySelector(`[data-story-id="${storyId}"]`);
@@ -1101,7 +1219,7 @@
       applyView();
       if (focus) {
         const target = next.querySelector(focus);
-        if (target && typeof target.focus === "function") target.focus();
+        if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
       }
     }
 
@@ -1367,11 +1485,16 @@
           }
           return;
         }
-        list.textContent = "";
         const stories = body.stories || [];
-        stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
-        current = startIndex(stories, currentId, current);
-        applyView();
+        const was = currentId;
+        holdHeight(() => {
+          list.textContent = "";
+          stories.forEach((s) => list.appendChild(renderStory(doc, s, onVerdict, ctx)));
+          current = startIndex(stories, currentId, current);
+          applyView();
+        });
+        // The story she was on dropped out (e.g. "only unchecked" after she graded it): start the new one in view.
+        if (was && currentId !== was) startUnderPager();
         if (status) {
           const which = checkable === "true" ? "checkable: daylight, with a picture" : "all, including dark or no picture";
           status.textContent = stories.length
@@ -1388,6 +1511,7 @@
     function sync() {
       const on = !!select && select.value === VIEW_VALUE;
       card.classList.toggle("hidden", !on);
+      if (on) pinPager();
       if (on && !timer) {
         load();
         timer = setInterval(() => load(true), POLL_MS);

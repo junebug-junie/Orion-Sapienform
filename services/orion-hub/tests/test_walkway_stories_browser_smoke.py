@@ -129,6 +129,9 @@ def test_walkway_stories_card_browser_smoke():
         # The picture of the moment, never today's view.
         assert first.locator("svg").count() == 0
         assert page.locator("img[src*='/api/vision/frames/latest']").count() == 0
+        # The frame's box is reserved square before the picture lands, so the story never grows later.
+        assert first.locator("img[data-story-frame]").evaluate(
+            "e => { const r = e.getBoundingClientRect(); return Math.round(r.height) === Math.round(r.width) && r.width > 0; }")
         assert first.locator("img[data-story-frame]").get_attribute("src") == \
             f"/api/vision/motion-stories/{1:032x}/strip/frame.jpg"
         assert "Picture from" in first.text_content()
@@ -768,3 +771,122 @@ def test_walkway_story_same_name_question_and_link_undo_browser_smoke():
         assert posts[-1] == (f"/api/vision/individual-links/ask-{'a' * 32}/undo", {})
         assert page.locator("[data-person-link-undo]").count() == 0
         browser.close()
+
+
+def test_walkway_story_moves_never_jump_the_page_browser_smoke():
+    """Nothing jumps (2026-11-26, Juniper: "when i click a button, it randomly moves me around the
+    screen"). The Back / Next bar stays pinned under Hub's fixed top bar while a story scrolls; a
+    story finished from far down its card moves on with the new story starting right under the bar
+    (not hidden under the top bar, not halfway down); Back / Next then never scroll the page.
+    Also with scroll anchoring off (iPhone Safari has none): the tally, gate and status lines above
+    the story change length after a save, and the story she is reading must not move."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    html = _html()
+    saves = [0]
+    # Different heights, like real stories (390 px live: 1,300-1,900 px): 1 and 3 tall, 2 short.
+    people = {1: 4, 2: 1, 3: 4}
+    stories = [_story(i, persons=[_pp(f"ind-{i}{c}") for c in "abcd"[:people[i]]],
+                      parts={"stated": ["people", "direction", "place"], "answers": {}}) for i in (1, 2, 3)]
+
+    def handle(route):
+        url = route.request.url
+        path = url.split("http://hub.test", 1)[1].split("?", 1)[0]
+        if path == "/":
+            return route.fulfill(body=html, content_type="text/html")
+        if path.startswith("/static/"):
+            return _static(route, path)
+        if path == "/api/vision/known-names":
+            return route.fulfill(body=json.dumps(NAMES), content_type="application/json")
+        if path == "/api/vision/motion-stories":
+            return route.fulfill(body=json.dumps({"ok": True, "stories": stories, "tally": _tally(1, 1)}),
+                                 content_type="application/json")
+        if path.endswith("/parts"):
+            sid = path.split("/")[4]
+            sent = json.loads(route.request.post_data or "{}")
+            s = next(x for x in stories if x["story_id"] == sid)
+            s["parts"]["answers"][sent["part"]] = {"verdict": sent["verdict"], "source": "juniper"}
+            done = len(s["parts"]["answers"]) == 3
+            if done:
+                s["verdict"] = "right"
+            # Each save changes the tally's length (and so its line count on a phone).
+            saves[0] += 1
+            tally = _tally(1 + saves[0] * 7, 1, wrong_name=saves[0] % 2, cant_tell=saves[0] * 3)
+            return route.fulfill(body=json.dumps({"ok": True, "story": s, "story_verdict": "right" if done else None,
+                                                  "tally": tally}), content_type="application/json")
+        if "/strip/" in path or path.startswith("/api/vision/crop-thumbs/"):
+            return route.fulfill(body=PIXEL, content_type="image/gif")
+        return route.fulfill(status=404, body="")
+
+    geometry = """() => { const pg = document.getElementById('walkwayStoriesPager').getBoundingClientRect();
+      const it = document.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)').getBoundingClientRect();
+      return { pager: Math.round(pg.top), pagerBottom: Math.round(pg.bottom), story: Math.round(it.top),
+               y: Math.round(scrollY), pos: document.getElementById('walkwayStoriesPos').textContent }; }"""
+    vis = "#walkwayStoriesList [data-story-id]:not(.hidden) "
+    with sync_playwright() as p:
+        def tap(which):
+            # Tap the pinned bar where it is on screen. page.click() would first scroll a sticky
+            # element to its in-flow spot (a Playwright artifact, not what a finger does).
+            page.evaluate(f"() => document.getElementById('walkwayStories{which}').click()")
+
+        for width, height, anchor in ((390, 844, True), (390, 844, False), (1280, 900, True)):
+            for s in stories:
+                s["parts"]["answers"], s["verdict"] = {}, None
+            browser, page = _page(p, html, handle, height=height)
+            page.set_viewport_size({"width": width, "height": height})
+            if not anchor:
+                page.add_style_tag(content="*{overflow-anchor:none!important}")
+            # Tailwind (a CDN this smoke does not load) draws Hub's top bar as fixed, h-14. Give it
+            # that shape here, so the pager is checked against a real fixed bar, not a constant.
+            page.add_style_tag(content="#hubTopBar{position:fixed;top:0;left:0;right:0;height:3.5rem;z-index:40}")
+            # Story 3 tall and story 2 short BY CONSTRUCTION (real stories are 1,300-1,900 px at 390 px),
+            # whatever the runner's fonts: the Back-from-deep case below must always be the real one.
+            page.add_style_tag(content=f"[data-story-id='{3:032x}']{{min-height:{height * 3}px}}"
+                                       f"[data-story-id='{2:032x}']{{max-height:{height // 2}px;overflow:hidden}}")
+            page.wait_for_selector(vis + "[data-story-part='place']")
+            top_bar = page.evaluate("() => Math.round(document.getElementById('hubTopBar').getBoundingClientRect().bottom)")
+            assert top_bar == 56
+            # The bar got its styles after the card showed (like a late Tailwind): the pager re-pins itself.
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPager').style.top === '56px'", timeout=5000)
+            # Down inside the story: the bar is still on screen, just under the top bar.
+            page.locator(vis + "[data-story-part='place']").scroll_into_view_if_needed()
+            assert page.evaluate(geometry)["pager"] == top_bar
+            for part in ("people", "direction", "place"):
+                page.locator(vis + f"[data-story-part='{part}'] [data-part-verdict='yes']").click()
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 2 of 3'")
+            page.wait_for_timeout(200)
+            g = page.evaluate(geometry)
+            assert top_bar <= g["pager"] < 120, g                       # visible, not under the top bar
+            assert g["pagerBottom"] <= g["story"] <= g["pagerBottom"] + 12, g   # new story starts right under it
+            for btn, pos in (("Next", "Story 3 of 3"), ("Back", "Story 2 of 3"), ("Next", "Story 3 of 3")):
+                tap(btn)
+                page.wait_for_function(f"() => document.getElementById('walkwayStoriesPos').textContent === '{pos}'")
+                h = page.evaluate(geometry)
+                assert (h["y"], h["pager"], h["story"]) == (g["y"], g["pager"], g["story"]), (btn, g, h)
+            # Back from the very bottom of tall story 3 onto short story 2 (the reported jump):
+            # the bar stays under the top bar and story 2 starts right under it.
+            page.evaluate("() => { const r = document.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)')"
+                          ".getBoundingClientRect(); scrollBy(0, r.bottom - innerHeight + 10); }")
+            before_back = page.evaluate(geometry)
+            tap("Back")
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 2 of 3'")
+            k = page.evaluate(geometry)
+            # The reported jump, always reached: she was deep in tall story 3 (its top far above the
+            # bar, the bar pinned). Back brings short story 2 in with the bar at the top bar and the
+            # story right under it -- never halfway down, never under the top bar.
+            assert before_back["pager"] == top_bar and before_back["story"] < before_back["pagerBottom"] - height, before_back
+            assert top_bar <= k["pager"] <= top_bar + 12 and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, (before_back, k)
+            # Any height hold kept for that move lets go once she scrolls away from the page bottom.
+            page.evaluate("() => scrollTo(0, 0)")
+            page.wait_for_function("() => !document.getElementById('walkwayStoriesList').style.minHeight", timeout=3000)
+            tap("Next")
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 3 of 3'")
+            # Down inside story 3, answer a part: the tally and status above rewrite, the story stays.
+            row = page.locator(vis + "[data-story-part='direction']")
+            row.scroll_into_view_if_needed()
+            before = row.evaluate("e => Math.round(e.getBoundingClientRect().top)")
+            row.locator("[data-part-verdict='no']").click()
+            page.wait_for_function("() => document.getElementById('walkwayStoriesStatus').textContent.includes('more part')")
+            assert row.evaluate("e => Math.round(e.getBoundingClientRect().top)") == before
+            browser.close()

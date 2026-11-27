@@ -1517,3 +1517,14 @@ def test_link_undo_is_requested_from_the_card_only_for_its_own_links_within_7_da
         assert (await client.post("/api/vision/individual-links/not-an-ask/undo")).status_code == 400
 
     _run(body)
+
+
+def test_hub_top_bar_keeps_the_id_the_walkway_pager_measures():
+    """The walkway pager pins itself under Hub's fixed top bar by measuring #hubTopBar
+    (walkway-stories.js topBarBottom). Dropping the id would silently fall back to a constant."""
+    html = (Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text(encoding="utf-8")
+    m = re.search(r'<div id="hubTopBar" class="([^"]*)"', html)
+    assert m, "index.html header lost id=\"hubTopBar\""
+    assert {"fixed", "top-0"} <= set(m.group(1).split())
+    js = (Path(__file__).resolve().parents[1] / "static" / "js" / "walkway-stories.js").read_text(encoding="utf-8")
+    assert 'getElementById("hubTopBar")' in js

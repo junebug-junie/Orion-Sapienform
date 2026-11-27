@@ -293,6 +293,10 @@ test('one story shows at a time; Back / Next move; a verdict moves on to the nex
   const shown = doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)');
   shown.querySelector('[data-story-verdict="right"]').click();
   for (let i = 0; i < 5; i += 1) await tick();
+  // "Saved" stays a moment before the card moves on (ADVANCE_PAUSE_MS), so she sees it happen.
+  assert.deepEqual(visible(), ['b']);
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /Next story/);
+  await new Promise((r) => setTimeout(r, 700));
   assert.equal(posts.length, 1);
   assert.match(posts[0], new RegExp(`${'b'.repeat(32)}/verdict$`));
   assert.deepEqual(visible(), ['c']);
@@ -409,3 +413,59 @@ test('Next counts from the story she is on after a reload rebuilt the list mid-m
   doc.getElementById('visionSource').value = 'off';
   api.sync();
 });
+
+test('a tap on the story during the "Saved" pause keeps her on it', { skip: !JSDOM }, async () => {
+  const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+  const doc = dom.window.document;
+  const stories = [storyFixture('a'), storyFixture('b')];
+  const fetchFn = async (url, opts) => {
+    if (opts && opts.method === 'POST') return { ok: true, status: 200, json: async () => ({ tally: {} }) };
+    if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+    return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+  };
+  const api = ws.mount(doc, fetchFn);
+  await api.load(false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+    .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+  const shown = () => doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden)');
+  shown().querySelector('[data-story-verdict="right"]').click();
+  for (let i = 0; i < 5; i += 1) await tick();
+  shown().querySelector('div').click();          // she touches the story while "Saved. Next story…" shows
+  await new Promise((r) => setTimeout(r, 700));
+  assert.deepEqual(visible(), ['a']);
+  assert.match(doc.getElementById('walkwayStoriesStatus').textContent, /Staying on this story/);
+  doc.getElementById('visionSource').value = 'off';
+  api.sync();
+});
+
+for (const dropped of [true, false]) {
+  test(`the 60 s refresh landing in the "Saved" pause never moves her twice (graded story ${dropped ? 'dropped' : 'kept'})`, { skip: !JSDOM }, async () => {
+    const dom = new JSDOM(`<!doctype html><body>${CARD_HTML}</body>`);
+    const doc = dom.window.document;
+    let stories = [storyFixture('a'), storyFixture('b'), storyFixture('c')];
+    const fetchFn = async (url, opts) => {
+      if (opts && opts.method === 'POST') return { ok: true, status: 200, json: async () => ({ tally: {} }) };
+      if (url.startsWith('/api/vision/known-names')) return { ok: true, status: 200, json: async () => ({ names: [] }) };
+      return { ok: true, status: 200, json: async () => ({ tally: {}, stories }) };
+    };
+    const api = ws.mount(doc, fetchFn);
+    try {
+      const tick = () => new Promise((r) => setTimeout(r, 0));
+      const visible = () => Array.from(doc.querySelectorAll('#walkwayStoriesList [data-story-id]'))
+        .filter((n) => !n.classList.contains('hidden')).map((n) => n.getAttribute('data-story-id')[0]);
+      await api.load(false);
+      assert.deepEqual(visible(), ['a']);
+      doc.querySelector('#walkwayStoriesList [data-story-id]:not(.hidden) [data-story-verdict="right"]').click();
+      for (let i = 0; i < 5; i += 1) await tick();
+      // The timer refresh lands mid-pause: with "only unchecked" it drops the graded story, else keeps it.
+      if (dropped) stories = [storyFixture('b'), storyFixture('c')];
+      await api.load(true);
+      await new Promise((r) => setTimeout(r, 700));
+      assert.deepEqual(visible(), ['b']);   // one step, never on to c
+    } finally {
+      doc.getElementById('visionSource').value = 'off';
+      api.sync();
+    }
+  });
+}

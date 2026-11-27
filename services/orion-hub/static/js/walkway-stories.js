@@ -1063,7 +1063,12 @@
     function pinPager() {
       if (pager && pager.style) pager.style.top = `${topBarBottom()}px`;
     }
-    if (typeof global.addEventListener === "function") global.addEventListener("resize", pinPager);
+    if (typeof global.addEventListener === "function") {
+      global.addEventListener("resize", pinPager);
+      global.addEventListener("load", pinPager);
+    }
+    // Tailwind styles the bar after this script may have run: re-pin the moment the bar changes size.
+    if (topBar && typeof global.ResizeObserver === "function") new global.ResizeObserver(pinPager).observe(topBar);
 
     function startUnderPager() {
       pinPager();   // the top bar's styles may have landed after the card first showed

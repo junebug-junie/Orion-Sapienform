@@ -835,6 +835,8 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             page.wait_for_selector(vis + "[data-story-part='place']")
             top_bar = page.evaluate("() => Math.round(document.getElementById('hubTopBar').getBoundingClientRect().bottom)")
             assert top_bar == 56
+            # The bar got its styles after the card showed (like a late Tailwind): the pager re-pins itself.
+            page.wait_for_function("() => document.getElementById('walkwayStoriesPager').style.top === '56px'", timeout=5000)
             # Down inside the story: the bar is still on screen, just under the top bar.
             page.locator(vis + "[data-story-part='place']").scroll_into_view_if_needed()
             assert page.evaluate(geometry)["pager"] == top_bar

@@ -840,6 +840,10 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             # Tailwind (a CDN this smoke does not load) draws Hub's top bar as fixed, h-14. Give it
             # that shape here, so the pager is checked against a real fixed bar, not a constant.
             page.add_style_tag(content="#hubTopBar{position:fixed;top:0;left:0;right:0;height:3.5rem;z-index:40}")
+            # Story 3 tall and story 2 short BY CONSTRUCTION (real stories are 1,300-1,900 px at 390 px),
+            # whatever the runner's fonts: the Back-from-deep case below must always be the real one.
+            page.add_style_tag(content=f"[data-story-id='{3:032x}']{{min-height:{height * 3}px}}"
+                                       f"[data-story-id='{2:032x}']{{max-height:{height // 2}px;overflow:hidden}}")
             page.wait_for_selector(vis + "[data-story-part='place']")
             top_bar = page.evaluate("() => Math.round(document.getElementById('hubTopBar').getBoundingClientRect().bottom)")
             assert top_bar == 56
@@ -868,14 +872,11 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             tap("Back")
             page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 2 of 3'")
             k = page.evaluate(geometry)
-            # The short story always starts right under the bar, never under the top bar.
-            assert top_bar <= k["pager"] and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, (before_back, k)
-            if before_back["story"] < before_back["pagerBottom"]:
-                # Its top would have been off the screen: the page brings it in, bar at the top bar.
-                assert k["pager"] <= top_bar + 12, (before_back, k)
-            else:
-                # (Page too short to scroll that deep, e.g. CI fonts): nothing under her moves.
-                assert (k["y"], k["pager"]) == (before_back["y"], before_back["pager"]), (before_back, k)
+            # The reported jump, always reached: she was deep in tall story 3 (its top far above the
+            # bar, the bar pinned). Back brings short story 2 in with the bar at the top bar and the
+            # story right under it -- never halfway down, never under the top bar.
+            assert before_back["pager"] == top_bar and before_back["story"] < before_back["pagerBottom"] - height, before_back
+            assert top_bar <= k["pager"] <= top_bar + 12 and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, (before_back, k)
             # Any height hold kept for that move lets go once she scrolls away from the page bottom.
             page.evaluate("() => scrollTo(0, 0)")
             page.wait_for_function("() => !document.getElementById('walkwayStoriesList').style.minHeight", timeout=3000)

@@ -868,10 +868,14 @@ def test_walkway_story_moves_never_jump_the_page_browser_smoke():
             tap("Back")
             page.wait_for_function("() => document.getElementById('walkwayStoriesPos').textContent === 'Story 2 of 3'")
             k = page.evaluate(geometry)
-            # Its top was off the screen, so the page brings it in: the bar stays at the top bar and
-            # the short story starts right under it, never halfway down and never under the top bar.
-            assert before_back["story"] < before_back["pagerBottom"], before_back
-            assert top_bar <= k["pager"] <= top_bar + 12 and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, k
+            # The short story always starts right under the bar, never under the top bar.
+            assert top_bar <= k["pager"] and k["pagerBottom"] <= k["story"] <= k["pagerBottom"] + 12, (before_back, k)
+            if before_back["story"] < before_back["pagerBottom"]:
+                # Its top would have been off the screen: the page brings it in, bar at the top bar.
+                assert k["pager"] <= top_bar + 12, (before_back, k)
+            else:
+                # (Page too short to scroll that deep, e.g. CI fonts): nothing under her moves.
+                assert (k["y"], k["pager"]) == (before_back["y"], before_back["pager"]), (before_back, k)
             # Any height hold kept for that move lets go once she scrolls away from the page bottom.
             page.evaluate("() => scrollTo(0, 0)")
             page.wait_for_function("() => !document.getElementById('walkwayStoriesList').style.minHeight", timeout=3000)
